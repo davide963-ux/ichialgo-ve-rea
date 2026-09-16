@@ -47,7 +47,7 @@ export async function fetchJson<T>(url: string, signal?: AbortSignal, timeoutMs 
       if (!parsedMessage) {
         throw new ProviderError(
           'config',
-          `Market data route returned HTTP ${res.status} with no provider error body — the /api proxy is not reachable on this host. Check that api/[...path].js deployed as a serverless function (or that npm start is running) and that requests aren't being rewritten to index.html.`,
+          `Market data route returned HTTP ${res.status} with no provider error body — the /api proxy is not reachable on this host. Check that the api/ serverless functions deployed (or that npm start is running) and that requests aren't being rewritten to index.html.`,
         );
       }
       throw new ProviderError('invalid_symbol', message);
