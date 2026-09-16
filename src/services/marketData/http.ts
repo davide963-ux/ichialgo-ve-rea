@@ -45,10 +45,7 @@ export async function fetchJson<T>(url: string, signal?: AbortSignal, timeoutMs 
       // reach server/api.mjs at all (wrong host, static-only deploy, serverless
       // function not built), so the host's own bare 404/400 page is what we're seeing.
       if (!parsedMessage) {
-        throw new ProviderError(
-          'config',
-          `Market data route returned HTTP ${res.status} with no provider error body — the /api proxy is not reachable on this host. Check that the api/ serverless functions deployed (or that npm start is running) and that requests aren't being rewritten to index.html.`,
-        );
+        throw new ProviderError('config', 'Could not reach the market data proxy on this deployment. Verify the API routes are deployed and reachable.');
       }
       throw new ProviderError('invalid_symbol', message);
     }
@@ -58,7 +55,7 @@ export async function fetchJson<T>(url: string, signal?: AbortSignal, timeoutMs 
   if (body === null) {
     // An HTML page here means the request hit the SPA fallback instead of the proxy.
     if (text.trimStart().startsWith('<')) {
-      throw new ProviderError('config', 'Market data proxy is not running. Start the app with `npm run dev` or configure your server proxy.');
+      throw new ProviderError('config', 'Could not reach the market data proxy. Verify the server proxy is running and configured.');
     }
     throw new ProviderError('provider', 'Provider returned an empty or invalid response');
   }
