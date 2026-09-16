@@ -28,7 +28,8 @@ export async function fetchJson<T>(url: string, signal?: AbortSignal, timeoutMs 
   }
 
   if (!res.ok) {
-    const message = extractMessage(body) ?? `HTTP ${res.status}`;
+    const parsedMessage = extractMessage(body);
+    const message = parsedMessage ?? `HTTP ${res.status}`;
     const code = body && typeof body === 'object' ? (body as Record<string, unknown>).error : undefined;
     // Our own proxy's answers (server/api.mjs)
     if (code === 'NOT_CONFIGURED') throw new ProviderError('config', message);
@@ -38,7 +39,19 @@ export async function fetchJson<T>(url: string, signal?: AbortSignal, timeoutMs 
       const retry = Number(res.headers.get('Retry-After'));
       throw new ProviderError('rate_limit', message, { retryAfterMs: Number.isFinite(retry) && retry > 0 ? retry * 1000 : 60_000 });
     }
-    if (res.status === 400 || res.status === 404) throw new ProviderError('invalid_symbol', message);
+    if (res.status === 400 || res.status === 404) {
+      // A provider (OANDA/Twelve Data) error always carries errorMessage/message in its
+      // body. A 400/404 with NO such body never came from them — the request didn't
+      // reach server/api.mjs at all (wrong host, static-only deploy, serverless
+      // function not built), so the host's own bare 404/400 page is what we're seeing.
+      if (!parsedMessage) {
+        throw new ProviderError(
+          'config',
+          `Market data route returned HTTP ${res.status} with no provider error body — the /api proxy is not reachable on this host. Check that api/[...path].js deployed as a serverless function (or that npm start is running) and that requests aren't being rewritten to index.html.`,
+        );
+      }
+      throw new ProviderError('invalid_symbol', message);
+    }
     if (res.status === 502 || res.status === 504) throw new ProviderError('network', 'Market data proxy could not reach the provider');
     throw new ProviderError('provider', message);
   }
