@@ -8,7 +8,7 @@ import { SignalTable } from '../components/SignalTable';
 import { TimeframeSelector } from '../components/TimeframeSelector';
 import { EMA50_TOUCH, ICHIMOKU_CONFLUENCE } from '../config/strategy';
 import { DEFAULT_TIMEFRAME, isTimeframe, type Timeframe } from '../config/timeframes';
-import { useLastScanAt, useSignals, useSignalSummary, useStrategyStatus } from '../hooks/useSignals';
+import { useLastScanAt, useScanProgress, useSignals, useSignalSummary, useStrategyStatus } from '../hooks/useSignals';
 import { ICHIMOKU_CHECKS } from '../services/strategy';
 import { useNow } from '../hooks/useNow';
 import { formatAgo, formatClock } from '../lib/time';
@@ -30,6 +30,7 @@ export function Dashboard() {
   const summary = useSignalSummary();
   const strategyStatus = useStrategyStatus();
   const lastScanAt = useLastScanAt();
+  const progress = useScanProgress();
   const [confluentOnly, setConfluentOnly] = useState(false);
   const now = useNow();
 
@@ -42,12 +43,18 @@ export function Dashboard() {
   const confluentCount = useMemo(() => signals.filter((s) => s.ichimoku?.agrees).length, [signals]);
 
   const modeLabel = mode === 'stream' ? 'Streaming' : mode === 'poll' ? 'Polling' : 'Connecting';
+  // A scan covers the pair list over several cycles to stay inside the
+  // provider's credit budget, so show how far it has got rather than a
+  // "loading" that sits there for minutes.
+  const warming = progress.total > 0 && progress.scanned < progress.total;
   const strategyHint =
-    strategyStatus === 'READY'
-      ? `EMA${EMA50_TOUCH.period} touch on ${timeframe}`
-      : strategyStatus === 'ERROR'
-        ? 'Strategy has no candles'
-        : 'Loading candles…';
+    strategyStatus === 'ERROR'
+      ? 'Strategy has no candles'
+      : warming
+        ? `Warming up: ${progress.scanned} of ${progress.total} pairs analysed`
+        : strategyStatus === 'READY'
+          ? `EMA${EMA50_TOUCH.period} touch on ${timeframe}`
+          : 'Waiting for prices…';
 
   return (
     <main className="page">
@@ -69,7 +76,7 @@ export function Dashboard() {
         <MetricCard
           label="At the EMA now"
           value={summary.active}
-          hint={strategyStatus === 'READY' ? `Pairs inside the EMA${EMA50_TOUCH.period} band` : strategyHint}
+          hint={strategyStatus === 'READY' && !warming ? `Pairs inside the EMA${EMA50_TOUCH.period} band` : strategyHint}
           accent={summary.active > 0}
         />
         <MetricCard label="Touches today" value={summary.today} hint={strategyHint} />
@@ -105,7 +112,10 @@ export function Dashboard() {
               Ichimoku confluent only
             </label>
             <span className="panel-sub">
-              {confluentCount} of {signals.length} confluent · scanned {formatAgo(lastScanAt, now)}
+              {warming
+                ? `${progress.scanned}/${progress.total} pairs analysed · `
+                : `${confluentCount} of ${signals.length} confluent · `}
+              scanned {formatAgo(lastScanAt, now)}
             </span>
           </div>
         </div>

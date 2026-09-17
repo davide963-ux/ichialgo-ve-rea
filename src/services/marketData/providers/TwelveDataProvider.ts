@@ -33,11 +33,23 @@ import {
   isAbort,
   toProviderError,
   type Candle,
+  type CandleRequestOptions,
   type MarketDataProvider,
   type QuoteBatch,
 } from '../types';
 
 const REST = '/api/td-rest';
+
+/**
+ * A user-facing request may wait for the per-minute window to free up; a
+ * background scan may not. Waiting is what made a strategy scan and a price
+ * update fight over the same 8 credits, with whichever slept first winning.
+ */
+const USER_WAIT_MS = 65_000;
+const BACKGROUND_WAIT_MS = 1_500;
+
+/** Hard ceiling on the poll interval, however tight the budget is. */
+const MAX_POLL_MS = 300_000;
 
 const INTERVAL: Record<Timeframe, string> = {
   '1M': '1min',
@@ -99,6 +111,12 @@ function mapError(e: TdError, symbol?: string): ProviderError {
 export class TwelveDataProvider implements MarketDataProvider {
   readonly id = 'twelvedata' as const;
   readonly label = 'Twelve Data';
+  /**
+   * Mutable on purpose: `assertConfigured()` learns the pooled credit budget
+   * from the proxy and re-sizes the poll interval to fit it. MarketDataService
+   * re-reads these on every schedule, so more API keys mean faster polling
+   * with no config change.
+   */
   readonly capabilities = {
     streaming: false,
     bidAsk: false,
@@ -139,6 +157,38 @@ export class TwelveDataProvider implements MarketDataProvider {
       perDay: status.perDayTotal,
       poolSize: status.keys,
     });
+    this.applyBudgetToPolling(status.perMinuteTotal);
+  }
+
+  /**
+   * Make sure the quote poll alone fits the per-minute budget.
+   *
+   * /quote costs 1 credit PER SYMBOL, so 7 pairs cost 7 credits per refresh.
+   * On one free key (8/min) that fits a 60s poll with ~1 credit/min to spare;
+   * 12 pairs would not fit at all, and polling on the configured interval
+   * would just feed the rate limiter.
+   *
+   *   floor = symbols × 60s ÷ perMinuteTotal      (7 pairs, 1 key → 53s)
+   *   poll  = max(configured, floor)
+   *
+   * PRICES WIN: the interval is never stretched beyond what the budget
+   * actually requires, because stale prices are worse than a strategy that
+   * warms up over a few minutes. Candles (charts + strategy) then live off
+   * whatever credits are left, and their requests are marked `background`
+   * so they skip rather than queue in front of a price update.
+   */
+  applyBudgetToPolling(perMinuteTotal: number, symbolCount = this.symbolCount): void {
+    if (!Number.isFinite(perMinuteTotal) || perMinuteTotal <= 0 || symbolCount <= 0) return;
+    const floorMs = Math.ceil((symbolCount * 60_000) / perMinuteTotal);
+    this.capabilities.pollIntervalMs = Math.min(MAX_POLL_MS, Math.max(APP_CONFIG.twelveDataPollMs, floorMs));
+    this.capabilities.candleRefreshMs = Math.max(120_000, this.capabilities.pollIntervalMs * 2);
+  }
+
+  /** Symbols the scanner polls, needed to size the interval. Set by the service. */
+  private symbolCount = 1;
+
+  setSymbolCount(count: number): void {
+    this.symbolCount = Math.max(1, count);
   }
 
   async getQuotes(symbols: string[], signal?: AbortSignal): Promise<QuoteBatch> {
@@ -194,7 +244,13 @@ export class TwelveDataProvider implements MarketDataProvider {
     return batch;
   }
 
-  async getCandles(symbol: string, timeframe: Timeframe, count: number, signal?: AbortSignal): Promise<Candle[]> {
+  async getCandles(
+    symbol: string,
+    timeframe: Timeframe,
+    count: number,
+    signal?: AbortSignal,
+    opts?: CandleRequestOptions,
+  ): Promise<Candle[]> {
     const qs = new URLSearchParams({
       symbol,
       interval: INTERVAL[timeframe],
@@ -202,7 +258,8 @@ export class TwelveDataProvider implements MarketDataProvider {
       order: 'asc',
       timezone: 'UTC',
     });
-    await this.budget.reserve(1, signal);
+    // Background scans yield the credit rather than queue behind the window.
+    await this.budget.reserve(1, signal, opts?.background ? BACKGROUND_WAIT_MS : USER_WAIT_MS);
     let body: unknown;
     try {
       body = await fetchJson<unknown>(`${REST}/time_series?${qs}`, signal);

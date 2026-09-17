@@ -1,7 +1,6 @@
 /**
- * Backtest configuration form.
- * Phase 1: validates input and reports that no strategy is configured.
- * Phase 2: `onRun` will hand a BacktestRequest to the backtest engine.
+ * Backtest configuration form. `onRun` hands a validated request to
+ * useBacktest, which fetches history and runs the EMA50 touch engine.
  */
 import { useState, type FormEvent } from 'react';
 import { PAIRS } from '../config/pairs';
@@ -14,15 +13,18 @@ export interface BacktestRequest {
   endDate: string;
   startingBalance: number;
   riskPct: number;
+  /** Only trade touches Ichimoku agrees with. */
+  confluentOnly: boolean;
 }
 
 interface Props {
   onRun: (req: BacktestRequest) => void;
+  busy?: boolean;
 }
 
 const isoDay = (d: Date) => d.toISOString().slice(0, 10);
 
-export function BacktestPanel({ onRun }: Props) {
+export function BacktestPanel({ onRun, busy = false }: Props) {
   const today = new Date();
   const [form, setForm] = useState({
     pair: PAIRS[0]?.symbol ?? 'EUR/USD',
@@ -31,6 +33,7 @@ export function BacktestPanel({ onRun }: Props) {
     endDate: isoDay(today),
     startingBalance: '10000',
     riskPct: '1',
+    confluentOnly: false,
   });
   const [errors, setErrors] = useState<string[]>([]);
 
@@ -102,6 +105,15 @@ export function BacktestPanel({ onRun }: Props) {
           </div>
         </div>
 
+        <label className="overlay-toggle" style={{ fontSize: 12 }}>
+          <input
+            type="checkbox"
+            checked={form.confluentOnly}
+            onChange={(e) => set('confluentOnly', e.target.checked)}
+          />
+          Only trade Ichimoku-confluent touches
+        </label>
+
         {errors.length > 0 && (
           <ul className="msg-list err" role="alert">
             {errors.map((e) => (
@@ -110,8 +122,8 @@ export function BacktestPanel({ onRun }: Props) {
           </ul>
         )}
 
-        <button type="submit" className="btn btn-primary" style={{ height: 44, marginTop: 4 }}>
-          RUN BACKTEST
+        <button type="submit" className="btn btn-primary" style={{ height: 44, marginTop: 4 }} disabled={busy}>
+          {busy ? 'RUNNING…' : 'RUN BACKTEST'}
         </button>
       </div>
     </form>

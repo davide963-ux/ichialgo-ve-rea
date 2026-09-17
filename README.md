@@ -1,7 +1,7 @@
 # Ichialgo — Forex terminal
 
-**Live Forex market data, the EMA50 touch strategy with Ichimoku confluence, and ATR-sized
-trade plans.** No backtest engine yet; the backtest and equity pages still show empty states.
+**Live Forex market data, the EMA50 touch strategy with Ichimoku confluence, ATR-sized trade
+plans, and a backtest engine that runs the same detector over history.**
 
 | Stack | |
 |---|---|
@@ -9,7 +9,7 @@ trade plans.** No backtest engine yet; the backtest and equity pages still show 
 | Charts | TradingView Lightweight Charts v5 (open-source charting library) |
 | Build | Vite 8 |
 | Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`), with Twelve Data multi-key failover |
-| Strategy | EMA50 touch + Ichimoku confluence + ATR trade plans (`src/services/strategy/`) |
+| Strategy | EMA50 touch + Ichimoku confluence + ATR trade plans + backtest (`src/services/strategy/`) |
 | Tests | Vitest (indicators, strategy, proxy, calculator math) |
 | Data | OANDA v20 (default) or Twelve Data, behind a provider interface |
 
@@ -171,18 +171,20 @@ src/
     StrategyEngine.ts        scans every pair; live touches from the quote stream
     tradePlan.ts             ATR stop, R target, lot size (pure, tested)
     ichimokuContext.ts       the five confluence checks (pure, tested)
+    backtest.ts              walk-forward engine over the same detector (pure, tested)
     types.ts                 TouchSignal, WatchLevel
   state/marketStore.ts       immutable external store (useSyncExternalStore)
   state/signalStore.ts       same pattern, for strategy signals
   state/accountStore.ts      balance + risk %, persisted; shared by plans and calculator
-  hooks/                     useMarketData, useCandles, useSignals, useNow
+  hooks/                     useMarketData, useCandles, useSignals, useBacktest, useNow
   lib/indicators/            ema, atr, ichimoku (+tests)
   lib/                       positionSize (+tests), pips, format, time, locale
   components/                Navbar, MetricCard, ForexTable, ForexRow, MarketStatus,
                              PriceChange, PairDetails, CandlestickChart, TimeframeSelector,
                              EmptyState, BacktestPanel, TradeTable, Calculator,
                              ConnectionBanner, KumoMark, SignalTable, SignalBadge,
-                             TradePlanCard, IchimokuTag, IchimokuPanel
+                             TradePlanCard, IchimokuTag, IchimokuPanel,
+                             BacktestResults, EquityChart
   components/chart/          kumoPrimitive (the Kumo fill)
   pages/                     Dashboard, PairPage, EquityCurve, Backtest, CalculatorPage
 server/
@@ -349,12 +351,34 @@ A signal's id is `(symbol, timeframe, bar)`, so re-scanning never duplicates one
 bar closes, the `candle` result **upgrades** the `live` signal fired earlier on that bar, because
 the closed bar is the one that knows whether it bounced or crossed.
 
-### Cost
+### Cost, and why the scan is throttled
 
-A scan is **one candle request per pair per `candleRefreshMs`** (free-ish on OANDA, 1 Twelve Data
-credit each). It reuses `MarketDataService`'s candle cache, so a pair chart you already have open
-is not fetched twice. On Twelve Data's free single-key plan this roughly doubles credit use —
-pool several keys (see above) or raise `VITE_TWELVEDATA_POLL_MS`.
+`/quote` costs **one credit per symbol**, so a 7-pair refresh spends 7 of the 8 credits a free
+Twelve Data key gets each minute. That leaves about 1 credit/min for candles — which charts *and*
+the strategy need. Three rules keep the two from fighting:
+
+| Rule | Why |
+|---|---|
+| Candle requests are marked `background`, and the credit meter **fails fast** on them (1.5s) instead of waiting up to 65s | a waiting scan used to hold credits a price update needed, so a quote poll could block for a whole minute |
+| A cycle scans only `symbolsPerScan` (2) pairs, round-robin | one cycle cannot drain the minute's budget; a full pass spreads over cycles |
+| A cycle never starts while the previous one runs, and the first waits for prices | a stalled scan used to pile up a new overlapping scan every interval |
+
+The poll interval is stretched **only** when quotes alone cannot fit (12 pairs on one key need
+90s), never past `VITE_TWELVEDATA_POLL_MS`. Prices win over the strategy: stale prices are worse
+than a strategy that warms up over a few minutes.
+
+On one free key, warm-up takes several minutes and the dashboard shows its progress
+("3 of 7 pairs analysed"). **Pooling keys is the real fix** and speeds it up automatically —
+measured against a mock of the real free plan, 7 pairs:
+
+| | 1 key (8/min) | 3 keys (24/min) |
+|---|---|---|
+| First price | ~1 s | ~1 s |
+| All 7 pairs analysed | several minutes | **46 s** |
+| Touches found in 2.5 min | 14 | 30 |
+
+A scan reuses `MarketDataService`'s candle cache, so a pair chart you already have open is not
+fetched twice. OANDA is not credit-metered, so none of this applies there.
 
 ### From touch to order ticket
 
@@ -467,6 +491,56 @@ one bar of colour imprecision and needs no intersection maths.
 
 The overlay (Tenkan, Kijun, both spans, Chikou, the fill) toggles off from the chart header.
 
+### Backtest
+
+The **Backtest** page runs the strategy over historical candles through the *same* detector the
+live scanner uses — that is why `analyseEma50Touch` and `planFromTouch` are pure.
+
+```mermaid
+flowchart TD
+    R["range + timeframe"] --> C["getCandles(bars = range ÷ tf + warm-up)<br/>one request, marked background"]
+    C --> A["analyseEma50Touch()"]
+    A --> F{"tradable?"}
+    F -- "outside the date range" --> X1[skip]
+    F -- "a position is already open" --> X2["skip (counted)"]
+    F -- "not Ichimoku-confluent<br/>(when the filter is on)" --> X3["skip (counted)"]
+    F -- yes --> P["planFromTouch(running balance)"]
+    P --> W["walk bars forward from entry+1"]
+    W --> E{"first bar to reach…"}
+    E -- "stop" --> L["−1R"]
+    E -- "target" --> G["+2R"]
+    E -- "data ended" --> O["open: listed, excluded from stats"]
+    L & G --> EQ[("equity curve · stats")]
+```
+
+**No lookahead.** Every indicator is causal: EMA, ATR, Tenkan/Kijun and the *displaced* Senkou
+spans read bars at or before `i`, and the Chikou check compares the current close to candles 26
+bars **back**. Nothing reads a future bar.
+
+**The entry bar is not an exit bar.** Exits are searched from the bar *after* the entry. On a
+pullback bar most of the range happened *before* price reached the EMA — the high sits where the
+move started — so counting it would book a target the trade never had a chance to reach. OHLC
+cannot say what price did after the fill inside that bar, so the bar is not used for exits at all.
+This was a real bug, caught by a test that expected a loss and got a win.
+
+**Same-bar ambiguity → the stop wins.** When one later bar covers both stop and target, intrabar
+order is unknowable from OHLC, so the pessimistic outcome is taken. It under-reports rather than
+inventing wins.
+
+Other honesty rules:
+
+- **One position at a time**, as a trader would hold it. Touches arriving while a trade is open
+  are skipped and *counted*, so a "7 touches, 2 trades" gap is visible rather than mysterious.
+- **Compounding**: each trade is sized off the running balance, not the opening one.
+- A trade still open when the data ends is listed with no P&L and left out of the statistics.
+- Providers return the most recent *n* bars, not a date range, so an old range may simply not be
+  available — the result reports how many candles it got versus what the range needed.
+- A cross (EUR/GBP) cannot be sized without a USD rate; those touches are skipped and counted,
+  never guessed.
+
+The **"Only trade Ichimoku-confluent touches"** toggle is the direct way to ask whether the
+confluence filter earns its keep on your pairs.
+
 ### Tuning
 
 Everything lives in `src/config/strategy.ts`:
@@ -481,6 +555,8 @@ Everything lives in `src/config/strategy.ts`:
 | `minStopPips` | 8 | floor on the stop when ATR collapses |
 | `kijunConfluencePips` | 5 | how close EMA50 and Kijun must be to count as one level |
 | `agreeThreshold` | 3 | Ichimoku checks needed before a touch counts as confluent |
+| `symbolsPerScan` | 2 | pairs scanned per cycle, to stay inside the credit budget |
+| `firstScanDelayMs` | 4000 | how long the strategy waits for prices before spending credits |
 
 The detector (`services/strategy/ema50Touch.ts`) is pure — candles in, signals out — so it is
 directly reusable by a backtest engine later.
@@ -529,12 +605,13 @@ flowchart LR
     MDS[MarketDataService] -->|"onQuotes(cb)<br/>getCandles()"| SE[StrategyEngine]
     SE --> SS[(signalStore)] --> DB[Dashboard metrics<br/>scanner badges · chart markers]
     SS -.not yet.-> EQ[Equity Curve · TradeTable]
-    BT[BacktestPanel onRun] -.not yet.-> BE[Backtest engine]
+    BT[BacktestPanel onRun] --> BE["runBacktest()"] --> BR[Stats · equity curve · trades]
 ```
 
 - `marketDataService.onQuotes(cb)` emits every live batch — the engine uses it.
-- `BacktestPanel` already emits a validated `BacktestRequest`; nothing consumes it yet.
-- `TradeTable` already accepts `TradeRecord[]`; the strategy does not produce trades, only signals.
+- `BacktestPanel` emits a validated `BacktestRequest`; `useBacktest` consumes it.
+- The **Equity curve** page still shows empty states: it is meant for *live* tracked trades, and
+  the strategy publishes signals, not positions. The backtest page has its own equity curve.
 
 ---
 
