@@ -32,8 +32,9 @@ export async function fetchJson<T>(url: string, signal?: AbortSignal, timeoutMs 
     const message = parsedMessage ?? `HTTP ${res.status}`;
     const code = body && typeof body === 'object' ? (body as Record<string, unknown>).error : undefined;
     // Our own proxy's answers (server/api.mjs)
-    if (code === 'NOT_CONFIGURED') throw new ProviderError('config', message);
-    if (code === 'FORBIDDEN_PATH' || code === 'METHOD_NOT_ALLOWED') throw new ProviderError('config', message);
+    if (code === 'NOT_CONFIGURED') throw new ProviderError('config', message, { code });
+    if (code === 'FORBIDDEN_PATH' || code === 'METHOD_NOT_ALLOWED')
+      throw new ProviderError('config', message, { code: code as string });
     if (res.status === 401 || res.status === 403) throw new ProviderError('auth', message);
     if (res.status === 429) {
       const retry = Number(res.headers.get('Retry-After'));

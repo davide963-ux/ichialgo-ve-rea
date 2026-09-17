@@ -8,6 +8,11 @@
  * The daily count is persisted in localStorage so a page reload doesn't reset it.
  * Note: separate browsers/tabs each keep their own count – Twelve Data's own
  * 429 response is still mapped to `rate_limit` as the backstop.
+ *
+ * With several API keys pooled server-side (server/twelveDataKeyPool.mjs) the
+ * real budget is `perKeyLimit × keyCount`. The provider learns the pool size
+ * from GET /api/td-rest/_status and calls `setLimits()` – the meter itself
+ * stays a simple counter and never sees a key.
  */
 import { ProviderError } from '../types';
 
@@ -16,13 +21,16 @@ const STORAGE_KEY = 'ichialgo.twelvedata.credits';
 export interface CreditBudgetOptions {
   perMinute: number;
   perDay: number | null;
+  /** Number of pooled API keys the proxy serves from (for the error message). */
+  poolSize?: number;
   now?: () => number;
   storage?: Pick<Storage, 'getItem' | 'setItem'> | null;
 }
 
 export class CreditBudget {
-  private readonly perMinute: number;
-  private readonly perDay: number | null;
+  private perMinute: number;
+  private perDay: number | null;
+  private poolSize: number;
   private readonly now: () => number;
   private readonly storage: Pick<Storage, 'getItem' | 'setItem'> | null;
   private window: { at: number; cost: number }[] = [];
@@ -31,9 +39,24 @@ export class CreditBudget {
   constructor(opts: CreditBudgetOptions) {
     this.perMinute = Math.max(1, opts.perMinute);
     this.perDay = opts.perDay && opts.perDay > 0 ? opts.perDay : null;
+    this.poolSize = Math.max(1, opts.poolSize ?? 1);
     this.now = opts.now ?? Date.now;
     this.storage = opts.storage !== undefined ? opts.storage : safeLocalStorage();
     this.load();
+  }
+
+  /**
+   * Re-point the meter at the pooled budget reported by the proxy.
+   * Called once per session, before the first request.
+   */
+  setLimits(limits: { perMinute: number; perDay: number | null; poolSize?: number }): void {
+    this.perMinute = Math.max(1, limits.perMinute);
+    this.perDay = limits.perDay && limits.perDay > 0 ? limits.perDay : null;
+    if (limits.poolSize) this.poolSize = Math.max(1, limits.poolSize);
+  }
+
+  limits(): { perMinute: number; perDay: number | null; poolSize: number } {
+    return { perMinute: this.perMinute, perDay: this.perDay, poolSize: this.poolSize };
   }
 
   usedToday(): number {
@@ -68,9 +91,10 @@ export class CreditBudget {
 
     if (this.perDay !== null && this.day.used + cost > this.perDay) {
       const midnight = Date.UTC(new Date(now).getUTCFullYear(), new Date(now).getUTCMonth(), new Date(now).getUTCDate() + 1);
+      const across = this.poolSize > 1 ? ` across ${this.poolSize} API keys` : '';
       throw new ProviderError(
         'rate_limit',
-        `Twelve Data daily limit reached (${this.day.used}/${this.perDay} credits). Prices resume after 00:00 UTC, or switch to OANDA.`,
+        `Twelve Data daily limit reached (${this.day.used}/${this.perDay} credits${across}). Prices resume after 00:00 UTC, or switch to OANDA.`,
         { retryAfterMs: Math.max(60_000, midnight - now) },
       );
     }

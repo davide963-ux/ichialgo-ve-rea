@@ -27,5 +27,10 @@ app.listen(port, host, () => {
   const { oanda, twelvedata } = api.config;
   console.log(`Ichialgo → http://${host}:${port}`);
   console.log(`OANDA (${oanda.env}): ${oanda.token && oanda.accountId ? 'configured' : 'not configured'}`);
-  console.log(`Twelve Data: ${twelvedata.apiKey ? 'configured' : 'not configured'}`);
+  const tdKeys = twelvedata.keys.length;
+  console.log(
+    `Twelve Data: ${tdKeys === 0 ? 'not configured' : `${tdKeys} API key${tdKeys > 1 ? 's' : ''} pooled ` +
+      `(${twelvedata.creditsPerMinute * tdKeys} credits/min, ` +
+      `${twelvedata.creditsPerDay ? `${twelvedata.creditsPerDay * tdKeys}/day` : 'no daily cap'})`}`,
+  );
 });

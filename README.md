@@ -8,7 +8,7 @@ No strategy, no signals, no backtest engine. Everything performance-related show
 | UI | React 19 + TypeScript, React Router 7 |
 | Charts | TradingView Lightweight Charts v5 (open-source charting library) |
 | Build | Vite 8 |
-| Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`) |
+| Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`), with Twelve Data multi-key failover |
 | Tests | Vitest (calculator math) |
 | Data | OANDA v20 (default) or Twelve Data, behind a provider interface |
 
@@ -56,6 +56,49 @@ The free plan allows **8 credits/min and 800 credits/day**, at 1 credit per symb
 
 The app meters every request (`providers/creditBudget.ts`). When the per-minute budget is full it waits.
 When the daily cap is reached it shows a clear banner and resumes after 00:00 UTC. It never shows stale prices as live.
+
+#### Pooling several Twelve Data keys
+Those limits are **per API key**, so one key per Twelve Data account multiplies the budget.
+List them in failover order — the proxy serves from the first key that still has credits:
+```
+TWELVEDATA_API_KEYS=key_account_1,key_account_2,key_account_3
+# or, easier to paste into a host dashboard:
+TWELVEDATA_API_KEY_1=key_account_1
+TWELVEDATA_API_KEY_2=key_account_2
+```
+Three keys = **24 credits/min, 2400 credits/day** → ~5 h 45 min of 60-second polling instead of ~1 h 55 min.
+
+```mermaid
+flowchart LR
+    REQ["GET /api/td-rest/quote<br/>symbol=EUR/USD,GBP/USD (2 credits)"] --> ACQ{"acquire(cost)<br/>first key with credits"}
+    ACQ -- "key #1" --> F1["fetch api.twelvedata.com"]
+    F1 -- "200 payload" --> OK["forward body<br/>X-TD-Key-Used: 1"]
+    F1 -- "429 / code:429<br/>'out of credits'" --> P1["park key #1<br/>(minute or until 00:00 UTC)"]
+    P1 --> ACQ2{"next key"}
+    ACQ2 -- "key #2" --> F2["retry the SAME request"]
+    F2 -- "200 payload" --> OK
+    ACQ2 -- "no key left" --> X["429 'All N keys are out of credits'<br/>+ Retry-After"]
+    F1 -- "404 bad symbol" --> FWD["forward untouched<br/>(rotating would only burn credits)"]
+```
+
+Two mechanisms, deliberately redundant:
+
+| | What it does | Why |
+|---|---|---|
+| **Proactive** | counts credits per key (minute window + UTC day) and skips a key it knows is spent | no wasted round-trip |
+| **Reactive** | on Twelve Data's own "out of credits", parks the key and **retries the same request** on the next one | the provider is the real authority; also the only thing that works on serverless, where in-memory counters die with each cold start |
+
+A key that answers `401/403` is dropped for the process (a wrong key never fixes itself).
+Bad-symbol and upstream 5xx errors are forwarded as-is — they'd fail identically on every key.
+
+`GET /api/td-rest/_status` reports the pool (`{keys, available, perMinuteTotal, perDayTotal, usedToday, pool:[…]}`)
+with keys masked to their last 4 chars. `TwelveDataProvider.assertConfigured()` calls it once per session — it costs
+no credits — and widens the browser-side meter to the pooled budget. Responses also carry
+`X-TD-Key-Used`, `X-TD-Keys-Available` and `X-TD-Credits-Used-Today` for debugging.
+
+> Keys are read server-side only (no `VITE_` prefix) and are never bundled into browser code.
+> Pooling free accounts is a budget question, not a bypass: each key keeps its own plan limits and is used within them.
+
 **For a live terminal, use OANDA, or a paid Twelve Data plan with the limits raised in `.env`.**
 The REST quote has **no bid/ask**, so those columns show `—`, and "24H change" is vs. the previous daily close.
 WebSocket streaming needs the Pro plan; it can be added in `TwelveDataProvider.subscribe()` without UI changes.
@@ -65,7 +108,8 @@ WebSocket streaming needs the Pro plan; it can be added in `TwelveDataProvider.s
 
 ### Security: the proxy is read-only
 An OANDA token can **place orders**. `server/api.mjs` therefore forwards only an allowlist of **GET** endpoints
-(account summary, pricing, pricing stream, candles, and Twelve Data quote/time_series). Everything else gets `403`/`405`.
+(account summary, pricing, pricing stream, candles, Twelve Data quote/time_series and the local `_status` report).
+Everything else gets `403`/`405`.
 That also stops a malicious website from sending a cross-site `POST` to your localhost to open trades.
 `npm start` binds to `127.0.0.1`. Don't expose it publicly without authentication in front.
 
@@ -89,6 +133,7 @@ flowchart TD
       TD["TwelveDataProvider"]
     end
     Proxy["server/api.mjs (read-only GET allowlist)<br/>injects token / api key"]
+    Pool["twelveDataKeyPool.mjs<br/>failover across N API keys"]
     OANDA[("OANDA v20")]
     TDAPI[("Twelve Data")]
 
@@ -99,6 +144,7 @@ flowchart TD
     IF --> OA & TD
     OA -- "/api/oanda-rest, /api/oanda-stream" --> Proxy
     TD -- "/api/td-rest" --> Proxy
+    Proxy --> Pool
     Proxy --> OANDA & TDAPI
 ```
 
@@ -117,7 +163,7 @@ src/
     types.ts                 provider contract, Quote, Candle, ProviderError
     http.ts                  fetch + timeout + HTTP→error mapping
     MarketDataService.ts     orchestration (the heart of the data layer)
-    providers/               OandaProvider, TwelveDataProvider, factory
+    providers/               OandaProvider, TwelveDataProvider, creditBudget, factory
     index.ts                 singleton + public exports
   state/marketStore.ts       immutable external store (useSyncExternalStore)
   hooks/                     useMarketData, useCandles, useNow
@@ -127,6 +173,11 @@ src/
                              EmptyState, BacktestPanel, TradeTable, Calculator,
                              ConnectionBanner, KumoMark
   pages/                     Dashboard, PairPage, EquityCurve, Backtest, CalculatorPage
+server/
+  api.mjs                    read-only GET allowlist + Twelve Data failover handler
+  twelveDataKeyPool.mjs      multi-key credit pool (+ tests next to it)
+  index.mjs                  production server (dist/ + the same proxy)
+api/                         Vercel entry points wrapping server/api.mjs
 ```
 
 ---
