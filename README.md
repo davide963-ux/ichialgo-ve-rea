@@ -11,7 +11,7 @@ plans, and a backtest engine that runs the same detector over history.**
 | Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`), with Twelve Data multi-key failover |
 | Strategy | EMA50 touch + Ichimoku confluence + ATR trade plans + backtest (`src/services/strategy/`) |
 | Tests | Vitest (indicators, strategy, proxy, calculator math) |
-| Data | OANDA v20 (default) or Twelve Data, behind a provider interface |
+| Data | OANDA v20, Yahoo Finance or Twelve Data, behind a provider interface |
 
 ---
 
@@ -39,7 +39,43 @@ Real bid/ask, real spreads, HTTP streaming. A free **practice** account is enoug
    OANDA_ENV=practice
    ```
 
-### Option B: Twelve Data
+### Option B: Yahoo Finance — no account, no key, no country gate
+
+```
+VITE_MARKET_PROVIDER=yahoo
+```
+
+That is the entire configuration. There is nothing to sign up for, which is the point:
+**brokers are licensed per country** (OANDA will not open an account in Albania, for instance) and
+every other free forex source needs one. Finnhub puts forex candles behind a paid plan; Twelve
+Data's free tier is 8 credits/minute.
+
+```
+GET /v8/finance/chart/EURUSD=X?interval=15m&range=5d
+  → meta:      live price, % change vs previous close
+  → timestamp: UNIX seconds, one per bar
+  → quote[0]:  open[] high[] low[] close[] volume[]
+```
+
+**One request per pair gives the quote AND the candles**, because `meta` carries the live price.
+A 7-pair refresh is 7 requests with no credit arithmetic at all.
+
+What it does not give, and other things worth knowing:
+
+| | |
+|---|---|
+| **No bid/ask** | those columns show `—`, same as Twelve Data |
+| **`volume` is always 0** | forex has no central exchange |
+| **Nulls in the OHLC arrays** | gaps and unformed bars; filtered out, or they would become candles at price 0 |
+| **No 4h interval** | 4H is resampled from 1h — exact, since four 1h bars tile a 4h bar |
+| **Intraday history is capped** | ~7 days at 1m, ~60 days at 5m–30m, ~2 years at 1h. `rangeFor()` picks the smallest window that covers the bars asked for, capped per interval |
+| **Unofficial** | Yahoo retired its public API in 2017; this endpoint has no stability guarantee and their terms do not permit commercial redistribution. Fine for a personal terminal, not something to build a product on |
+
+`VITE_YAHOO_POLL_MS` (default 15000, floor 5000) sets the refresh. At 15s a 7-pair scan is
+~28 requests/minute — polite for an unofficial endpoint, but note each one is a serverless
+invocation if you are on Vercel, so raise it if you leave the tab open all day.
+
+### Option C: Twelve Data
 ```
 VITE_MARKET_PROVIDER=twelvedata
 TWELVEDATA_API_KEY=...
@@ -164,7 +200,8 @@ src/
     types.ts                 provider contract, Quote, Candle, ProviderError
     http.ts                  fetch + timeout + HTTP→error mapping
     MarketDataService.ts     orchestration (the heart of the data layer)
-    providers/               OandaProvider, TwelveDataProvider, creditBudget, factory
+    providers/               OandaProvider, YahooProvider, TwelveDataProvider,
+                             creditBudget, factory
     index.ts                 singleton + public exports
   services/strategy/
     ema50Touch.ts            the detector: candles in, touches out (pure, tested)
@@ -188,7 +225,7 @@ src/
   components/chart/          kumoPrimitive (the Kumo fill)
   pages/                     Dashboard, PairPage, EquityCurve, Backtest, CalculatorPage
 server/
-  api.mjs                    read-only GET allowlist + Twelve Data failover handler
+  api.mjs                    read-only GET allowlist, Twelve Data failover, Yahoo passthrough
   twelveDataKeyPool.mjs      multi-key credit pool (+ tests next to it)
   index.mjs                  production server (dist/ + the same proxy)
 api/                         Vercel entry points wrapping server/api.mjs
@@ -593,6 +630,9 @@ Worked example (unit test): USD/JPY at 150.00, stop 150.50, $10,000, 1% risk
 1. Implement `MarketDataProvider` in `providers/MyProvider.ts` (map symbols, map errors to `ProviderError`).
 2. Register it in `providers/index.ts` and add `'myprovider'` to `ProviderId`.
 3. Add a read-only route for it in `server/api.mjs` (`routes` array). Dev, preview and production all pick it up.
+
+`YahooProvider` is the smallest worked example — no credentials, one endpoint, and it shows how
+to handle a source that lacks a timeframe (4H is resampled) and pads its arrays with nulls.
 
 **Add a strategy:** the EMA50 touch detector is the template. Write a pure
 `analyse(candles, symbol, timeframe) → signals` function, call it from `StrategyEngine.scan()`,
