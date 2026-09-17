@@ -20,6 +20,13 @@
   --faint: #4d5d56;
 
   --red: #f0616d;
+  /* EMA50 overlay — matches EMA_COLOR in CandlestickChart.tsx */
+  --ema: #e9b949;
+  --ema-line: rgba(233, 185, 73, 0.35);
+  --ema-soft: rgba(233, 185, 73, 0.08);
+  /* Ichimoku lines — mirror ICHIMOKU in CandlestickChart.tsx */
+  --ichi-tenkan: #5bc8f5;
+  --ichi-kijun: #c58af9;
   --red-soft: rgba(240, 97, 109, 0.1);
 
   --font-ui: 'Manrope', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -730,6 +737,32 @@ select.input {
   color: var(--text-2);
   font-family: var(--font-num);
 }
+.tag.pos {
+  color: var(--mint);
+  border-color: rgba(103, 227, 174, 0.35);
+}
+.tag.neg {
+  color: var(--red);
+  border-color: rgba(240, 97, 109, 0.35);
+}
+
+/* EMA touch chip — the arrow shows which side price approached from. */
+.signal-tag {
+  gap: 4px;
+  color: var(--ema);
+  border-color: var(--ema-line);
+  background: var(--ema-soft);
+}
+.signal-tag.pos {
+  color: var(--mint);
+  border-color: rgba(103, 227, 174, 0.35);
+  background: var(--mint-soft);
+}
+.signal-tag.neg {
+  color: var(--red);
+  border-color: rgba(240, 97, 109, 0.35);
+  background: var(--red-soft);
+}
 
 .change {
   display: inline-flex;
@@ -1092,4 +1125,87 @@ select.input {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+/* ═════════════════════ Trade plan card ═════════════════════ */
+.plan-card {
+  display: grid;
+  gap: 14px;
+}
+.plan-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.plan-head .panel-sub {
+  flex: 1 1 260px;
+}
+.plan-card .quote-grid dd .muted {
+  font-size: 11px;
+}
+
+/* ═════════════════════ Ichimoku ═════════════════════ */
+.tag.ichi-tag {
+  gap: 4px;
+  font-family: var(--font-num);
+  color: var(--text-2);
+}
+.ichi-kijun {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  margin-left: 2px;
+  border-radius: 3px;
+  background: var(--ichi-kijun);
+  color: #12100f;
+  font-size: 9px;
+}
+
+/* Overlay / filter checkbox, used on the chart head and the signal panel. */
+.overlay-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.overlay-toggle input {
+  accent-color: var(--mint);
+  cursor: pointer;
+}
+
+.check-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+.check-list li {
+  display: grid;
+  grid-template-columns: 16px minmax(120px, max-content) 1fr;
+  gap: 8px;
+  align-items: baseline;
+}
+.check-mark {
+  font-weight: 800;
+  text-align: center;
+}
+.check-label {
+  font-weight: 700;
+  color: var(--text-1);
+}
+.check-list li.pos .check-label {
+  color: var(--mint);
+}
+.check-detail {
+  font-size: 11px;
 }
