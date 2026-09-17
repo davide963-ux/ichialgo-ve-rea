@@ -32,6 +32,10 @@ export function useStrategyEngine(timeframe: Timeframe): void {
 export const useSignals = (): TouchSignal[] => useSignalStore((s) => s.signals);
 export const useStrategyStatus = () => useSignalStore((s) => s.status);
 export const useLastScanAt = () => useSignalStore((s) => s.lastScanAt);
+export const useScanProgress = () => ({
+  scanned: useSignalStore((s) => s.scannedSymbols),
+  total: useSignalStore((s) => s.totalSymbols),
+});
 export const useWatchLevel = (symbol: string): WatchLevel | undefined =>
   useSignalStore((s) => s.levels[symbol]);
 export const useStrategyNotice = (symbol: string): string | undefined =>

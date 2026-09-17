@@ -61,6 +61,9 @@ export class MarketDataService {
     private readonly symbols: string[],
   ) {
     this.active = [...symbols];
+    // A credit-metered provider paces its poll by how many symbols it must
+    // price, so it needs the count before the first schedule.
+    (provider as { setSymbolCount?: (n: number) => void }).setSymbolCount?.(symbols.length);
     marketStore.init({
       status: 'LOADING',
       statusMessage: null,
@@ -328,7 +331,12 @@ export class MarketDataService {
    * OHLC candles with a short cache and in-flight de-duplication
    * (several components may ask for the same series at once).
    */
-  async getCandles(symbol: string, timeframe: Timeframe, count: number, opts: { force?: boolean } = {}): Promise<Candle[]> {
+  async getCandles(
+    symbol: string,
+    timeframe: Timeframe,
+    count: number,
+    opts: { force?: boolean; background?: boolean } = {},
+  ): Promise<Candle[]> {
     const key = `${symbol}|${timeframe}|${count}`;
     const cached = this.candleCache.get(key);
     const maxAge = this.provider.capabilities.candleRefreshMs / 2;
@@ -337,7 +345,7 @@ export class MarketDataService {
     let job = this.candleInflight.get(key);
     if (!job) {
       job = this.provider
-        .getCandles(symbol, timeframe, count)
+        .getCandles(symbol, timeframe, count, undefined, { background: opts.background })
         .then((candles) => {
           this.candleCache.set(key, { candles, fetchedAt: Date.now() });
           return candles;

@@ -83,6 +83,18 @@ export const ICHIMOKU_CONFLUENCE: IchimokuConfluenceConfig = {
 export const STRATEGY_CONFIG = {
   /** Newest-first cap on the in-memory signal log. */
   maxSignals: 200,
+  /**
+   * Pairs scanned per cycle. A scan costs one candle request per pair, so
+   * scanning all of them at once blew the whole per-minute credit budget of a
+   * free Twelve Data key and starved the price poll. Scanning a slice per
+   * cycle spreads a full pass over several cycles instead.
+   */
+  symbolsPerScan: 2,
+  /**
+   * Delay before the FIRST scan, so prices always paint before the strategy
+   * starts spending credits on candles.
+   */
+  firstScanDelayMs: 4_000,
   /** A live (intrabar) touch stays "active" this long without a new tick. */
   liveSignalTtlMs: 15 * 60_000,
   ema50Touch: EMA50_TOUCH,

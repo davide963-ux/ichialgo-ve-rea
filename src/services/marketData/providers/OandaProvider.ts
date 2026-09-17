@@ -199,6 +199,8 @@ export class OandaProvider implements MarketDataProvider {
 
   // ───────────────────────── Candles ─────────────────────────
 
+  // OANDA is not credit-metered, so background requests need no special
+  // handling — the option is accepted and ignored.
   async getCandles(symbol: string, timeframe: Timeframe, count: number, signal?: AbortSignal): Promise<Candle[]> {
     const qs = new URLSearchParams({
       granularity: GRANULARITY[timeframe],

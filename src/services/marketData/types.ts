@@ -49,6 +49,15 @@ export interface ProviderCapabilities {
   candleRefreshMs: number;
 }
 
+export interface CandleRequestOptions {
+  /**
+   * Background work (a strategy scan) rather than something the user is
+   * waiting on. A metered provider skips a background request instead of
+   * blocking on its rate limiter, so the scan can never delay a price update.
+   */
+  background?: boolean;
+}
+
 export interface QuoteBatch {
   quotes: Quote[];
   failed: { symbol: string; error: ProviderError }[];
@@ -79,7 +88,13 @@ export interface MarketDataProvider {
    */
   getQuotes(symbols: string[], signal?: AbortSignal): Promise<QuoteBatch>;
 
-  getCandles(symbol: string, timeframe: Timeframe, count: number, signal?: AbortSignal): Promise<Candle[]>;
+  getCandles(
+    symbol: string,
+    timeframe: Timeframe,
+    count: number,
+    signal?: AbortSignal,
+    opts?: CandleRequestOptions,
+  ): Promise<Candle[]>;
 
   /**
    * Optional push stream. Must call onError when the stream dies so the

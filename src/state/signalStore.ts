@@ -25,6 +25,9 @@ export interface SignalState {
   notices: Readonly<Record<string, string>>;
   lastScanAt: number | null;
   scanError: string | null;
+  /** Pairs analysed so far — a scan covers the list over several cycles. */
+  scannedSymbols: number;
+  totalSymbols: number;
 }
 
 type Listener = () => void;
@@ -37,6 +40,8 @@ const EMPTY: SignalState = {
   notices: {},
   lastScanAt: null,
   scanError: null,
+  scannedSymbols: 0,
+  totalSymbols: 0,
 };
 
 let state: SignalState = EMPTY;
