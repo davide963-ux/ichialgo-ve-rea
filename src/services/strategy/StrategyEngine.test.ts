@@ -20,6 +20,7 @@ const signal = (over: Partial<TouchSignal> = {}): TouchSignal => ({
   trend: 'up',
   bias: 'long',
   counterTrend: false,
+  ichimoku: null,
   ...over,
 });
 

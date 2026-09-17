@@ -26,6 +26,13 @@
  *     │                                                              │
  *     └────────────── one signal per approach, not per bar ──────────┘
  *
+ * ICHIMOKU CONFLUENCE
+ * ───────────────────
+ * Each touch also carries an Ichimoku read (see ichimokuContext.ts): where
+ * price sits relative to the Kumo, the cloud's colour, Tenkan/Kijun, whether
+ * Chikou is free, and whether the EMA50 and Kijun-sen mark the SAME level.
+ * It annotates, never filters — a 0/5 touch is still reported and flagged.
+ *
  * OUTCOME of the touch bar (what happened after contact):
  *   bounce — closed back on the side it came from (the EMA held)
  *   cross  — closed through (the EMA broke)
@@ -35,14 +42,17 @@
 import type { Timeframe } from '../../config/timeframes';
 import type { Ema50TouchConfig } from '../../config/strategy';
 import { EMA50_TOUCH } from '../../config/strategy';
-import { atr, emaOfCloses, slopePerBar } from '../../lib/indicators';
+import { atr, emaOfCloses, ichimoku, slopePerBar, type IchimokuSeries } from '../../lib/indicators';
 import { pipSize } from '../../lib/pips';
 import type { Candle } from '../marketData';
+import { ichimokuContextAt } from './ichimokuContext';
 import type { Approach, Bias, TouchOutcome, TouchSignal, Trend, WatchLevel } from './types';
 
 export interface TouchAnalysis {
   /** EMA series, index-aligned with `candles` (null before it is defined). */
   ema: (number | null)[];
+  /** Ichimoku series for the same window — reused by the chart overlay. */
+  ichimoku: IchimokuSeries;
   /** Touches found in this window, oldest first. */
   signals: TouchSignal[];
   /** Level for the live watcher, from the most recent bar. */
@@ -107,8 +117,9 @@ export function analyseEma50Touch(
   detectedAt = Date.now(),
 ): TouchAnalysis {
   const emaSeries = emaOfCloses(candles, config.period);
+  const cloud = ichimoku(candles);
   if (candles.length < config.minBars) {
-    return { ema: emaSeries, signals: [], level: null, reason: 'not-enough-bars' };
+    return { ema: emaSeries, ichimoku: cloud, signals: [], level: null, reason: 'not-enough-bars' };
   }
 
   const pip = pipSize(symbol);
@@ -159,6 +170,7 @@ export function analyseEma50Touch(
         trend,
         bias,
         counterTrend,
+        ichimoku: ichimokuContextAt(cloud, candles, i, symbol, approach, e),
       });
       armed = false;
     }
@@ -181,12 +193,15 @@ export function analyseEma50Touch(
         side,
         armed,
         barTime: bar.time,
+        // `side` is where price closed; for the level's own Ichimoku read the
+        // approach that matters is the same one a live touch would use.
+        ichimoku: ichimokuContextAt(cloud, candles, i, symbol, side === 'below' ? 'below' : 'above', e),
         updatedAt: detectedAt,
       };
     }
   }
 
-  return { ema: emaSeries, signals, level, reason: 'ok' };
+  return { ema: emaSeries, ichimoku: cloud, signals, level, reason: 'ok' };
 }
 
 /**
@@ -239,6 +254,7 @@ export function checkLiveTouch(
       trend: level.trend,
       bias,
       counterTrend,
+      ichimoku: level.ichimoku,
     },
     level: { ...level, side: 'inside', armed: false, updatedAt: now },
   };

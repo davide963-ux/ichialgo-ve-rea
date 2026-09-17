@@ -63,6 +63,23 @@ export const TRADE_PLAN: TradePlanConfig = {
   minStopPips: 8,
 };
 
+/**
+ * Ichimoku confluence. The EMA50 touch says WHERE; Ichimoku says whether the
+ * rest of the picture agrees. Signals are annotated, never hidden — the UI
+ * offers a filter instead, so a discarded setup is still visible.
+ */
+export interface IchimokuConfluenceConfig {
+  /** EMA50 within this many pips of Kijun-sen counts as the same level. */
+  kijunConfluencePips: number;
+  /** Checks (out of 5) needed before a touch counts as confluent. */
+  agreeThreshold: number;
+}
+
+export const ICHIMOKU_CONFLUENCE: IchimokuConfluenceConfig = {
+  kijunConfluencePips: 5,
+  agreeThreshold: 3,
+};
+
 export const STRATEGY_CONFIG = {
   /** Newest-first cap on the in-memory signal log. */
   maxSignals: 200,
@@ -70,4 +87,5 @@ export const STRATEGY_CONFIG = {
   liveSignalTtlMs: 15 * 60_000,
   ema50Touch: EMA50_TOUCH,
   tradePlan: TRADE_PLAN,
+  ichimoku: ICHIMOKU_CONFLUENCE,
 } as const;

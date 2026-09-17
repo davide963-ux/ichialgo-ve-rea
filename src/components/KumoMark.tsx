@@ -9,3 +9,23 @@ export function KumoMark({ size = 26 }: { size?: number }) {
     </svg>
   );
 }
+
+/**
+ * Bare kumo glyph for inline use (score tags, table cells).
+ *
+ * The ☁ character is not in IBM Plex Mono, so it renders as a tofu box in
+ * the numeric UI — this draws the same two-span shape as the logomark
+ * instead, and inherits `currentColor` so it tints with the tag.
+ */
+export function KumoGlyph({ size = 11 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true" style={{ flex: '0 0 auto' }}>
+      <path
+        d="M4 20 C 9 20, 10 11, 16 11 S 22 15, 28 8 L 28 14 C 22 20, 20 17, 16 17 S 9 26, 4 26 Z"
+        fill="currentColor"
+        opacity="0.28"
+      />
+      <path d="M4 20 C 9 20, 10 11, 16 11 S 22 15, 28 8" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+    </svg>
+  );
+}

@@ -1,3 +1,4 @@
+import { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ConnectionBanner } from '../components/ConnectionBanner';
 import { ForexTable } from '../components/ForexTable';
@@ -5,9 +6,10 @@ import { MarketStatus } from '../components/MarketStatus';
 import { MetricCard } from '../components/MetricCard';
 import { SignalTable } from '../components/SignalTable';
 import { TimeframeSelector } from '../components/TimeframeSelector';
-import { EMA50_TOUCH } from '../config/strategy';
+import { EMA50_TOUCH, ICHIMOKU_CONFLUENCE } from '../config/strategy';
 import { DEFAULT_TIMEFRAME, isTimeframe, type Timeframe } from '../config/timeframes';
 import { useLastScanAt, useSignals, useSignalSummary, useStrategyStatus } from '../hooks/useSignals';
+import { ICHIMOKU_CHECKS } from '../services/strategy';
 import { useNow } from '../hooks/useNow';
 import { formatAgo, formatClock } from '../lib/time';
 import { useMarketStore } from '../state/marketStore';
@@ -28,7 +30,16 @@ export function Dashboard() {
   const summary = useSignalSummary();
   const strategyStatus = useStrategyStatus();
   const lastScanAt = useLastScanAt();
+  const [confluentOnly, setConfluentOnly] = useState(false);
   const now = useNow();
+
+  // Filtering, not hiding: the toggle is off by default so a weak setup is
+  // still visible and can be judged rather than silently dropped.
+  const shown = useMemo(
+    () => (confluentOnly ? signals.filter((s) => s.ichimoku?.agrees) : signals),
+    [signals, confluentOnly],
+  );
+  const confluentCount = useMemo(() => signals.filter((s) => s.ichimoku?.agrees).length, [signals]);
 
   const modeLabel = mode === 'stream' ? 'Streaming' : mode === 'poll' ? 'Polling' : 'Connecting';
   const strategyHint =
@@ -88,15 +99,25 @@ export function Dashboard() {
               volatility-scaled band. One signal per approach, not per bar.
             </span>
           </div>
-          <span className="panel-sub">Scanned {formatAgo(lastScanAt, now)}</span>
+          <div className="page-head-aside">
+            <label className="overlay-toggle">
+              <input type="checkbox" checked={confluentOnly} onChange={(e) => setConfluentOnly(e.target.checked)} />
+              Ichimoku confluent only
+            </label>
+            <span className="panel-sub">
+              {confluentCount} of {signals.length} confluent · scanned {formatAgo(lastScanAt, now)}
+            </span>
+          </div>
         </div>
         <SignalTable
-          signals={signals}
+          signals={shown}
           limit={25}
           emptyHint={
-            strategyStatus === 'READY'
-              ? `Watching ${symbols.length} pairs on ${timeframe}. Nothing has reached its EMA${EMA50_TOUCH.period} yet.`
-              : strategyHint
+            confluentOnly && signals.length > 0
+              ? `None of the ${signals.length} touches reach ${ICHIMOKU_CONFLUENCE.agreeThreshold}/${ICHIMOKU_CHECKS} Ichimoku agreement. Untick the filter to see them all.`
+              : strategyStatus === 'READY'
+                ? `Watching ${symbols.length} pairs on ${timeframe}. Nothing has reached its EMA${EMA50_TOUCH.period} yet.`
+                : strategyHint
           }
         />
       </section>

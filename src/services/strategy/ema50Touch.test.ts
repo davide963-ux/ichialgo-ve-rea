@@ -171,6 +171,7 @@ describe('checkLiveTouch', () => {
     side: 'above',
     armed: true,
     barTime: 1_700_000_000,
+    ichimoku: null,
     updatedAt: 0,
     ...over,
   });

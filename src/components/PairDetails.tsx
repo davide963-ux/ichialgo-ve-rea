@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { EMA50_TOUCH } from '../config/strategy';
 import type { Timeframe } from '../config/timeframes';
@@ -13,6 +14,7 @@ import { CandlestickChart } from './CandlestickChart';
 import { EmptyState } from './EmptyState';
 import { MarketStatus } from './MarketStatus';
 import { PriceChange } from './PriceChange';
+import { IchimokuPanel } from './IchimokuPanel';
 import { SignalTable } from './SignalTable';
 import { TimeframeSelector } from './TimeframeSelector';
 import { TradePlanCard } from './TradePlanCard';
@@ -35,6 +37,7 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
   const plan = useTradePlan(latestTouch);
   const strategyNotice = useStrategyNotice(symbol);
   const now = useNow();
+  const [showIchimoku, setShowIchimoku] = useState(true);
   const live = status === 'ONLINE';
 
   // Distance to the EMA right now, from the same bars the chart is showing.
@@ -100,10 +103,17 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
           <div>
             <h2 className="panel-title">Price chart</h2>
             <span className="panel-sub">
-              {bidAsk ? 'Mid-price candles, times in UTC' : 'Candles, times in UTC'} · EMA{EMA50_TOUCH.period} overlay
+              {bidAsk ? 'Mid-price candles, times in UTC' : 'Candles, times in UTC'} · EMA{EMA50_TOUCH.period}
+              {showIchimoku ? ' + Ichimoku' : ''} overlay
             </span>
           </div>
-          <TimeframeSelector value={timeframe} onChange={onTimeframeChange} label="Chart timeframe" />
+          <div className="page-head-aside">
+            <label className="overlay-toggle">
+              <input type="checkbox" checked={showIchimoku} onChange={(e) => setShowIchimoku(e.target.checked)} />
+              Ichimoku
+            </label>
+            <TimeframeSelector value={timeframe} onChange={onTimeframeChange} label="Chart timeframe" />
+          </div>
         </div>
 
         <div className="chart-box">
@@ -113,6 +123,8 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
             candles={candles}
             ema={analysis.ema}
             signals={analysis.signals}
+            ichimoku={analysis.ichimoku}
+            showIchimoku={showIchimoku}
           />
           {chartStatus === 'LOADING' && (
             <div className="chart-overlay">
@@ -213,6 +225,20 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
             </div>
           </div>
           <TradePlanCard signal={latestTouch} plan={plan} />
+        </section>
+      )}
+
+      {latestTouch && (
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <h2 className="panel-title">Ichimoku confluence</h2>
+              <span className="panel-sub">
+                Does the cloud agree with the last touch? Five checks, read in the direction the touch implies.
+              </span>
+            </div>
+          </div>
+          <IchimokuPanel signal={latestTouch} series={analysis.ichimoku} candles={candles} />
         </section>
       )}
     </>

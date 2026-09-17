@@ -2,6 +2,7 @@
  * Strategy-layer contracts. The UI depends on these, never on the detector.
  */
 import type { Timeframe } from '../../config/timeframes';
+import type { IchimokuContext } from './ichimokuContext';
 
 export type StrategyId = 'ema50-touch';
 
@@ -51,6 +52,8 @@ export interface TouchSignal {
   bias: Bias;
   /** True when the touch is against the EMA's own trend — the weaker case. */
   counterTrend: boolean;
+  /** Ichimoku agreement, or null before Ichimoku has warmed up. */
+  ichimoku: IchimokuContext | null;
 }
 
 /** Live level the engine watches between candle scans. */
@@ -70,5 +73,12 @@ export interface WatchLevel {
   armed: boolean;
   /** Open time of the bar the level was computed from. */
   barTime: number;
+  /**
+   * Ichimoku read at the last scan. The cloud in effect is displaced 26 bars
+   * so it cannot change within a bar; Tenkan/Kijun drift slightly as the
+   * forming bar moves, which is why a live touch inherits this rather than
+   * recomputing it.
+   */
+  ichimoku: IchimokuContext | null;
   updatedAt: number;
 }

@@ -8,6 +8,7 @@ import { planFromTouch, touchTimeMs, type TouchSignal } from '../services/strate
 import { useAccount } from '../state/accountStore';
 import { useMarketStore } from '../state/marketStore';
 import { EmptyState } from './EmptyState';
+import { IchimokuTag } from './IchimokuTag';
 import { OutcomeTag, SignalBadge } from './SignalBadge';
 
 interface Props {
@@ -53,6 +54,9 @@ export function SignalTable({ signals, limit, emptyHint }: Props) {
             <th scope="col">EVENT</th>
             <th scope="col"><abbr title="Direction implied by the touch and the EMA's own trend">BIAS</abbr></th>
             <th scope="col"><abbr title="What the bar did after touching">RESULT</abbr></th>
+            <th scope="col">
+              <abbr title="How many of the 5 Ichimoku checks agree with this touch's direction. Hover a score for the breakdown.">ICHIMOKU</abbr>
+            </th>
             <th scope="col"><abbr title="Distance from the EMA at contact">DIST</abbr></th>
             <th scope="col">EMA50</th>
             <th scope="col">
@@ -90,6 +94,7 @@ export function SignalTable({ signals, limit, emptyHint }: Props) {
                 )}
               </td>
               <td><OutcomeTag outcome={s.outcome} /></td>
+              <td><IchimokuTag signal={s} ctx={s.ichimoku} /></td>
               <td className="num">{formatNumber(s.distancePips, 1)}</td>
               <td className="num muted">{formatPrice(s.symbol, s.ema)}</td>
               <td className="num">

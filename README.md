@@ -1,7 +1,7 @@
 # Ichialgo — Forex terminal
 
-**Live Forex market data + the EMA50 touch strategy.** No backtest engine yet; the
-backtest and equity pages still show empty states.
+**Live Forex market data, the EMA50 touch strategy with Ichimoku confluence, and ATR-sized
+trade plans.** No backtest engine yet; the backtest and equity pages still show empty states.
 
 | Stack | |
 |---|---|
@@ -9,7 +9,7 @@ backtest and equity pages still show empty states.
 | Charts | TradingView Lightweight Charts v5 (open-source charting library) |
 | Build | Vite 8 |
 | Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`), with Twelve Data multi-key failover |
-| Strategy | EMA50 touch detector + scanner engine (`src/services/strategy/`) |
+| Strategy | EMA50 touch + Ichimoku confluence + ATR trade plans (`src/services/strategy/`) |
 | Tests | Vitest (indicators, strategy, proxy, calculator math) |
 | Data | OANDA v20 (default) or Twelve Data, behind a provider interface |
 
@@ -170,18 +170,20 @@ src/
     ema50Touch.ts            the detector: candles in, touches out (pure, tested)
     StrategyEngine.ts        scans every pair; live touches from the quote stream
     tradePlan.ts             ATR stop, R target, lot size (pure, tested)
+    ichimokuContext.ts       the five confluence checks (pure, tested)
     types.ts                 TouchSignal, WatchLevel
   state/marketStore.ts       immutable external store (useSyncExternalStore)
   state/signalStore.ts       same pattern, for strategy signals
   state/accountStore.ts      balance + risk %, persisted; shared by plans and calculator
   hooks/                     useMarketData, useCandles, useSignals, useNow
-  lib/indicators/            ema, atr (+tests)
+  lib/indicators/            ema, atr, ichimoku (+tests)
   lib/                       positionSize (+tests), pips, format, time, locale
   components/                Navbar, MetricCard, ForexTable, ForexRow, MarketStatus,
                              PriceChange, PairDetails, CandlestickChart, TimeframeSelector,
                              EmptyState, BacktestPanel, TradeTable, Calculator,
                              ConnectionBanner, KumoMark, SignalTable, SignalBadge,
-                             TradePlanCard
+                             TradePlanCard, IchimokuTag, IchimokuPanel
+  components/chart/          kumoPrimitive (the Kumo fill)
   pages/                     Dashboard, PairPage, EquityCurve, Backtest, CalculatorPage
 server/
   api.mjs                    read-only GET allowlist + Twelve Data failover handler
@@ -279,7 +281,7 @@ and `setData()` when the pair or timeframe changes.
 
 ---
 
-## 4. Strategy: EMA50 touch
+## 4. Strategy: EMA50 touch + Ichimoku
 
 Fires when a pair reaches its 50-period EMA on the scanner timeframe.
 
@@ -393,6 +395,78 @@ via `?symbol=&entry=&sl=&tp=` so a signal can be adjusted before it is taken.
 A counter-trend touch still gets a plan — it is a worse trade, not an impossible one — with the
 reason listed in the card's warnings.
 
+### Ichimoku confluence
+
+The touch says **where**. Ichimoku says whether the rest of the picture agrees. Five checks, each
+read in the direction the touch implies — the same bar scores differently for a long and a short:
+
+| # | Check | Passes for a LONG when |
+|---|---|---|
+| 1 | **Kumo side** | price is above the cloud (below it for a short) |
+| 2 | **Cloud colour** | Senkou A is above Senkou B (bullish cloud) |
+| 3 | **Tenkan / Kijun** | the conversion line is above the base line |
+| 4 | **Chikou free** | the lagging line is clear of the candles 26 bars back |
+| 5 | **Kijun overlap** | the EMA50 is within 5 pips of Kijun-sen |
+
+Check 5 is the one worth waiting for: two independent methods marking the *same* level.
+It shows as a `K` badge on the score tag.
+
+```
+                 ╱▔▔▔╲            price above a rising bullish cloud,
+         ────────       ╲___      EMA50 sitting on Kijun
+     ━━━━━ EMA50 ≈ Kijun ━━━━━    → a long touch with 5/5 agreement
+     ░░░░░░░░ Kumo ░░░░░░░░░░░
+```
+
+Signals are **annotated, never hidden** — a 0/5 touch is still logged and flagged, and the
+dashboard has an "Ichimoku confluent only" filter (off by default) so a weak setup can be
+judged rather than silently dropped. `agrees` means `score ≥ 3`, set by
+`ICHIMOKU_CONFLUENCE.agreeThreshold`.
+
+#### Displacement, which is the easy thing to get wrong
+
+```
+   Tenkan-sen  (9)   = (highest high + lowest low) / 2
+   Kijun-sen  (26)   = same over 26
+   Senkou A          = (Tenkan + Kijun) / 2   plotted 26 bars AHEAD
+   Senkou B   (52)   = same over 52           plotted 26 bars AHEAD
+   Chikou     (26)   = close                  plotted 26 bars BEHIND
+```
+
+The cloud above bar `i` was computed 26 bars *earlier*; the cloud computed at bar `i` is drawn
+26 bars into the future, past the last candle. `lib/indicators/ichimoku.ts` therefore returns
+both, and names them apart so a caller cannot mix them up:
+
+```
+   bars:      … 24  25  26  27 …          n-1 │ future (no candles yet)
+   senkouARaw:     A25 A26 A27            An-1│              ← computed at bar i
+   senkouA:         …  A0  A1             An-27              ← in effect at bar i
+   futureCloud():                             │ An-26 … An-1 ← the leading cloud
+```
+
+Analysis uses `senkouA` / `senkouB` (in effect). The chart plots those over the candles and
+appends `futureCloud()` beyond them.
+
+#### Drawing the cloud
+
+Lightweight Charts has no band series, so the two spans are ordinary line series and
+`components/chart/kumoPrimitive.ts` — an `ISeriesPrimitive` — fills between them at
+`zOrder: 'bottom'`, behind the candles:
+
+```mermaid
+flowchart LR
+    S["senkouA / senkouB<br/>line series (incl. 26 future bars)"] --> TS["their data is what extends<br/>the time scale into the future"]
+    TS --> P["KumoPrimitive.resolve()<br/>timeToCoordinate + priceToCoordinate"]
+    P --> F["one quad per bar gap,<br/>green if A ≥ B else red"]
+```
+
+`timeToCoordinate` only resolves times the time scale knows about, which is why the spans must
+be real series — without their future points the leading cloud cannot be drawn at all. The fill
+is built per bar gap and coloured by the sign of A − B on that gap, so a crossing costs at most
+one bar of colour imprecision and needs no intersection maths.
+
+The overlay (Tenkan, Kijun, both spans, Chikou, the fill) toggles off from the chart header.
+
 ### Tuning
 
 Everything lives in `src/config/strategy.ts`:
@@ -405,6 +479,8 @@ Everything lives in `src/config/strategy.ts`:
 | `slopeLookback` / `trendSlopePips` | 10 / 0.15 | when the EMA counts as trending |
 | `stopAtrMultiple` / `rewardMultiple` | 1.5 / 2 | where the trade plan's stop and target sit |
 | `minStopPips` | 8 | floor on the stop when ATR collapses |
+| `kijunConfluencePips` | 5 | how close EMA50 and Kijun must be to count as one level |
+| `agreeThreshold` | 3 | Ichimoku checks needed before a touch counts as confluent |
 
 The detector (`services/strategy/ema50Touch.ts`) is pure — candles in, signals out — so it is
 directly reusable by a backtest engine later.
