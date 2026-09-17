@@ -20,6 +20,10 @@
   --faint: #4d5d56;
 
   --red: #f0616d;
+  /* EMA50 overlay — matches EMA_COLOR in CandlestickChart.tsx */
+  --ema: #e9b949;
+  --ema-line: rgba(233, 185, 73, 0.35);
+  --ema-soft: rgba(233, 185, 73, 0.08);
   --red-soft: rgba(240, 97, 109, 0.1);
 
   --font-ui: 'Manrope', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -729,6 +733,32 @@ select.input {
 .tag.tf-tag {
   color: var(--text-2);
   font-family: var(--font-num);
+}
+.tag.pos {
+  color: var(--mint);
+  border-color: rgba(103, 227, 174, 0.35);
+}
+.tag.neg {
+  color: var(--red);
+  border-color: rgba(240, 97, 109, 0.35);
+}
+
+/* EMA touch chip — the arrow shows which side price approached from. */
+.signal-tag {
+  gap: 4px;
+  color: var(--ema);
+  border-color: var(--ema-line);
+  background: var(--ema-soft);
+}
+.signal-tag.pos {
+  color: var(--mint);
+  border-color: rgba(103, 227, 174, 0.35);
+  background: var(--mint-soft);
+}
+.signal-tag.neg {
+  color: var(--red);
+  border-color: rgba(240, 97, 109, 0.35);
+  background: var(--red-soft);
 }
 
 .change {

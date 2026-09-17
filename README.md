@@ -1,7 +1,7 @@
-# Ichialgo — Forex terminal (Phase 1)
+# Ichialgo — Forex terminal
 
-Phase 1 = **complete UI + real-time Forex market data**.
-No strategy, no signals, no backtest engine. Everything performance-related shows empty/zero states.
+**Live Forex market data + the EMA50 touch strategy.** No backtest engine yet; the
+backtest and equity pages still show empty states.
 
 | Stack | |
 |---|---|
@@ -9,7 +9,8 @@ No strategy, no signals, no backtest engine. Everything performance-related show
 | Charts | TradingView Lightweight Charts v5 (open-source charting library) |
 | Build | Vite 8 |
 | Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`), with Twelve Data multi-key failover |
-| Tests | Vitest (calculator math) |
+| Strategy | EMA50 touch detector + scanner engine (`src/services/strategy/`) |
+| Tests | Vitest (indicators, strategy, proxy, calculator math) |
 | Data | OANDA v20 (default) or Twelve Data, behind a provider interface |
 
 ---
@@ -158,20 +159,26 @@ Rules enforced by the structure:
 
 ```
 src/
-  config/        pairs.ts (add pairs here), timeframes.ts, app.ts
+  config/        pairs.ts (add pairs here), timeframes.ts, app.ts, strategy.ts
   services/marketData/
     types.ts                 provider contract, Quote, Candle, ProviderError
     http.ts                  fetch + timeout + HTTP→error mapping
     MarketDataService.ts     orchestration (the heart of the data layer)
     providers/               OandaProvider, TwelveDataProvider, creditBudget, factory
     index.ts                 singleton + public exports
+  services/strategy/
+    ema50Touch.ts            the detector: candles in, touches out (pure, tested)
+    StrategyEngine.ts        scans every pair; live touches from the quote stream
+    types.ts                 TouchSignal, WatchLevel
   state/marketStore.ts       immutable external store (useSyncExternalStore)
-  hooks/                     useMarketData, useCandles, useNow
+  state/signalStore.ts       same pattern, for strategy signals
+  hooks/                     useMarketData, useCandles, useSignals, useNow
+  lib/indicators/            ema, atr (+tests)
   lib/                       positionSize (+tests), pips, format, time, locale
   components/                Navbar, MetricCard, ForexTable, ForexRow, MarketStatus,
                              PriceChange, PairDetails, CandlestickChart, TimeframeSelector,
                              EmptyState, BacktestPanel, TradeTable, Calculator,
-                             ConnectionBanner, KumoMark
+                             ConnectionBanner, KumoMark, SignalTable, SignalBadge
   pages/                     Dashboard, PairPage, EquityCurve, Backtest, CalculatorPage
 server/
   api.mjs                    read-only GET allowlist + Twelve Data failover handler
@@ -269,7 +276,96 @@ and `setData()` when the pair or timeframe changes.
 
 ---
 
-## 4. Position-size calculator
+## 4. Strategy: EMA50 touch
+
+Fires when a pair reaches its 50-period EMA on the scanner timeframe.
+
+### What counts as a touch
+
+Price almost never prints the EMA to the last decimal, so a touch is *price entering a band
+around the EMA*. The band is **volatility-scaled** — `max(ATR14 × 0.15, 1.5 pips)` — so the
+same signal means the same thing in a dead session and a fast one.
+
+```
+        high ─┐
+              │        ema + tol  ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+              ├─ bar              ━━━━━ EMA50 ━━━━━━━   band = max(ATR14 × 0.15, 1.5 pips)
+              │        ema − tol  ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+         low ─┘
+        touch ⇔ low ≤ ema + tol  AND  high ≥ ema − tol
+```
+
+**One signal per approach, not per bar.** A market riding the EMA would otherwise fire on every
+single bar, so each pair is armed/disarmed:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Armed
+    Armed --> Disarmed: touch → emit ONE signal
+    Disarmed --> Disarmed: still in the band → silent
+    Disarmed --> Armed: a close leaves the band by 1.5×
+    Armed --> Armed: price far from the EMA
+```
+
+### What each signal tells you
+
+| Field | Meaning |
+|---|---|
+| **EVENT** | `▲ from above` — price fell back to the EMA · `▼ from below` — price rallied up to it |
+| **BIAS** | `LONG` = pullback into a *rising* EMA · `SHORT` = rally into a *falling* EMA · `COUNTER` = the touch fights the EMA's own trend |
+| **RESULT** | `BOUNCE` closed back on the approach side (the EMA held) · `CROSS` closed through (it broke) · `INSIDE` closed in the band · `FORMING` bar still open |
+| **DIST** | pips between the contact price and the EMA — `0.0` is dead on the line |
+
+Trend is the EMA's own slope over 10 bars (`> 0.15 pips/bar` = trending), not a second average.
+
+### Two detection paths
+
+```mermaid
+flowchart LR
+    subgraph scan["every candleRefreshMs — 1 candle request per pair"]
+        C["marketDataService.getCandles()"] --> A["analyseEma50Touch()"]
+        A --> H["historical touches → signal log"]
+        A --> L["current level → live watch list"]
+    end
+    subgraph live["every quote tick — ZERO extra credits"]
+        Q["marketDataService.onQuotes()"] --> T["checkLiveTouch(level, price)"]
+        T --> S["fires the instant price reaches the band"]
+    end
+    L --> T
+    H & S --> ST[("signalStore")]
+    ST --> UI["Dashboard metrics · scanner badges · chart markers"]
+```
+
+The live path is what makes the signal arrive **the moment** price reaches the level: a 50-period
+EMA barely moves inside one bar, so the level from the last scan is watched against the quote
+stream that the scanner is already running. No extra provider request, no extra credits.
+
+A signal's id is `(symbol, timeframe, bar)`, so re-scanning never duplicates one — and when the
+bar closes, the `candle` result **upgrades** the `live` signal fired earlier on that bar, because
+the closed bar is the one that knows whether it bounced or crossed.
+
+### Cost
+
+A scan is **one candle request per pair per `candleRefreshMs`** (free-ish on OANDA, 1 Twelve Data
+credit each). It reuses `MarketDataService`'s candle cache, so a pair chart you already have open
+is not fetched twice. On Twelve Data's free single-key plan this roughly doubles credit use —
+pool several keys (see above) or raise `VITE_TWELVEDATA_POLL_MS`.
+
+### Tuning
+
+Everything lives in `src/config/strategy.ts`:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `period` | 50 | the average being touched |
+| `atrMultiple` / `minTolerancePips` | 0.15 / 1.5 | how wide the touch band is |
+| `rearmBands` | 1.5 | how far price must leave before the pair can signal again |
+| `slopeLookback` / `trendSlopePips` | 10 / 0.15 | when the EMA counts as trending |
+
+The detector (`services/strategy/ema50Touch.ts`) is pure — candles in, signals out — so it is
+directly reusable by a backtest engine later.
+
+## 5. Position-size calculator
 
 Pure functions in `src/lib/positionSize.ts`, tested in `positionSize.test.ts`. Account currency is USD.
 
@@ -293,7 +389,7 @@ Worked example (unit test): USD/JPY at 150.00, stop 150.50, $10,000, 1% risk
 
 ---
 
-## 5. Extending
+## 6. Extending
 
 **Add a pair:** append to `EXTRA_SYMBOLS` in `src/config/pairs.ts`. Nothing else changes.
 
@@ -302,24 +398,27 @@ Worked example (unit test): USD/JPY at 150.00, stop 150.50, $10,000, 1% risk
 2. Register it in `providers/index.ts` and add `'myprovider'` to `ProviderId`.
 3. Add a read-only route for it in `server/api.mjs` (`routes` array). Dev, preview and production all pick it up.
 
-**Phase 2 hook points (not implemented):**
+**Add a strategy:** the EMA50 touch detector is the template. Write a pure
+`analyse(candles, symbol, timeframe) → signals` function, call it from `StrategyEngine.scan()`,
+and give its signals a `strategy` id. The store, table, badges and chart markers are generic.
+
+**What is wired, and what is not:**
 
 ```mermaid
 flowchart LR
     MDS[MarketDataService] -->|"onQuotes(cb)<br/>getCandles()"| SE[StrategyEngine]
-    SE --> SG[SignalGenerator] --> SS[(Signal Store)] --> DB[Dashboard metrics<br/>Active signals / Signals today]
-    SS --> EQ[Equity Curve · TradeTable]
-    BT[BacktestPanel onRun] --> BE[Backtest engine]
+    SE --> SS[(signalStore)] --> DB[Dashboard metrics<br/>scanner badges · chart markers]
+    SS -.not yet.-> EQ[Equity Curve · TradeTable]
+    BT[BacktestPanel onRun] -.not yet.-> BE[Backtest engine]
 ```
 
-- `marketDataService.onQuotes(cb)` already emits every live batch.
-- `Dashboard.tsx` reads `SIGNALS` from a constant; replace it with the Signal Store.
-- `BacktestPanel` already emits a validated `BacktestRequest`.
-- `TradeTable` already accepts `TradeRecord[]`.
+- `marketDataService.onQuotes(cb)` emits every live batch — the engine uses it.
+- `BacktestPanel` already emits a validated `BacktestRequest`; nothing consumes it yet.
+- `TradeTable` already accepts `TradeRecord[]`; the strategy does not produce trades, only signals.
 
 ---
 
-## 6. Production deployment
+## 7. Production deployment
 
 ```bash
 npm run build

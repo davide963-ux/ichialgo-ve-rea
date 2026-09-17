@@ -8,31 +8,50 @@
  *      └─ anything else ────────────────────▶ series.setData()
  *
  * The chart autosizes with its container (ResizeObserver), so it
- * follows responsive layout changes. No indicators / signals in Phase 1.
+ * follows responsive layout changes.
+ *
+ * Overlays (optional props, both index-aligned with `candles`):
+ *   ema     — the EMA50 line. Nulls before the average is defined are
+ *             dropped, so the line simply starts later; it is never drawn at 0.
+ *   signals — one marker per EMA touch, above or below the bar depending on
+ *             which side price approached from.
  */
 import { useEffect, useRef } from 'react';
 import {
   CandlestickSeries,
   ColorType,
   CrosshairMode,
+  LineSeries,
   createChart,
+  createSeriesMarkers,
   type CandlestickData,
   type IChartApi,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
+  type LineData,
+  type SeriesMarker,
+  type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
 import { getPair } from '../config/pairs';
+import { EMA50_TOUCH } from '../config/strategy';
 import type { Timeframe } from '../config/timeframes';
 import type { Candle } from '../services/marketData';
+import type { TouchSignal } from '../services/strategy';
 import { APP_LOCALE } from '../lib/locale';
 
 interface Props {
   symbol: string;
   timeframe: Timeframe;
   candles: Candle[];
+  /** EMA50 values, index-aligned with `candles`. */
+  ema?: (number | null)[];
+  /** Touches to mark on the bars. */
+  signals?: TouchSignal[];
 }
 
 const VISIBLE_BARS = 120;
+const EMA_COLOR = '#E9B949';
 
 const toBar = (c: Candle): CandlestickData<UTCTimestamp> => ({
   time: c.time as UTCTimestamp,
@@ -42,10 +61,12 @@ const toBar = (c: Candle): CandlestickData<UTCTimestamp> => ({
   close: c.close,
 });
 
-export function CandlestickChart({ symbol, timeframe, candles }: Props) {
+export function CandlestickChart({ symbol, timeframe, candles, ema, signals }: Props) {
   const el = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const series = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const emaSeries = useRef<ISeriesApi<'Line'> | null>(null);
+  const markers = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const shown = useRef<{ key: string; candles: Candle[] }>({ key: '', candles: [] });
 
   // Create once
@@ -80,11 +101,22 @@ export function CandlestickChart({ symbol, timeframe, candles }: Props) {
       wickUpColor: '#67E3AE',
       wickDownColor: '#F0616D',
     });
+    emaSeries.current = c.addSeries(LineSeries, {
+      color: EMA_COLOR,
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      crosshairMarkerVisible: false,
+      title: `EMA${EMA50_TOUCH.period}`,
+    });
+    markers.current = createSeriesMarkers(series.current, []);
     chart.current = c;
     return () => {
       c.remove();
       chart.current = null;
       series.current = null;
+      emaSeries.current = null;
+      markers.current = null;
       shown.current = { key: '', candles: [] };
     };
   }, []);
@@ -92,9 +124,9 @@ export function CandlestickChart({ symbol, timeframe, candles }: Props) {
   // Per symbol/timeframe formatting
   useEffect(() => {
     const digits = getPair(symbol).digits;
-    series.current?.applyOptions({
-      priceFormat: { type: 'price', precision: digits, minMove: 1 / 10 ** digits },
-    });
+    const priceFormat = { type: 'price', precision: digits, minMove: 1 / 10 ** digits } as const;
+    series.current?.applyOptions({ priceFormat });
+    emaSeries.current?.applyOptions({ priceFormat });
     chart.current?.applyOptions({
       timeScale: { timeVisible: timeframe !== '1D', secondsVisible: false },
     });
@@ -132,6 +164,44 @@ export function CandlestickChart({ symbol, timeframe, candles }: Props) {
     }
     shown.current = { key, candles };
   }, [candles, symbol, timeframe]);
+
+  // EMA overlay. Nulls (before the average exists) are skipped rather than
+  // plotted, so the line starts where the EMA becomes valid.
+  useEffect(() => {
+    const line = emaSeries.current;
+    if (!line) return;
+    if (!ema || ema.length === 0) {
+      line.setData([]);
+      return;
+    }
+    const points: LineData<UTCTimestamp>[] = [];
+    for (let i = 0; i < candles.length && i < ema.length; i++) {
+      const v = ema[i];
+      if (v === null || v === undefined || !Number.isFinite(v)) continue;
+      points.push({ time: candles[i]!.time as UTCTimestamp, value: v });
+    }
+    line.setData(points);
+  }, [ema, candles]);
+
+  // Touch markers: below the bar for a pullback from above, above it for a
+  // rally from below — the marker sits on the side price came from.
+  useEffect(() => {
+    const plugin = markers.current;
+    if (!plugin) return;
+    const list: SeriesMarker<Time>[] = (signals ?? [])
+      .filter((s) => s.symbol === symbol && s.timeframe === timeframe)
+      .sort((a, b) => a.barTime - b.barTime)
+      .map((s) => ({
+        time: s.barTime as UTCTimestamp,
+        position: s.approach === 'above' ? 'belowBar' : 'aboveBar',
+        shape: s.approach === 'above' ? 'arrowUp' : 'arrowDown',
+        color: s.counterTrend ? '#7F9189' : s.bias === 'short' ? '#F0616D' : EMA_COLOR,
+        // No label: touches cluster, and the arrow plus the named EMA line
+        // already say what the marker is.
+        size: 1,
+      }));
+    plugin.setMarkers(list);
+  }, [signals, symbol, timeframe]);
 
   return <div ref={el} className="chart-canvas" aria-label={`${symbol} ${timeframe} candlestick chart`} role="img" />;
 }

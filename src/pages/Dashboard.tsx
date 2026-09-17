@@ -3,17 +3,14 @@ import { ConnectionBanner } from '../components/ConnectionBanner';
 import { ForexTable } from '../components/ForexTable';
 import { MarketStatus } from '../components/MarketStatus';
 import { MetricCard } from '../components/MetricCard';
+import { SignalTable } from '../components/SignalTable';
 import { TimeframeSelector } from '../components/TimeframeSelector';
+import { EMA50_TOUCH } from '../config/strategy';
 import { DEFAULT_TIMEFRAME, isTimeframe, type Timeframe } from '../config/timeframes';
+import { useLastScanAt, useSignals, useSignalSummary, useStrategyStatus } from '../hooks/useSignals';
 import { useNow } from '../hooks/useNow';
 import { formatAgo, formatClock } from '../lib/time';
 import { useMarketStore } from '../state/marketStore';
-
-/**
- * Strategy signals do not exist in Phase 1.
- * These will be read from the Signal Store once the StrategyEngine is connected.
- */
-const SIGNALS = { active: 0, today: 0 } as const;
 
 export function Dashboard() {
   const [params, setParams] = useSearchParams();
@@ -27,9 +24,19 @@ export function Dashboard() {
   const lastContact = useMarketStore((s) => s.lastContact);
   const mode = useMarketStore((s) => s.mode);
   const provider = useMarketStore((s) => s.provider.label);
+  const signals = useSignals();
+  const summary = useSignalSummary();
+  const strategyStatus = useStrategyStatus();
+  const lastScanAt = useLastScanAt();
   const now = useNow();
 
   const modeLabel = mode === 'stream' ? 'Streaming' : mode === 'poll' ? 'Polling' : 'Connecting';
+  const strategyHint =
+    strategyStatus === 'READY'
+      ? `EMA${EMA50_TOUCH.period} touch on ${timeframe}`
+      : strategyStatus === 'ERROR'
+        ? 'Strategy has no candles'
+        : 'Loading candles…';
 
   return (
     <main className="page">
@@ -48,8 +55,13 @@ export function Dashboard() {
 
       <section className="metric-strip" aria-label="Scanner overview">
         <MetricCard label="Markets" value={symbols.length} hint={`${quoteCount} priced by ${provider}`} />
-        <MetricCard label="Active signals" value={SIGNALS.active} hint="Strategy not connected" />
-        <MetricCard label="Signals today" value={SIGNALS.today} hint="Strategy not connected" />
+        <MetricCard
+          label="At the EMA now"
+          value={summary.active}
+          hint={strategyStatus === 'READY' ? `Pairs inside the EMA${EMA50_TOUCH.period} band` : strategyHint}
+          accent={summary.active > 0}
+        />
+        <MetricCard label="Touches today" value={summary.today} hint={strategyHint} />
         <MetricCard label="Scanner status" value={<MarketStatus />} hint={`${modeLabel}, synced ${formatAgo(lastContact, now)}`} />
         <MetricCard
           label="Last market update"
@@ -65,6 +77,28 @@ export function Dashboard() {
           <span className="panel-sub">Last updated: {formatAgo(lastContact, now)}</span>
         </div>
         <ForexTable timeframe={timeframe} />
+      </section>
+
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <h2 className="panel-title">EMA{EMA50_TOUCH.period} touches</h2>
+            <span className="panel-sub">
+              Fires when price reaches the EMA{EMA50_TOUCH.period} on the {timeframe} chart, within a
+              volatility-scaled band. One signal per approach, not per bar.
+            </span>
+          </div>
+          <span className="panel-sub">Scanned {formatAgo(lastScanAt, now)}</span>
+        </div>
+        <SignalTable
+          signals={signals}
+          limit={25}
+          emptyHint={
+            strategyStatus === 'READY'
+              ? `Watching ${symbols.length} pairs on ${timeframe}. Nothing has reached its EMA${EMA50_TOUCH.period} yet.`
+              : strategyHint
+          }
+        />
       </section>
     </main>
   );

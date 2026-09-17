@@ -33,3 +33,19 @@ export function formatClock(ms: number | null): string {
   if (ms === null || !Number.isFinite(ms)) return '—';
   return new Date(ms).toLocaleTimeString(APP_LOCALE, { hour12: false });
 }
+
+/**
+ * Clock time for something that happened today, "Jun 14 12:00" otherwise.
+ * The signal log spans several days of bars, so a bare clock would make
+ * yesterday's 23:30 look like tonight's.
+ */
+export function formatStamp(ms: number | null, now = Date.now()): string {
+  if (ms === null || !Number.isFinite(ms)) return '—';
+  const d = new Date(ms);
+  const today = new Date(now);
+  const sameDay =
+    d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
+  const time = d.toLocaleTimeString(APP_LOCALE, { hour12: false, hour: '2-digit', minute: '2-digit' });
+  if (sameDay) return time;
+  return `${d.toLocaleDateString(APP_LOCALE, { month: 'short', day: '2-digit' })} ${time}`;
+}
