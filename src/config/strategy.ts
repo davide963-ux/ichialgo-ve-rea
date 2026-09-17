@@ -43,10 +43,31 @@ export const EMA50_TOUCH: Ema50TouchConfig = {
   },
 };
 
+/**
+ * How a touch becomes a trade plan. The stop sits an ATR multiple beyond the
+ * EMA — far enough that the wick that made the touch does not take it out —
+ * and the target is a fixed multiple of that risk.
+ */
+export interface TradePlanConfig {
+  /** Stop distance from the entry, in ATRs. */
+  stopAtrMultiple: number;
+  /** Take profit = this many times the stop distance (the R multiple). */
+  rewardMultiple: number;
+  /** Floor on the stop, so a dead-calm ATR cannot produce a 2-pip stop. */
+  minStopPips: number;
+}
+
+export const TRADE_PLAN: TradePlanConfig = {
+  stopAtrMultiple: 1.5,
+  rewardMultiple: 2,
+  minStopPips: 8,
+};
+
 export const STRATEGY_CONFIG = {
   /** Newest-first cap on the in-memory signal log. */
   maxSignals: 200,
   /** A live (intrabar) touch stays "active" this long without a new tick. */
   liveSignalTtlMs: 15 * 60_000,
   ema50Touch: EMA50_TOUCH,
+  tradePlan: TRADE_PLAN,
 } as const;

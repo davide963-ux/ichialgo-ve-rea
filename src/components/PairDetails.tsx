@@ -3,10 +3,11 @@ import { EMA50_TOUCH } from '../config/strategy';
 import type { Timeframe } from '../config/timeframes';
 import { useCandles } from '../hooks/useCandles';
 import { useNow } from '../hooks/useNow';
-import { useStrategyNotice, useTouchAnalysis } from '../hooks/useSignals';
+import { useStrategyNotice, useTouchAnalysis, useTradePlan } from '../hooks/useSignals';
 import { formatNumber, formatPrice } from '../lib/format';
 import { pipSize } from '../lib/pips';
-import { formatAgo } from '../lib/time';
+import { formatAgo, formatStamp } from '../lib/time';
+import { touchTimeMs } from '../services/strategy';
 import { useMarketStore } from '../state/marketStore';
 import { CandlestickChart } from './CandlestickChart';
 import { EmptyState } from './EmptyState';
@@ -14,6 +15,7 @@ import { MarketStatus } from './MarketStatus';
 import { PriceChange } from './PriceChange';
 import { SignalTable } from './SignalTable';
 import { TimeframeSelector } from './TimeframeSelector';
+import { TradePlanCard } from './TradePlanCard';
 
 interface Props {
   symbol: string;
@@ -29,6 +31,8 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
   const symbolError = useMarketStore((s) => s.symbolErrors[symbol]);
   const { status: chartStatus, candles, error, fetchedAt, reload } = useCandles(symbol, timeframe);
   const analysis = useTouchAnalysis(symbol, timeframe, candles);
+  const latestTouch = analysis.signals.at(-1) ?? null;
+  const plan = useTradePlan(latestTouch);
   const strategyNotice = useStrategyNotice(symbol);
   const now = useNow();
   const live = status === 'ONLINE';
@@ -196,6 +200,21 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
           </EmptyState>
         )}
       </section>
+
+      {latestTouch && (
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <h2 className="panel-title">Trade plan</h2>
+              <span className="panel-sub">
+                From the last touch ({formatStamp(touchTimeMs(latestTouch))}). Entry at the EMA, stop sized from ATR,
+                position sized to your account — edit the numbers on the Calculator page.
+              </span>
+            </div>
+          </div>
+          <TradePlanCard signal={latestTouch} plan={plan} />
+        </section>
+      )}
     </>
   );
 }

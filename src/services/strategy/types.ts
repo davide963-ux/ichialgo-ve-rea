@@ -41,6 +41,8 @@ export interface TouchSignal {
   ema: number;
   /** Half-width of the touch band, in pips. */
   tolerancePips: number;
+  /** ATR at the touch, in price units — the stop distance is built from it. */
+  atr: number;
   /** |price − ema| in pips: 0 = dead on the line. */
   distancePips: number;
   approach: Approach;
@@ -59,6 +61,8 @@ export interface WatchLevel {
   /** Band half-width in price units. */
   tolerance: number;
   tolerancePips: number;
+  /** ATR at the last scan, in price units. */
+  atr: number;
   trend: Trend;
   /** Where price sat at the last scan. */
   side: Approach | 'inside';

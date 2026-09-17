@@ -7,13 +7,17 @@
  *   useSymbolSignal(sym)  — the latest signal for one pair (scanner row tag)
  *   useWatchLevel(sym)    — the live EMA level (chart overlay, pair page)
  *   useTouchAnalysis(...) — EMA + touches for the candles a chart already has
+ *   useTradePlan(signal)  — ATR stop, target and lot size for one touch
  */
 import { useEffect, useMemo } from 'react';
 import { STRATEGY_CONFIG } from '../config/strategy';
 import { TIMEFRAME_SECONDS, type Timeframe } from '../config/timeframes';
-import { analyseEma50Touch, strategyEngine, touchTimeMs } from '../services/strategy';
-import type { TouchAnalysis, TouchSignal, WatchLevel } from '../services/strategy';
+import { analyseEma50Touch, planFromTouch, strategyEngine, touchTimeMs } from '../services/strategy';
+import type { TouchAnalysis, TouchSignal, TradePlan, WatchLevel } from '../services/strategy';
 import type { Candle } from '../services/marketData';
+import type { RateLookup } from '../lib/positionSize';
+import { useAccount } from '../state/accountStore';
+import { useMarketStore } from '../state/marketStore';
 import { useSignalStore } from '../state/signalStore';
 
 /** Runs the engine for as long as the app is mounted, following the timeframe. */
@@ -89,4 +93,23 @@ export function useSymbolSignal(symbol: string, freshBars = 3): TouchSignal | un
     const window = TIMEFRAME_SECONDS[latest.timeframe] * freshBars * 1000;
     return Date.now() - touchTimeMs(latest) <= window ? latest : undefined;
   }, [signals, symbol, freshBars]);
+}
+
+/**
+ * The order ticket for a touch: ATR-based stop, R-multiple target and the
+ * lot size that risks exactly the configured percentage of the account.
+ *
+ * Live quotes are passed in as the USD conversion source, so a cross like
+ * EUR/GBP can be sized from the GBP/USD rate the scanner already holds.
+ */
+export function useTradePlan(signal: TouchSignal | null | undefined): TradePlan | null {
+  const balance = useAccount((a) => a.balance);
+  const riskPct = useAccount((a) => a.riskPct);
+  const quotes = useMarketStore((s) => s.quotes);
+
+  return useMemo(() => {
+    if (!signal) return null;
+    const lookup: RateLookup = (sym) => quotes[sym]?.price ?? null;
+    return planFromTouch(signal, { balance, riskPct }, lookup);
+  }, [signal, balance, riskPct, quotes]);
 }

@@ -2,26 +2,52 @@
  * Forex position-size calculator UI.
  * All math lives in lib/positionSize.ts (pure + unit-tested).
  * Live quotes are used only for "Use live price" and cross-pair USD conversion.
+ *
+ * Balance and risk % are kept in accountStore (persisted), because the
+ * strategy's trade plans size themselves from the same two numbers — this
+ * page is where they are set.
+ *
+ * A trade plan links here with ?symbol=&entry=&sl=&tp= to prefill the form,
+ * so a signal can be reviewed and adjusted before it is taken.
  */
 import { useCallback, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { PAIRS, getPair } from '../config/pairs';
 import { formatMoney, formatNumber, formatPrice } from '../lib/format';
 import { pipSize } from '../lib/pips';
 import { calculatePosition, type RateLookup } from '../lib/positionSize';
+import { accountStore, useAccount } from '../state/accountStore';
 import { useMarketStore } from '../state/marketStore';
 
 const parse = (v: string): number => (v.trim() === '' ? NaN : Number(v.replace(',', '.')));
 
 export function Calculator() {
-  const [form, setForm] = useState({
-    balance: '10000',
-    riskPct: '1',
-    symbol: PAIRS[0]?.symbol ?? 'EUR/USD',
-    entry: '',
-    stopLoss: '',
-    takeProfit: '',
+  const [params] = useSearchParams();
+  const balance = useAccount((a) => a.balance);
+  const riskPct = useAccount((a) => a.riskPct);
+
+  // Prefill from a trade plan link; only read on the first render, so typing
+  // is never overwritten by the URL.
+  const [form, setForm] = useState(() => {
+    const symbol = params.get('symbol');
+    return {
+      symbol: symbol && PAIRS.some((p) => p.symbol === symbol) ? symbol : (PAIRS[0]?.symbol ?? 'EUR/USD'),
+      entry: params.get('entry') ?? '',
+      stopLoss: params.get('sl') ?? '',
+      takeProfit: params.get('tp') ?? '',
+    };
   });
+  const [account, setAccount] = useState({ balance: String(balance), riskPct: String(riskPct) });
+
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  /** Account fields write through to the shared store when they parse. */
+  const setAccountField = (k: keyof typeof account) => (e: { target: { value: string } }) => {
+    const raw = e.target.value;
+    setAccount((a) => ({ ...a, [k]: raw }));
+    const n = parse(raw);
+    if (Number.isFinite(n) && n > 0) accountStore.set({ [k]: n });
+  };
 
   const quotes = useMarketStore((s) => s.quotes);
   const live = useMarketStore((s) => s.status === 'ONLINE');
@@ -35,8 +61,8 @@ export function Calculator() {
     () =>
       calculatePosition(
         {
-          balance: parse(form.balance),
-          riskPct: parse(form.riskPct),
+          balance: parse(account.balance),
+          riskPct: parse(account.riskPct),
           symbol: form.symbol,
           entry: parse(form.entry),
           stopLoss: parse(form.stopLoss),
@@ -44,7 +70,7 @@ export function Calculator() {
         },
         lookup,
       ),
-    [form, lookup],
+    [form, account, lookup],
   );
 
   const isCross = pair.base !== 'USD' && pair.quote !== 'USD';
@@ -63,21 +89,21 @@ export function Calculator() {
       <section className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Trade inputs</h2>
-          <span className="panel-sub">Account currency: USD</span>
+          <span className="panel-sub">Account currency: USD · balance and risk are saved and reused by signals</span>
         </div>
         <div className="panel-body form-grid">
           <div className="two">
             <div className="field">
               <label htmlFor="c-bal">Account balance</label>
               <div className="input-affix">
-                <input id="c-bal" className="input" inputMode="decimal" value={form.balance} onChange={set('balance')} />
+                <input id="c-bal" className="input" inputMode="decimal" value={account.balance} onChange={setAccountField('balance')} />
                 <span>USD</span>
               </div>
             </div>
             <div className="field">
               <label htmlFor="c-risk">Risk</label>
               <div className="input-affix">
-                <input id="c-risk" className="input" inputMode="decimal" value={form.riskPct} onChange={set('riskPct')} />
+                <input id="c-risk" className="input" inputMode="decimal" value={account.riskPct} onChange={setAccountField('riskPct')} />
                 <span>%</span>
               </div>
             </div>

@@ -13,6 +13,7 @@ const signal = (over: Partial<TouchSignal> = {}): TouchSignal => ({
   price: 1.1,
   ema: 1.1,
   tolerancePips: 2,
+  atr: 0.0008,
   distancePips: 0.4,
   approach: 'above',
   outcome: 'bounce',

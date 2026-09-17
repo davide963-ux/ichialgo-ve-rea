@@ -1123,3 +1123,21 @@ select.input {
   gap: 12px;
   flex-wrap: wrap;
 }
+
+/* ═════════════════════ Trade plan card ═════════════════════ */
+.plan-card {
+  display: grid;
+  gap: 14px;
+}
+.plan-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.plan-head .panel-sub {
+  flex: 1 1 260px;
+}
+.plan-card .quote-grid dd .muted {
+  font-size: 11px;
+}

@@ -126,7 +126,8 @@ export function analyseEma50Touch(
     const prev = candles[i - 1]!;
     if (e === null || e === undefined || prevE === null || prevE === undefined) continue;
 
-    const tolerance = Math.max((atrSeries[i] ?? 0) * config.atrMultiple, minTolerance);
+    const barAtr = atrSeries[i] ?? 0;
+    const tolerance = Math.max(barAtr * config.atrMultiple, minTolerance);
     const approach: Approach = prev.close >= prevE ? 'above' : 'below';
     const touched = bar.low <= e + tolerance && bar.high >= e - tolerance;
 
@@ -151,6 +152,7 @@ export function analyseEma50Touch(
         price,
         ema: e,
         tolerancePips: tolerance / pip,
+        atr: barAtr,
         distancePips: Math.abs(price - e) / pip,
         approach,
         outcome: outcomeOf(bar, e, tolerance, approach),
@@ -174,6 +176,7 @@ export function analyseEma50Touch(
         ema: e,
         tolerance,
         tolerancePips: tolerance / pip,
+        atr: barAtr,
         trend: trendFromSlope(slope === null ? null : slope / pip, config.trendSlopePips),
         side,
         armed,
@@ -229,6 +232,7 @@ export function checkLiveTouch(
       price,
       ema: level.ema,
       tolerancePips: level.tolerancePips,
+      atr: level.atr,
       distancePips: Math.abs(distance) / pip,
       approach: approach ?? 'above',
       outcome: 'pending',

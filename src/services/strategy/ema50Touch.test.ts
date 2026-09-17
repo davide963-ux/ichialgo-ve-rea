@@ -166,6 +166,7 @@ describe('checkLiveTouch', () => {
     ema: 1.1,
     tolerance: 2 * PIP,
     tolerancePips: 2,
+    atr: 8 * PIP,
     trend: 'up',
     side: 'above',
     armed: true,

@@ -169,16 +169,19 @@ src/
   services/strategy/
     ema50Touch.ts            the detector: candles in, touches out (pure, tested)
     StrategyEngine.ts        scans every pair; live touches from the quote stream
+    tradePlan.ts             ATR stop, R target, lot size (pure, tested)
     types.ts                 TouchSignal, WatchLevel
   state/marketStore.ts       immutable external store (useSyncExternalStore)
   state/signalStore.ts       same pattern, for strategy signals
+  state/accountStore.ts      balance + risk %, persisted; shared by plans and calculator
   hooks/                     useMarketData, useCandles, useSignals, useNow
   lib/indicators/            ema, atr (+tests)
   lib/                       positionSize (+tests), pips, format, time, locale
   components/                Navbar, MetricCard, ForexTable, ForexRow, MarketStatus,
                              PriceChange, PairDetails, CandlestickChart, TimeframeSelector,
                              EmptyState, BacktestPanel, TradeTable, Calculator,
-                             ConnectionBanner, KumoMark, SignalTable, SignalBadge
+                             ConnectionBanner, KumoMark, SignalTable, SignalBadge,
+                             TradePlanCard
   pages/                     Dashboard, PairPage, EquityCurve, Backtest, CalculatorPage
 server/
   api.mjs                    read-only GET allowlist + Twelve Data failover handler
@@ -351,6 +354,45 @@ credit each). It reuses `MarketDataService`'s candle cache, so a pair chart you 
 is not fetched twice. On Twelve Data's free single-key plan this roughly doubles credit use —
 pool several keys (see above) or raise `VITE_TWELVEDATA_POLL_MS`.
 
+### From touch to order ticket
+
+Every signal carries the ATR at the touch, so it can be turned into a sized trade:
+
+```
+                     ┌──── take profit   entry + 2R
+        LONG         │
+   (touch from       ●──── entry = the EMA50 itself
+    above, EMA       │
+    rising)          └──── stop   entry − 1.5 × ATR   (floor: 8 pips)
+```
+
+The stop is ATR-based for the same reason the touch band is: the wick that tagged the EMA is
+itself roughly one ATR long, so a fixed stop gets taken out by ordinary noise in a fast market
+and is needlessly wide in a quiet one.
+
+```mermaid
+flowchart LR
+    T["touch signal<br/>(ema, atr, approach)"] --> D["direction<br/>from above → LONG<br/>from below → SHORT"]
+    D --> S["stop = entry ∓ 1.5×ATR<br/>target = entry ± 2R"]
+    S --> R["round to the pair's own<br/>precision (5 / 3 digits)"]
+    R --> P["calculatePosition()<br/>lib/positionSize.ts"]
+    ACC[("accountStore<br/>balance · risk %")] --> P
+    Q[("live quotes<br/>USD conversion for crosses")] --> P
+    P --> O["lots · units · risk $ · reward $"]
+```
+
+Prices are rounded **before** sizing — you cannot place an order at 1.1015183, and sizing off the
+raw float would make the plan disagree with the calculator it prefills.
+
+Sizing is the same `lib/positionSize.ts` the calculator uses, so a plan and a hand-typed
+calculation agree to the cent. Balance and risk % live in `accountStore` (persisted to
+localStorage), set on the **Calculator** page; the `SIZE` column in the signal table and the
+**Trade plan** card on the pair page both read them. "Open in calculator" prefills the form
+via `?symbol=&entry=&sl=&tp=` so a signal can be adjusted before it is taken.
+
+A counter-trend touch still gets a plan — it is a worse trade, not an impossible one — with the
+reason listed in the card's warnings.
+
 ### Tuning
 
 Everything lives in `src/config/strategy.ts`:
@@ -361,6 +403,8 @@ Everything lives in `src/config/strategy.ts`:
 | `atrMultiple` / `minTolerancePips` | 0.15 / 1.5 | how wide the touch band is |
 | `rearmBands` | 1.5 | how far price must leave before the pair can signal again |
 | `slopeLookback` / `trendSlopePips` | 10 / 0.15 | when the EMA counts as trending |
+| `stopAtrMultiple` / `rewardMultiple` | 1.5 / 2 | where the trade plan's stop and target sit |
+| `minStopPips` | 8 | floor on the stop when ATR collapses |
 
 The detector (`services/strategy/ema50Touch.ts`) is pure — candles in, signals out — so it is
 directly reusable by a backtest engine later.
