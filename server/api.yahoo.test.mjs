@@ -41,7 +41,7 @@ describe('GET /api/yahoo-chart/*', () => {
       });
     });
     const api = createMarketDataApi({});
-    const res = await call(api, '/api/yahoo-chart/EURUSD=X?interval=15m&range=5d');
+    const res = await call(api, '/api/yahoo-chart?symbol=EURUSD%3DX&interval=15m&range=5d');
 
     expect(res.statusCode).toBe(200);
     expect(seen[0].url).toBe('https://query1.finance.yahoo.com/v8/finance/chart/EURUSD=X?interval=15m&range=5d');
@@ -52,7 +52,7 @@ describe('GET /api/yahoo-chart/*', () => {
   it('needs no credentials at all', async () => {
     vi.stubGlobal('fetch', async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }));
     // Empty env: no keys, no tokens.
-    const res = await call(createMarketDataApi({}), '/api/yahoo-chart/GBPUSD=X?interval=1h&range=1d');
+    const res = await call(createMarketDataApi({}), '/api/yahoo-chart?symbol=GBPUSD%3DX&interval=1h&range=1d');
     expect(res.statusCode).not.toBe(503);
   });
 
@@ -65,15 +65,29 @@ describe('GET /api/yahoo-chart/*', () => {
     const api = createMarketDataApi({});
 
     for (const bad of [
-      '/api/yahoo-chart/AAPL?interval=1d',            // a stock, not a pair
-      '/api/yahoo-chart/../../etc/passwd',            // traversal
-      '/api/yahoo-chart/EURUSD=X/../v7/finance/quote', // endpoint escape
-      '/api/yahoo-chart/',                             // no symbol
+      '/api/yahoo-chart?symbol=AAPL&interval=1d&range=1mo',        // a stock, not a pair
+      '/api/yahoo-chart?symbol=../../etc/passwd',                   // traversal
+      '/api/yahoo-chart?symbol=EURUSD%3DX/../v7/finance/quote',     // endpoint escape
+      '/api/yahoo-chart',                                           // no symbol at all
+      '/api/yahoo-chart?symbol=EURUSD%3DX&interval=3s&range=5d',    // interval not on the list
+      '/api/yahoo-chart?symbol=EURUSD%3DX&interval=15m&range=99y',  // range not on the list
+      '/api/yahoo-chart/EURUSD=X?interval=15m',                     // the old path form
     ]) {
       const res = await call(api, bad);
-      expect(res.statusCode).toBe(403);
+      expect(res.statusCode, bad).toBe(403);
     }
     expect(used).toEqual([]); // nothing reached the network
+  });
+
+  it('rebuilds the upstream URL from validated parts only', async () => {
+    const seen = [];
+    vi.stubGlobal('fetch', async (url) => {
+      seen.push(String(url));
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    // Extra parameters the caller invents are dropped, not forwarded.
+    await call(createMarketDataApi({}), '/api/yahoo-chart?symbol=usdjpy%3Dx&interval=1h&range=1d&events=div&crumb=x');
+    expect(seen[0]).toBe('https://query1.finance.yahoo.com/v8/finance/chart/USDJPY=X?interval=1h&range=1d');
   });
 
   it('passes an upstream error through rather than masking it', async () => {
@@ -83,7 +97,7 @@ describe('GET /api/yahoo-chart/*', () => {
         headers: { 'content-type': 'application/json' },
       }),
     );
-    const res = await call(createMarketDataApi({}), '/api/yahoo-chart/XXXYYY=X?interval=15m&range=5d');
+    const res = await call(createMarketDataApi({}), '/api/yahoo-chart?symbol=XXXYYY%3DX&interval=15m&range=5d');
     expect(res.statusCode).toBe(404);
     expect(JSON.parse(res.body).chart.error.code).toBe('Not Found');
   });
@@ -92,14 +106,14 @@ describe('GET /api/yahoo-chart/*', () => {
     vi.stubGlobal('fetch', async () => {
       throw Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' });
     });
-    const res = await call(createMarketDataApi({}), '/api/yahoo-chart/EURUSD=X?interval=15m&range=5d');
+    const res = await call(createMarketDataApi({}), '/api/yahoo-chart?symbol=EURUSD%3DX&interval=15m&range=5d');
     expect(res.statusCode).toBe(502);
     expect(JSON.parse(res.body).errorMessage).toMatch(/unreachable/);
   });
 
   it('is still read-only', async () => {
     const res = fakeRes();
-    createMarketDataApi({}).middleware({ url: '/api/yahoo-chart/EURUSD=X', method: 'POST', headers: {} }, res, () => {});
+    createMarketDataApi({}).middleware({ url: '/api/yahoo-chart?symbol=EURUSD%3DX', method: 'POST', headers: {} }, res, () => {});
     await res.done.promise;
     expect(res.statusCode).toBe(405);
   });

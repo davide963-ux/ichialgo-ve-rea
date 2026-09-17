@@ -9,7 +9,7 @@
  * endpoint needs no key, no account and has no geography check, because
  * there is nothing to sign up for.
  *
- *   GET /v8/finance/chart/EURUSD=X?interval=15m&range=5d
+ *   GET /api/yahoo-chart?symbol=EURUSD=X&interval=15m&range=5d
  *     → meta:       live price, % change, previous close
  *     → timestamp:  UNIX seconds, one per bar
  *     → indicators.quote[0]: open[] high[] low[] close[] volume[]
@@ -185,8 +185,10 @@ export class YahooProvider implements MarketDataProvider {
   }
 
   private async chart(symbol: string, interval: string, range: string, signal?: AbortSignal) {
-    const qs = new URLSearchParams({ interval, range });
-    const body = await fetchJson<YahooChart>(`${REST}/${toYahooSymbol(symbol)}?${qs}`, signal);
+    // Symbol goes in the query, not the path: Yahoo tickers contain '=' and a
+    // static route is one less thing for a host's router to normalise.
+    const qs = new URLSearchParams({ symbol: toYahooSymbol(symbol), interval, range });
+    const body = await fetchJson<YahooChart>(`${REST}?${qs}`, signal);
     return unwrap(body, symbol);
   }
 
