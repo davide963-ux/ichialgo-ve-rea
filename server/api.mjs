@@ -18,6 +18,7 @@
  *   GET /api/oanda-stream/account/pricing/stream → {stream}/v3/accounts/{id}/pricing/stream
  *   GET /api/td-rest/quote | time_series      →  https://api.twelvedata.com/…
  *   GET /api/td-rest/_status                  →  local key-pool report (no upstream call)
+ *   GET /api/yahoo-chart/{SYMBOL}             →  https://query1.finance.yahoo.com/v8/finance/chart/…
  *
  * Twelve Data requests are NOT proxied blindly: they go through a key pool
  * (server/twelveDataKeyPool.mjs) that fails over to the next API key when one
@@ -45,6 +46,21 @@ function stripClientHeaders(proxyReq) {
   // Never forward browser credentials/identity upstream.
   for (const h of ['cookie', 'authorization', 'origin', 'referer']) proxyReq.removeHeader(h);
 }
+
+const YAHOO_REST_DEFAULT = 'https://query1.finance.yahoo.com';
+
+/**
+ * Yahoo's chart endpoint needs no key, which is the whole reason it is here:
+ * it is the only forex OHLC source that works without a broker account, and
+ * brokers are licensed per country. It DOES reject requests with a default
+ * client user-agent, so the proxy sends a browser one.
+ *
+ * This is an unofficial endpoint with no stability guarantee. It is proxied
+ * like everything else so the browser never talks to a third party directly,
+ * and so a change upstream shows up in one place.
+ */
+const YAHOO_UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36';
 
 const TD_MISSING =
   'Set TWELVEDATA_API_KEY (or TWELVEDATA_API_KEYS with several comma-separated keys) in .env, then restart the server.';
@@ -87,6 +103,10 @@ export function readConfig(env) {
       // Overrides exist for local testing against a mock server only.
       rest: (env.OANDA_REST_URL || OANDA[envName].rest).trim(),
       stream: (env.OANDA_STREAM_URL || OANDA[envName].stream).trim(),
+    },
+    yahoo: {
+      // Override exists for local testing against a mock server only.
+      rest: (env.YAHOO_REST_URL || YAHOO_REST_DEFAULT).trim(),
     },
     twelvedata: {
       /** Failover order. One key per Twelve Data account — see .env.example. */
@@ -215,6 +235,27 @@ export function createMarketDataApi(env = process.env) {
     });
   }
 
+  /** Yahoo chart: no credentials, just a user-agent and a pass-through. */
+  async function yahooChart(req, res) {
+    const path = req.url || '/';
+    let upstream;
+    let text;
+    try {
+      upstream = await fetch(`${cfg.yahoo.rest}${path}`, {
+        headers: { Accept: 'application/json', 'User-Agent': YAHOO_UA },
+        signal: AbortSignal.timeout(15_000),
+      });
+      text = await upstream.text();
+    } catch (err) {
+      return sendJson(res, 502, { errorMessage: `Provider unreachable (${err.code || err.message})` });
+    }
+    if (res.headersSent) return;
+    res.statusCode = upstream.status;
+    res.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.end(text);
+  }
+
   function tdStatus(_req, res) {
     return sendJson(res, 200, tdPool.snapshot());
   }
@@ -247,6 +288,15 @@ export function createMarketDataApi(env = process.env) {
       missing: TD_MISSING,
       to: (m) => `/${m[1]}${m[2] ?? ''}`,
       proxy: tdRest,
+    },
+    {
+      // Only "EURUSD=X"-shaped symbols: keeps the allowlist as tight as the
+      // others, so this cannot become a general-purpose open proxy.
+      re: /^\/api\/yahoo-chart\/([A-Z]{6}=X)(\?[\w=&.%,-]*)?$/,
+      ready: () => true,
+      missing: '',
+      to: (m) => `/v8/finance/chart/${m[1]}${m[2] ?? ''}`,
+      proxy: yahooChart,
     },
     {
       // Key-pool report for the client-side credit meter. Costs no credits:
