@@ -6,10 +6,17 @@
  *      The REST quote has NO bid/ask, so those columns show "—".
  *  - Candles: GET /time_series?symbol=..&interval=..&outputsize=..
  *
- * Free Basic plan = 8 credits/minute AND 800 credits/day. With 7 pairs a
- * 60s poll uses 7 credits/min, so the daily cap runs out after ~1h50m.
- * Every request is metered by CreditBudget (VITE_TWELVEDATA_CREDITS_PER_*)
- * and fails fast with a clear rate_limit error instead of silently stalling.
+ * Free Basic plan = 8 credits/minute AND 800 credits/day PER KEY. With 7 pairs
+ * a 60s poll uses 7 credits/min, so one key's daily cap runs out after ~1h50m.
+ *
+ * MULTIPLE KEYS: the proxy (server/twelveDataKeyPool.mjs) pools one key per
+ * Twelve Data account and fails over to the next when one runs out, so the
+ * effective budget is `limit × keyCount`. The keys stay server-side; this
+ * provider only learns HOW MANY there are, from GET /api/td-rest/_status
+ * during assertConfigured(), and scales its local meter accordingly.
+ *
+ * Every request is metered by CreditBudget and fails fast with a clear
+ * rate_limit error instead of silently stalling.
  * WebSocket streaming requires a Pro plan; it can be added later behind
  * `subscribe()` without UI changes.
  *
@@ -57,6 +64,14 @@ interface TdQuote {
   is_market_open?: boolean;
 }
 
+/** GET /api/td-rest/_status — our proxy's key-pool report (costs no credits). */
+interface TdPoolStatus {
+  keys: number;
+  available: number;
+  perMinuteTotal: number;
+  perDayTotal: number | null;
+}
+
 interface TdSeries {
   values?: { datetime: string; open: string; high: string; low: string; close: string; volume?: string }[];
 }
@@ -71,7 +86,8 @@ function mapError(e: TdError, symbol?: string): ProviderError {
     case 403:
       return new ProviderError('auth', 'Twelve Data rejected the API key. Check TWELVEDATA_API_KEY in .env, then restart the dev server.');
     case 429:
-      return new ProviderError('rate_limit', 'Twelve Data credit limit reached', { retryAfterMs: 60_000 });
+      // The proxy's own pool-exhausted message names the key count — keep it.
+      return new ProviderError('rate_limit', message || 'Twelve Data credit limit reached', { retryAfterMs: 60_000 });
     case 400:
     case 404:
       return new ProviderError('invalid_symbol', symbol ? `${symbol}: ${message}` : message, { symbol });
@@ -97,9 +113,32 @@ export class TwelveDataProvider implements MarketDataProvider {
     perDay: APP_CONFIG.twelveDataCreditsPerDay,
   });
 
-  async assertConfigured(): Promise<void> {
-    // No pre-flight request: every call costs credits on the free plan.
-    // Missing/invalid keys surface on the first quote request as 'auth'.
+  /**
+   * Asks the proxy how many API keys are pooled and widens the local credit
+   * meter to the pooled budget. This hits OUR server only — no Twelve Data
+   * call, so it costs no credits. Missing/invalid keys still surface on the
+   * first quote request as 'auth'.
+   *
+   * Only a genuine "no keys configured" answer is fatal; any other failure
+   * (old deployment without /_status, transient network error) leaves the
+   * single-key defaults from APP_CONFIG in place rather than halting the app.
+   */
+  async assertConfigured(signal?: AbortSignal): Promise<void> {
+    let status: TdPoolStatus;
+    try {
+      status = await fetchJson<TdPoolStatus>(`${REST}/_status`, signal);
+    } catch (err) {
+      if (isAbort(err)) throw err;
+      const e = toProviderError(err);
+      if (e.kind === 'config' && e.code === 'NOT_CONFIGURED') throw e;
+      return; // degrade to the per-key defaults
+    }
+    if (!status || typeof status.keys !== 'number' || status.keys < 1) return;
+    this.budget.setLimits({
+      perMinute: status.perMinuteTotal,
+      perDay: status.perDayTotal,
+      poolSize: status.keys,
+    });
   }
 
   async getQuotes(symbols: string[], signal?: AbortSignal): Promise<QuoteBatch> {

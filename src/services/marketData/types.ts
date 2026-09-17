@@ -101,13 +101,20 @@ export class ProviderError extends Error {
   readonly kind: ProviderErrorKind;
   readonly retryAfterMs?: number;
   readonly symbol?: string;
+  /** Machine-readable code from our own proxy (e.g. 'NOT_CONFIGURED'). */
+  readonly code?: string;
 
-  constructor(kind: ProviderErrorKind, message: string, opts: { retryAfterMs?: number; symbol?: string } = {}) {
+  constructor(
+    kind: ProviderErrorKind,
+    message: string,
+    opts: { retryAfterMs?: number; symbol?: string; code?: string } = {},
+  ) {
     super(message);
     this.name = 'ProviderError';
     this.kind = kind;
     this.retryAfterMs = opts.retryAfterMs;
     this.symbol = opts.symbol;
+    this.code = opts.code;
   }
 }
 
