@@ -51,11 +51,16 @@ every other free forex source needs one. Finnhub puts forex candles behind a pai
 Data's free tier is 8 credits/minute.
 
 ```
-GET /v8/finance/chart/EURUSD=X?interval=15m&range=5d
+GET /api/yahoo-chart?symbol=EURUSD=X&interval=15m&range=5d
   → meta:      live price, % change vs previous close
   → timestamp: UNIX seconds, one per bar
   → quote[0]:  open[] high[] low[] close[] volume[]
 ```
+
+The symbol travels as a query parameter rather than a path segment: Yahoo tickers contain `=`,
+and a static route is one less thing for a host's router to normalise. The proxy rebuilds the
+upstream URL from a validated symbol, interval and range — nothing the caller sends is pasted
+into a URL the server then fetches.
 
 **One request per pair gives the quote AND the candles**, because `meta` carries the live price.
 A 7-pair refresh is 7 requests with no credit arithmetic at all.
@@ -629,7 +634,11 @@ Worked example (unit test): USD/JPY at 150.00, stop 150.50, $10,000, 1% risk
 **Add a provider:**
 1. Implement `MarketDataProvider` in `providers/MyProvider.ts` (map symbols, map errors to `ProviderError`).
 2. Register it in `providers/index.ts` and add `'myprovider'` to `ProviderId`.
-3. Add a read-only route for it in `server/api.mjs` (`routes` array). Dev, preview and production all pick it up.
+3. Add a read-only route for it in `server/api.mjs` (`routes` array).
+4. **Create `api/<prefix>/[...path].js`** re-exporting `_lib/handler.mjs`. Vercel's functions are
+   file-based: a route without a matching folder works in dev (Vite pipes everything through the
+   shared middleware) and **404s in production**. `server/api.routes.test.mjs` fails if the two
+   drift apart, in either direction.
 
 `YahooProvider` is the smallest worked example — no credentials, one endpoint, and it shows how
 to handle a source that lacks a timeframe (4H is resampled) and pads its arrays with nulls.

@@ -18,7 +18,7 @@
  *   GET /api/oanda-stream/account/pricing/stream → {stream}/v3/accounts/{id}/pricing/stream
  *   GET /api/td-rest/quote | time_series      →  https://api.twelvedata.com/…
  *   GET /api/td-rest/_status                  →  local key-pool report (no upstream call)
- *   GET /api/yahoo-chart/{SYMBOL}             →  https://query1.finance.yahoo.com/v8/finance/chart/…
+ *   GET /api/yahoo-chart?symbol=EURUSD=X      →  https://query1.finance.yahoo.com/v8/finance/chart/…
  *
  * Twelve Data requests are NOT proxied blindly: they go through a key pool
  * (server/twelveDataKeyPool.mjs) that fails over to the next API key when one
@@ -58,6 +58,10 @@ const YAHOO_REST_DEFAULT = 'https://query1.finance.yahoo.com';
  * This is an unofficial endpoint with no stability guarantee. It is proxied
  * like everything else so the browser never talks to a third party directly,
  * and so a change upstream shows up in one place.
+ *
+ * The symbol travels as a QUERY PARAMETER, not a path segment. Yahoo tickers
+ * contain '=' ("EURUSD=X"), and a static route is one less thing for a host's
+ * router or a catch-all to normalise on the way through.
  */
 const YAHOO_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36';
@@ -75,6 +79,25 @@ function estimateCredits(path) {
   if (!path.startsWith('/quote')) return 1;
   const n = symbol.split(',').filter((s) => s.trim()).length;
   return Math.max(1, n);
+}
+
+/** Yahoo tickers are exactly six letters plus "=X" — e.g. EURUSD=X. */
+const YAHOO_SYMBOL = /^[A-Z]{6}=X$/;
+const YAHOO_INTERVAL = new Set(['1m', '2m', '5m', '15m', '30m', '60m', '1h', '1d']);
+const YAHOO_RANGE = new Set(['1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd', 'max']);
+
+/**
+ * Rebuild the upstream path from validated parts. Returns null when anything
+ * is off, which the middleware turns into a 403 — so an arbitrary symbol or
+ * interval can never be pasted into a URL we then fetch.
+ */
+export function yahooUpstreamPath(query) {
+  const params = new URLSearchParams(query.startsWith('?') ? query.slice(1) : query);
+  const symbol = (params.get('symbol') || '').toUpperCase();
+  const interval = params.get('interval') || '1d';
+  const range = params.get('range') || '1mo';
+  if (!YAHOO_SYMBOL.test(symbol) || !YAHOO_INTERVAL.has(interval) || !YAHOO_RANGE.has(range)) return null;
+  return `/v8/finance/chart/${symbol}?${new URLSearchParams({ interval, range })}`;
 }
 
 /** Diagnostics for the browser/devtools. Never exposes key material. */
@@ -290,12 +313,12 @@ export function createMarketDataApi(env = process.env) {
       proxy: tdRest,
     },
     {
-      // Only "EURUSD=X"-shaped symbols: keeps the allowlist as tight as the
-      // others, so this cannot become a general-purpose open proxy.
-      re: /^\/api\/yahoo-chart\/([A-Z]{6}=X)(\?[\w=&.%,-]*)?$/,
+      // Static path, symbol in the query. `to` rebuilds the upstream URL from
+      // validated parts only, so nothing the caller sends is pasted into it.
+      re: /^\/api\/yahoo-chart(\?.*)?$/,
       ready: () => true,
       missing: '',
-      to: (m) => `/v8/finance/chart/${m[1]}${m[2] ?? ''}`,
+      to: (m) => yahooUpstreamPath(m[1] ?? ''),
       proxy: yahooChart,
     },
     {
@@ -323,7 +346,11 @@ export function createMarketDataApi(env = process.env) {
       if (!route.ready()) {
         return sendJson(res, 503, { error: 'NOT_CONFIGURED', errorMessage: route.missing });
       }
-      req.url = route.to(m);
+      const target = route.to(m);
+      if (target === null) {
+        return sendJson(res, 403, { error: 'FORBIDDEN_PATH', errorMessage: `Rejected request to ${url.split('?')[0]}` });
+      }
+      req.url = target;
       // Handlers may be async (Twelve Data key failover); never let a rejection
       // hang the request.
       return Promise.resolve(route.proxy(req, res, next)).catch((err) => {
