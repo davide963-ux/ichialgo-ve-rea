@@ -5,6 +5,8 @@
 export { strategyEngine, StrategyEngine, mergeSignals } from './StrategyEngine';
 export { analyseEma50Touch, checkLiveTouch, signalId, touchTimeMs } from './ema50Touch';
 export type { TouchAnalysis } from './ema50Touch';
+export { runBacktest, summarise } from './backtest';
+export type { BacktestOptions, BacktestResult, BacktestStats, BacktestTrade, ExitReason } from './backtest';
 export { ICHIMOKU_CHECKS, explainContext, ichimokuContextAt } from './ichimokuContext';
 export type { IchimokuContext } from './ichimokuContext';
 export { calculatorLink, directionOf, planFromTouch } from './tradePlan';
