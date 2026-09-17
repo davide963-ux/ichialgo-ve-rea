@@ -635,10 +635,17 @@ Worked example (unit test): USD/JPY at 150.00, stop 150.50, $10,000, 1% risk
 1. Implement `MarketDataProvider` in `providers/MyProvider.ts` (map symbols, map errors to `ProviderError`).
 2. Register it in `providers/index.ts` and add `'myprovider'` to `ProviderId`.
 3. Add a read-only route for it in `server/api.mjs` (`routes` array).
-4. **Create `api/<prefix>/[...path].js`** re-exporting `_lib/handler.mjs`. Vercel's functions are
-   file-based: a route without a matching folder works in dev (Vite pipes everything through the
-   shared middleware) and **404s in production**. `server/api.routes.test.mjs` fails if the two
-   drift apart, in either direction.
+4. **Create the serverless entry point** re-exporting `_lib/handler.mjs`, and get the SHAPE right:
+
+   | The route your proxy serves | The file Vercel needs |
+   |---|---|
+   | `/api/<prefix>/something` | `api/<prefix>/[...path].js` |
+   | `/api/<prefix>` (bare, params in the query) | `api/<prefix>.js` |
+
+   A `[...path]` catch-all matches `/api/foo/bar` but **not** `/api/foo` — it needs at least one
+   segment. Neither mistake fails locally, because Vite pipes every request through the shared
+   middleware whatever is in `api/`. `server/api.routes.test.mjs` derives the required shape from
+   the route regexes and fails if a route and its file disagree.
 
 `YahooProvider` is the smallest worked example — no credentials, one endpoint, and it shows how
 to handle a source that lacks a timeframe (4H is resampled) and pads its arrays with nulls.
