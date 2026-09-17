@@ -1,10 +1,16 @@
 /**
- * Vercel's functions are FILE-BASED. A route added to server/api.mjs works in
- * dev (Vite pipes every request through the shared middleware) and 404s in
- * production if no api/<prefix>/ folder exists to bind a function to.
+ * Vercel's API routing is FILE-BASED, and the file SHAPE matters:
  *
- * That is exactly how /api/yahoo-chart shipped broken, so this test asserts
- * the two stay in step, in both directions.
+ *   api/foo.js            → exactly /api/foo
+ *   api/foo/[...path].js  → /api/foo/<at least one segment>, NOT /api/foo
+ *
+ * Both halves of that shipped broken once. First the Yahoo route had no file
+ * at all; then it had a [...path] folder while the route is the bare
+ * /api/yahoo-chart, so the catch-all never matched and Vercel returned its
+ * own 404. Neither failed locally, because Vite pipes every request through
+ * the shared middleware regardless of what is in api/.
+ *
+ * So this derives the required shape from the route regexes themselves.
  */
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -12,50 +18,76 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repo = join(here, '..');
+const apiDir = join(here, '..', 'api');
 
-/** Every /api/<prefix> the proxy's route table answers. */
-function routePrefixes() {
+/**
+ * Each route in the proxy's table, as { prefix, hasSubPath }.
+ * `hasSubPath` is true when the regex requires a "/" after the prefix.
+ */
+function proxyRoutes() {
   const src = readFileSync(join(here, 'api.mjs'), 'utf8');
-  const found = new Set();
-  // Route regexes are written as literals: re: /^\/api\/<prefix>\/…
-  for (const m of src.matchAll(/re:\s*\/\^\\\/api\\\/([a-z0-9-]+)/g)) found.add(m[1]);
-  return [...found].sort();
+  const out = [];
+  for (const m of src.matchAll(/re:\s*\/\^\\\/api\\\/([a-z0-9-]+)(\\\/)?/g)) {
+    out.push({ prefix: m[1], hasSubPath: Boolean(m[2]) });
+  }
+  return out;
 }
 
-/** Every api/<prefix>/ folder Vercel will turn into a function. */
-function functionPrefixes() {
-  return readdirSync(join(repo, 'api'), { withFileTypes: true })
-    .filter((d) => d.isDirectory() && !d.name.startsWith('_'))
-    .map((d) => d.name)
-    .sort();
+/** What Vercel would actually expose, from the files on disk. */
+function deployedRoutes() {
+  const out = [];
+  for (const entry of readdirSync(apiDir, { withFileTypes: true })) {
+    if (entry.name.startsWith('_')) continue;
+    if (entry.isFile() && entry.name.endsWith('.js')) {
+      out.push({ kind: 'static', prefix: entry.name.replace(/\.js$/, '') });
+    } else if (entry.isDirectory()) {
+      for (const f of readdirSync(join(apiDir, entry.name))) {
+        if (/^\[\.\.\..+\]\.js$/.test(f)) out.push({ kind: 'catchall', prefix: entry.name });
+        else if (f === 'index.js') out.push({ kind: 'static', prefix: entry.name });
+      }
+    }
+  }
+  return out;
 }
+
+const serves = (deployed, { prefix, hasSubPath }) =>
+  deployed.some((d) => d.prefix === prefix && (hasSubPath ? d.kind === 'catchall' || d.kind === 'static' : d.kind === 'static'));
 
 describe('proxy routes vs Vercel functions', () => {
-  it('finds the route table (guards against this test silently passing)', () => {
-    const prefixes = routePrefixes();
-    expect(prefixes.length).toBeGreaterThanOrEqual(4);
-    expect(prefixes).toContain('yahoo-chart');
-    expect(prefixes).toContain('td-rest');
+  it('finds the route table (so this cannot pass by reading nothing)', () => {
+    const routes = proxyRoutes();
+    expect(routes.length).toBeGreaterThanOrEqual(5);
+    expect(routes.map((r) => r.prefix)).toContain('yahoo-chart');
+    // The Yahoo route is the BARE prefix — the case a catch-all cannot serve.
+    expect(routes.find((r) => r.prefix === 'yahoo-chart')?.hasSubPath).toBe(false);
+    // …while Twelve Data's routes do carry a sub-path.
+    expect(routes.some((r) => r.prefix === 'td-rest' && r.hasSubPath)).toBe(true);
   });
 
-  it('gives every proxy route a serverless function', () => {
-    for (const prefix of routePrefixes()) {
-      expect(functionPrefixes(), `server/api.mjs serves /api/${prefix} but api/${prefix}/ does not exist — it will 404 on Vercel`).toContain(prefix);
+  it('deploys a function of the right SHAPE for every route', () => {
+    const deployed = deployedRoutes();
+    for (const route of proxyRoutes()) {
+      expect(
+        serves(deployed, route),
+        route.hasSubPath
+          ? `server/api.mjs serves /api/${route.prefix}/… but no api/${route.prefix}/[...path].js exists`
+          : `server/api.mjs serves the bare /api/${route.prefix}, which a [...path] catch-all CANNOT match — it needs api/${route.prefix}.js`,
+      ).toBe(true);
     }
   });
 
   it('does not ship a function for a route that no longer exists', () => {
-    for (const prefix of functionPrefixes()) {
-      expect(routePrefixes(), `api/${prefix}/ exists but server/api.mjs serves no /api/${prefix} route`).toContain(prefix);
+    const prefixes = new Set(proxyRoutes().map((r) => r.prefix));
+    for (const d of deployedRoutes()) {
+      expect(prefixes, `api/ deploys ${d.prefix} but server/api.mjs serves no /api/${d.prefix} route`).toContain(d.prefix);
     }
   });
 
   it('points every function at the shared handler, so they cannot drift', () => {
-    for (const prefix of functionPrefixes()) {
-      const entry = join(repo, 'api', prefix, '[...path].js');
-      expect(existsSync(entry), `api/${prefix}/[...path].js is missing`).toBe(true);
-      expect(readFileSync(entry, 'utf8')).toMatch(/from '\.\.\/_lib\/handler\.mjs'/);
+    for (const d of deployedRoutes()) {
+      const file = d.kind === 'static' ? join(apiDir, `${d.prefix}.js`) : join(apiDir, d.prefix, '[...path].js');
+      const path = existsSync(file) ? file : join(apiDir, d.prefix, 'index.js');
+      expect(readFileSync(path, 'utf8')).toMatch(/_lib\/handler\.mjs'/);
     }
   });
 });
