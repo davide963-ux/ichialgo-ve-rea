@@ -35,7 +35,7 @@
  * fired earlier on that bar, because the closed bar knows the outcome.
  */
 import { STRATEGY_CONFIG } from '../../config/strategy';
-import type { Timeframe } from '../../config/timeframes';
+import { DEFAULT_TIMEFRAME, type Timeframe } from '../../config/timeframes';
 import { APP_CONFIG } from '../../config/app';
 import { marketDataService } from '../marketData';
 import { toProviderError, type Quote } from '../marketData/types';
@@ -62,7 +62,7 @@ export function mergeSignals(existing: readonly TouchSignal[], incoming: readonl
 }
 
 export class StrategyEngine {
-  private timeframe: Timeframe = '15M';
+  private timeframe: Timeframe = DEFAULT_TIMEFRAME;
   private session = 0;
   private timer?: ReturnType<typeof setInterval>;
   private unsubscribe?: () => void;

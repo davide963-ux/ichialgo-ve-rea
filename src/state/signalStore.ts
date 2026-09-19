@@ -8,7 +8,7 @@
  * marketStore: selectors must return primitives or stable references.
  */
 import { useSyncExternalStore } from 'react';
-import type { Timeframe } from '../config/timeframes';
+import { DEFAULT_TIMEFRAME, type Timeframe } from '../config/timeframes';
 import type { TouchSignal, WatchLevel } from '../services/strategy/types';
 
 export type StrategyStatus = 'IDLE' | 'WARMING' | 'READY' | 'ERROR';
@@ -34,7 +34,7 @@ type Listener = () => void;
 
 const EMPTY: SignalState = {
   status: 'IDLE',
-  timeframe: '15M',
+  timeframe: DEFAULT_TIMEFRAME,
   signals: [],
   levels: {},
   notices: {},

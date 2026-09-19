@@ -52,9 +52,6 @@ const BACKGROUND_WAIT_MS = 1_500;
 const MAX_POLL_MS = 300_000;
 
 const INTERVAL: Record<Timeframe, string> = {
-  '1M': '1min',
-  '5M': '5min',
-  '15M': '15min',
   '30M': '30min',
   '1H': '1h',
   '4H': '4h',

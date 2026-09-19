@@ -13,7 +13,7 @@ function candles(closes: number[], wickPips = 3): Candle[] {
   return closes.map((close, i) => {
     const open = i === 0 ? close : closes[i - 1]!;
     return {
-      time: 1_700_000_000 + i * 900,
+      time: 1_700_000_000 + i * 1800,
       open,
       high: Math.max(open, close) + w,
       low: Math.min(open, close) - w,
@@ -104,7 +104,7 @@ describe('ichimokuContextAt', () => {
     const jpy = Array.from({ length: 150 }, (_, i) => 150 + i * 0.02);
     const bars = jpy.map((close, i) => {
       const open = i === 0 ? close : jpy[i - 1]!;
-      return { time: i * 900, open, high: Math.max(open, close) + 0.03, low: Math.min(open, close) - 0.03, close, volume: null, complete: true };
+      return { time: i * 1800, open, high: Math.max(open, close) + 0.03, low: Math.min(open, close) - 0.03, close, volume: null, complete: true };
     });
     const series = ichimoku(bars);
     const i = bars.length - 1;
