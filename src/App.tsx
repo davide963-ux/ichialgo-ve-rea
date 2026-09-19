@@ -3,9 +3,11 @@ import { Navbar } from './components/Navbar';
 import { DEFAULT_TIMEFRAME, isTimeframe } from './config/timeframes';
 import { useMarketDataConnection } from './hooks/useMarketData';
 import { useStrategyEngine } from './hooks/useSignals';
+import { useSignalPersistence } from './hooks/useSignalStorage';
 import { Backtest } from './pages/Backtest';
 import { CalculatorPage } from './pages/CalculatorPage';
 import { Dashboard } from './pages/Dashboard';
+import { History } from './pages/History';
 import { EquityCurve } from './pages/EquityCurve';
 import { NotFound } from './pages/NotFound';
 import { PairPage } from './pages/PairPage';
@@ -19,6 +21,8 @@ function StrategyRunner() {
   const [params] = useSearchParams();
   const tf = params.get('tf');
   useStrategyEngine(isTimeframe(tf) ? tf : DEFAULT_TIMEFRAME);
+  // Writes every signal the engine produces to the history store.
+  useSignalPersistence();
   return null;
 }
 
@@ -44,6 +48,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/pair/:slug" element={<PairPage />} />
+          <Route path="/history" element={<History />} />
           <Route path="/equity" element={<EquityCurve />} />
           <Route path="/backtest" element={<Backtest />} />
           <Route path="/calculator" element={<CalculatorPage />} />

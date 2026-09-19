@@ -14,6 +14,8 @@
  *   GET /api/td-rest/quote             →  https://api.twelvedata.com/quote
  *   GET /api/td-rest/time_series       →  https://api.twelvedata.com/time_series
  *   GET /api/td-rest/_status           →  local key-pool report (no upstream call)
+ *   GET  /api/signals                  →  stored signal history (Supabase)
+ *   POST /api/signals                  →  store signals (requires INGEST_TOKEN)
  *
  * Twelve Data requests are NOT proxied blindly: they go through a key pool
  * (server/twelveDataKeyPool.mjs) that fails over to the next API key when one
@@ -22,6 +24,7 @@
  * proxy cannot inspect — hence the explicit fetch below.
  */
 import { TwelveDataKeyPool, classifyResponse, readApiKeys } from './twelveDataKeyPool.mjs';
+import { createSignalsApi } from './signals.mjs';
 
 const TD_MISSING =
   'Set TWELVEDATA_API_KEY (or TWELVEDATA_API_KEYS with several comma-separated keys) in .env, then restart the server.';
@@ -76,6 +79,7 @@ export function readConfig(env) {
 
 export function createMarketDataApi(env = process.env) {
   const cfg = readConfig(env);
+  const signals = createSignalsApi(env);
 
   const tdPool = new TwelveDataKeyPool({
     keys: cfg.twelvedata.keys,
@@ -162,6 +166,8 @@ export function createMarketDataApi(env = process.env) {
     return sendJson(res, 200, tdPool.snapshot());
   }
 
+  // `method` defaults to GET. /api/signals is the one POST the proxy accepts,
+  // and it is the only route that writes anything anywhere.
   const routes = [
     {
       re: /^\/api\/td-rest\/(quote|time_series)(\?.*)?$/,
@@ -179,6 +185,21 @@ export function createMarketDataApi(env = process.env) {
       to: (m) => `/_status${m[1] ?? ''}`,
       proxy: tdStatus,
     },
+    {
+      re: /^\/api\/signals(\?.*)?$/,
+      method: 'POST',
+      ready: () => true,
+      missing: '',
+      to: (m) => `/signals${m[1] ?? ''}`,
+      proxy: signals.ingest,
+    },
+    {
+      re: /^\/api\/signals(\?.*)?$/,
+      ready: () => true,
+      missing: '',
+      to: (m) => `/signals${m[1] ?? ''}`,
+      proxy: signals.history,
+    },
   ];
 
   /** Connect/Express middleware. Mount at the root. */
@@ -186,10 +207,12 @@ export function createMarketDataApi(env = process.env) {
     const url = req.url || '';
     if (!url.startsWith('/api/')) return next();
 
-    if (req.method !== 'GET') {
-      return sendJson(res, 405, { error: 'METHOD_NOT_ALLOWED', errorMessage: 'The market-data proxy is read-only (GET only).' });
+    const method = req.method || 'GET';
+    if (method !== 'GET' && method !== 'POST') {
+      return sendJson(res, 405, { error: 'METHOD_NOT_ALLOWED', errorMessage: 'Only GET and POST are accepted.' });
     }
     for (const route of routes) {
+      if ((route.method ?? 'GET') !== method) continue;
       const m = url.match(route.re);
       if (!m) continue;
       if (!route.ready()) {
@@ -206,7 +229,11 @@ export function createMarketDataApi(env = process.env) {
         sendJson(res, 502, { errorMessage: `Market-data proxy error (${err?.message || err})` });
       });
     }
-    return sendJson(res, 403, { error: 'FORBIDDEN_PATH', errorMessage: `Not on the read-only allowlist: ${url.split('?')[0]}` });
+    // A path that exists but not for this method is a 405, not a 403.
+    if (routes.some((r) => r.re.test(url))) {
+      return sendJson(res, 405, { error: 'METHOD_NOT_ALLOWED', errorMessage: `${method} is not accepted on ${url.split('?')[0]}` });
+    }
+    return sendJson(res, 403, { error: 'FORBIDDEN_PATH', errorMessage: `Not on the allowlist: ${url.split('?')[0]}` });
   }
 
   return { middleware, config: cfg };

@@ -541,7 +541,88 @@ Worked example (unit test): USD/JPY at 150.00, stop 150.50, $10,000, 1% risk
 
 ---
 
-## 6. Extending
+## 6. Signal history (database)
+
+Every touch the strategy finds is written to Postgres, so the record survives a page reload, a
+redeploy and a browser change. The **History** page reads it back.
+
+### The shape of it
+
+```mermaid
+flowchart LR
+    SE[StrategyEngine.scan] --> SS[(signalStore)]
+    SS --> UP["useSignalPersistence()<br/>batches, dedupes by version,<br/>retries failures"]
+    UP -- "POST /api/signals<br/>x-ingest-token" --> API["server/signals.mjs"]
+    API -- "rpc/upsert_signals<br/>service key" --> PG[("Supabase Postgres<br/>public.signals")]
+    HP[History page] -- "GET /api/signals?symbol=&timeframe=&outcome=" --> API
+    API -- "select, newest first" --> PG
+```
+
+The browser never talks to Supabase. It posts to our own proxy, which holds the **service key**
+server-side — the same rule as the market-data keys. The table has RLS enabled with **no
+policies**, so the anon key cannot read or write it even if it leaks; only the service role gets
+through.
+
+### Why an upsert, and why signals change
+
+A touch is first seen while its bar is still forming (`outcome: 'pending'`, `source: 'live'`) and
+is re-examined once the bar closes, when it becomes a bounce, a cross or inside. So the same
+signal is sent more than once with better information. `upsert_signals` merges on the signal id:
+
+```sql
+where s.source = 'live' or s.outcome = 'pending'   -- only overwrite a provisional row
+detected_at = least(s.detected_at, excluded.detected_at)  -- keep the first sighting
+```
+
+A confirmed row is never downgraded by a later live one, and the timestamp stays the moment the
+touch was first seen. Client-side, `signalVersion = id|source|outcome` decides what to re-send:
+a signal whose outcome changed gets a new version, so it goes up again; an unchanged one doesn't.
+
+### Setup
+
+Three environment variables, server-side only:
+
+```
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_SERVICE_KEY=<service_role key from Project Settings → API>
+INGEST_TOKEN=<any long random string you invent>
+```
+
+`SUPABASE_SERVICE_KEY` is the **service_role** key, not the anon/publishable one. It bypasses RLS,
+so it belongs only in the server environment — never in `VITE_*`, never in the bundle.
+
+`INGEST_TOKEN` is what stops anyone who finds the URL from writing rows. Writes require it; reads
+don't. Paste the same value into the app once (Dashboard → *Signal storage*); it is kept in
+`localStorage` and sent as `x-ingest-token`. Rotating it is a matter of changing the variable and
+re-pasting.
+
+Apply `supabase/migrations/` to the project (Supabase SQL editor, or `supabase db push`) to create
+the table and the RPC.
+
+**Without these variables the app still works.** `/api/signals` answers `503` with
+`{"configured": false}`, the dashboard says storage is off, and the History page explains what is
+missing instead of erroring.
+
+### Table
+
+| column | notes |
+|---|---|
+| `id` | the app's own signal id — `strategy\|symbol\|timeframe\|barTime`, which is what makes the upsert idempotent |
+| `symbol`, `timeframe`, `bar_time`, `detected_at` | when and what |
+| `source` | `candle` (a closed bar) or `live` (a forming one) |
+| `outcome` | `pending` · `bounce` · `cross` · `inside` |
+| `approach`, `trend`, `bias` | direction of the touch and the EMA50 slope |
+| `ichimoku` (jsonb), `ichimoku_score` | the five checks, and how many passed |
+| `plan` (jsonb) | entry, ATR stop, 2R target, lot size |
+
+`toRow()` in `server/signals.mjs` validates every field against the same CHECK constraints the
+table enforces and **drops** a bad row rather than failing the batch — one malformed signal
+cannot block the rest. `historyQuery()` whitelists the filter columns and caps `limit` at 1000, so
+the query string cannot be used to construct an arbitrary PostgREST request.
+
+---
+
+## 7. Extending
 
 **Add a pair:** append to `EXTRA_SYMBOLS` in `src/config/pairs.ts`. Nothing else changes.
 
@@ -584,7 +665,7 @@ flowchart LR
 
 ---
 
-## 7. Production deployment
+## 8. Production deployment
 
 ```bash
 npm run build
