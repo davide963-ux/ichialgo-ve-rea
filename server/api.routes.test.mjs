@@ -50,18 +50,32 @@ function deployedRoutes() {
   return out;
 }
 
-const serves = (deployed, { prefix, hasSubPath }) =>
+export const serves = (deployed, { prefix, hasSubPath }) =>
   deployed.some((d) => d.prefix === prefix && (hasSubPath ? d.kind === 'catchall' || d.kind === 'static' : d.kind === 'static'));
 
 describe('proxy routes vs Vercel functions', () => {
   it('finds the route table (so this cannot pass by reading nothing)', () => {
     const routes = proxyRoutes();
-    expect(routes.length).toBeGreaterThanOrEqual(5);
-    expect(routes.map((r) => r.prefix)).toContain('yahoo-chart');
-    // The Yahoo route is the BARE prefix — the case a catch-all cannot serve.
-    expect(routes.find((r) => r.prefix === 'yahoo-chart')?.hasSubPath).toBe(false);
-    // …while Twelve Data's routes do carry a sub-path.
-    expect(routes.some((r) => r.prefix === 'td-rest' && r.hasSubPath)).toBe(true);
+    expect(routes.length).toBeGreaterThanOrEqual(2);
+    expect(routes.map((r) => r.prefix)).toContain('td-rest');
+    // Twelve Data's routes carry a sub-path (/quote, /time_series, /_status),
+    // which is what a [...path] catch-all can serve.
+    expect(routes.every((r) => r.hasSubPath)).toBe(true);
+  });
+
+  /**
+   * No route is currently the bare /api/<prefix>, so the rule that such a
+   * route needs a STATIC file is not exercised by the repo as it stands.
+   * It is checked directly here so it cannot rot before the next provider —
+   * getting it wrong is what made /api/yahoo-chart 404 in production.
+   */
+  it('knows a [...path] catch-all cannot serve a bare /api/<prefix>', () => {
+    const catchall = [{ kind: 'catchall', prefix: 'thing' }];
+    const staticFile = [{ kind: 'static', prefix: 'thing' }];
+
+    expect(serves(catchall, { prefix: 'thing', hasSubPath: true })).toBe(true);
+    expect(serves(catchall, { prefix: 'thing', hasSubPath: false })).toBe(false);
+    expect(serves(staticFile, { prefix: 'thing', hasSubPath: false })).toBe(true);
   });
 
   it('deploys a function of the right SHAPE for every route', () => {

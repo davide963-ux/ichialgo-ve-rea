@@ -1,21 +1,17 @@
 /**
- * Provider factory — the ONLY place that knows concrete providers.
- * To add a provider: implement MarketDataProvider, register it here,
- * add its proxy rule in vite.config.ts.
+ * Provider factory — the ONLY place that knows a concrete provider.
+ *
+ * Twelve Data is the only one: it is the sole free forex source that serves
+ * intraday OHLC candles to a server, from any country, without a broker
+ * account. (OANDA is licensed per country, Finnhub puts forex candles behind
+ * a paid plan, and Yahoo's unofficial endpoint blocks datacenter IPs.)
+ *
+ * The MarketDataProvider interface stays, so adding one back later means a new
+ * file here plus a route in server/api.mjs — nothing in the UI or strategy.
  */
 import type { MarketDataProvider, ProviderId } from '../types';
-import { OandaProvider } from './OandaProvider';
 import { TwelveDataProvider } from './TwelveDataProvider';
-import { YahooProvider } from './YahooProvider';
 
-export function createProvider(id: ProviderId): MarketDataProvider {
-  switch (id) {
-    case 'twelvedata':
-      return new TwelveDataProvider();
-    case 'yahoo':
-      return new YahooProvider();
-    case 'oanda':
-    default:
-      return new OandaProvider();
-  }
+export function createProvider(_id: ProviderId): MarketDataProvider {
+  return new TwelveDataProvider();
 }

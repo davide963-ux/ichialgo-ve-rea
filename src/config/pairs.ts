@@ -2,7 +2,7 @@
  * Forex pair registry.
  * Add a pair here and it appears in the scanner, pair details and calculator.
  * Symbols are stored in canonical "BASE/QUOTE" form; each provider maps them
- * to its own format (e.g. OANDA "EUR_USD").
+ * to its own format if it needs to.
  */
 export interface PairConfig {
   symbol: string; // "EUR/USD"

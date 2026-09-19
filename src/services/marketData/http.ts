@@ -41,7 +41,7 @@ export async function fetchJson<T>(url: string, signal?: AbortSignal, timeoutMs 
       throw new ProviderError('rate_limit', message, { retryAfterMs: Number.isFinite(retry) && retry > 0 ? retry * 1000 : 60_000 });
     }
     if (res.status === 400 || res.status === 404) {
-      // A provider (OANDA/Twelve Data) error always carries errorMessage/message in its
+      // A Twelve Data error always carries errorMessage/message in its
       // body. A 400/404 with NO such body never came from them — the request didn't
       // reach server/api.mjs at all (wrong host, static-only deploy, serverless
       // function not built), so the host's own bare 404/400 page is what we're seeing.
@@ -69,7 +69,7 @@ export async function fetchJson<T>(url: string, signal?: AbortSignal, timeoutMs 
 function extractMessage(body: unknown): string | undefined {
   if (body && typeof body === 'object') {
     const b = body as Record<string, unknown>;
-    if (typeof b.errorMessage === 'string') return b.errorMessage; // OANDA
+    if (typeof b.errorMessage === 'string') return b.errorMessage; // our proxy
     if (typeof b.message === 'string') return b.message; // Twelve Data
   }
   return undefined;
