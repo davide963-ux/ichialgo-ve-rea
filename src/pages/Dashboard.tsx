@@ -9,6 +9,8 @@ import { TimeframeSelector } from '../components/TimeframeSelector';
 import { EMA50_TOUCH, ICHIMOKU_CONFLUENCE } from '../config/strategy';
 import { DEFAULT_TIMEFRAME, isTimeframe, type Timeframe } from '../config/timeframes';
 import { useLastScanAt, useScanProgress, useSignals, useSignalSummary, useStrategyStatus } from '../hooks/useSignals';
+import { useSignalPersistence } from '../hooks/useSignalStorage';
+import { IngestTokenField } from './History';
 import { ICHIMOKU_CHECKS } from '../services/strategy';
 import { useNow } from '../hooks/useNow';
 import { formatAgo, formatClock } from '../lib/time';
@@ -31,6 +33,7 @@ export function Dashboard() {
   const strategyStatus = useStrategyStatus();
   const lastScanAt = useLastScanAt();
   const progress = useScanProgress();
+  const storage = useSignalPersistence();
   const [confluentOnly, setConfluentOnly] = useState(false);
   const now = useNow();
 
@@ -116,6 +119,13 @@ export function Dashboard() {
                 ? `${progress.scanned}/${progress.total} pairs analysed · `
                 : `${confluentCount} of ${signals.length} confluent · `}
               scanned {formatAgo(lastScanAt, now)}
+            </span>
+            <span className="panel-sub">
+              {storage.state === 'saved' && `${storage.stored} saved to history`}
+              {storage.state === 'saving' && 'Saving to history…'}
+              {storage.state === 'no-token' && <>Not saving · <IngestTokenField /></>}
+              {storage.state === 'off' && 'History storage is off'}
+              {storage.state === 'error' && <span className="neg">History: {storage.error}</span>}
             </span>
           </div>
         </div>

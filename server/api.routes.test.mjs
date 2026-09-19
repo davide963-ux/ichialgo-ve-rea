@@ -56,11 +56,13 @@ export const serves = (deployed, { prefix, hasSubPath }) =>
 describe('proxy routes vs Vercel functions', () => {
   it('finds the route table (so this cannot pass by reading nothing)', () => {
     const routes = proxyRoutes();
-    expect(routes.length).toBeGreaterThanOrEqual(2);
-    expect(routes.map((r) => r.prefix)).toContain('td-rest');
+    expect(routes.length).toBeGreaterThanOrEqual(3);
+    // Both shapes are live, so both halves of the rule are exercised for real:
     // Twelve Data's routes carry a sub-path (/quote, /time_series, /_status),
-    // which is what a [...path] catch-all can serve.
-    expect(routes.every((r) => r.hasSubPath)).toBe(true);
+    // which a [...path] catch-all serves…
+    expect(routes.some((r) => r.prefix === 'td-rest' && r.hasSubPath)).toBe(true);
+    // …while /api/signals is bare, which needs a STATIC file.
+    expect(routes.some((r) => r.prefix === 'signals' && !r.hasSubPath)).toBe(true);
   });
 
   /**

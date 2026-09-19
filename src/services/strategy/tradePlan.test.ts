@@ -7,10 +7,10 @@ const ACCOUNT = { balance: 10_000, riskPct: 1 };
 const PIP = 0.0001;
 
 const touch = (over: Partial<TouchSignal> = {}): TouchSignal => ({
-  id: 'ema50-touch|EUR/USD|15M|1000',
+  id: 'ema50-touch|EUR/USD|30M|1000',
   strategy: 'ema50-touch',
   symbol: 'EUR/USD',
-  timeframe: '15M',
+  timeframe: '30M',
   barTime: 1000,
   detectedAt: 0,
   source: 'candle',

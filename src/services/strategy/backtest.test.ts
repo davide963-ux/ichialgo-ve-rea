@@ -5,7 +5,7 @@ import { runBacktest, summarise, type BacktestTrade } from './backtest';
 
 const SYMBOL = 'EUR/USD';
 const PIP = 0.0001;
-const STEP = 900;
+const STEP = 1800;
 
 function candles(closes: number[], wickPips = 3): Candle[] {
   const w = wickPips * PIP;
@@ -30,15 +30,15 @@ const OPTS = { startingBalance: 10_000, riskPct: 1 };
 
 describe('runBacktest', () => {
   it('refuses to invent results without enough warm-up history', () => {
-    const r = runBacktest(candles(upPath(40)), SYMBOL, '15M', OPTS);
+    const r = runBacktest(candles(upPath(40)), SYMBOL, '30M', OPTS);
     expect(r.trades).toEqual([]);
     expect(r.stats.trades).toBe(0);
     expect(r.stats.endingBalance).toBe(10_000);
-    expect(r.warnings.join(' ')).toMatch(/at least \d+ 15M candles/);
+    expect(r.warnings.join(' ')).toMatch(/at least \d+ 30M candles/);
   });
 
   it('reports no trades, not zero-value trades, when nothing touches', () => {
-    const r = runBacktest(candles(upPath()), SYMBOL, '15M', OPTS);
+    const r = runBacktest(candles(upPath()), SYMBOL, '30M', OPTS);
     expect(r.trades).toEqual([]);
     expect(r.stats.winRatePct).toBeNull();
     expect(r.stats.profitFactor).toBeNull();
@@ -49,13 +49,13 @@ describe('runBacktest', () => {
     // trend up, dip onto the EMA, then rally hard enough to hit 2R
     const closes = upPath();
     const bars = candles(closes);
-    const r0 = runBacktest(bars, SYMBOL, '15M', OPTS);
+    const r0 = runBacktest(bars, SYMBOL, '30M', OPTS);
     expect(r0.trades).toHaveLength(0);
 
     const withTouch = [...closes];
     withTouch.push(withTouch.at(-1)! - 60 * PIP); // drop into the EMA
     for (let i = 0; i < 40; i++) withTouch.push(withTouch.at(-1)! + 12 * PIP); // rally away
-    const r = runBacktest(candles(withTouch), SYMBOL, '15M', OPTS);
+    const r = runBacktest(candles(withTouch), SYMBOL, '30M', OPTS);
 
     expect(r.trades.length).toBeGreaterThan(0);
     const t = r.trades[0]!;
@@ -70,7 +70,7 @@ describe('runBacktest', () => {
     const closes = upPath();
     closes.push(closes.at(-1)! - 60 * PIP); // touch
     for (let i = 0; i < 40; i++) closes.push(closes.at(-1)! - 14 * PIP); // collapse
-    const r = runBacktest(candles(closes), SYMBOL, '15M', OPTS);
+    const r = runBacktest(candles(closes), SYMBOL, '30M', OPTS);
 
     const t = r.trades[0]!;
     expect(t.exitReason).toBe('stop');
@@ -95,7 +95,7 @@ describe('runBacktest', () => {
       volume: null,
       complete: true,
     });
-    const r = runBacktest(bars, SYMBOL, '15M', OPTS);
+    const r = runBacktest(bars, SYMBOL, '30M', OPTS);
     expect(r.trades[0]!.exitReason).toBe('stop'); // pessimistic, never invents a win
   });
 
@@ -104,7 +104,7 @@ describe('runBacktest', () => {
     // Sit on the EMA for a long stretch: repeated touches, one trade.
     for (let i = 0; i < 30; i++) closes.push(closes.at(-1)! - 3 * PIP);
     for (let i = 0; i < 30; i++) closes.push(closes.at(-1)! + 3 * PIP);
-    const r = runBacktest(candles(closes), SYMBOL, '15M', OPTS);
+    const r = runBacktest(candles(closes), SYMBOL, '30M', OPTS);
     const overlapping = r.trades.filter((t, i) => i > 0 && t.entryTime <= r.trades[i - 1]!.exitTime!);
     expect(overlapping).toEqual([]);
   });
@@ -112,7 +112,7 @@ describe('runBacktest', () => {
   it('marks a trade still open at the end and keeps it out of the stats', () => {
     const closes = upPath();
     closes.push(closes.at(-1)! - 60 * PIP); // touch on the very last bar
-    const r = runBacktest(candles(closes), SYMBOL, '15M', OPTS);
+    const r = runBacktest(candles(closes), SYMBOL, '30M', OPTS);
 
     const open = r.trades.filter((t) => t.exitReason === 'open');
     expect(open).toHaveLength(1);
@@ -128,7 +128,7 @@ describe('runBacktest', () => {
       closes.push(closes.at(-1)! - 60 * PIP);
       for (let i = 0; i < 30; i++) closes.push(closes.at(-1)! + 12 * PIP);
     }
-    const r = runBacktest(candles(closes), SYMBOL, '15M', OPTS);
+    const r = runBacktest(candles(closes), SYMBOL, '30M', OPTS);
     const wins = r.trades.filter((t) => t.exitReason === 'target');
     if (wins.length >= 2) expect(wins.at(-1)!.lots).toBeGreaterThanOrEqual(wins[0]!.lots);
     expect(r.equity[0]!.balance).toBe(10_000);
@@ -141,11 +141,11 @@ describe('runBacktest', () => {
     for (let i = 0; i < 40; i++) closes.push(closes.at(-1)! + 12 * PIP);
     const bars = candles(closes);
 
-    const all = runBacktest(bars, SYMBOL, '15M', OPTS);
+    const all = runBacktest(bars, SYMBOL, '30M', OPTS);
     expect(all.trades.length).toBeGreaterThan(0);
 
     // A window that ends before the touch bar yields nothing.
-    const early = runBacktest(bars, SYMBOL, '15M', { ...OPTS, to: bars[100]!.time });
+    const early = runBacktest(bars, SYMBOL, '30M', { ...OPTS, to: bars[100]!.time });
     expect(early.trades).toEqual([]);
   });
 
@@ -155,8 +155,8 @@ describe('runBacktest', () => {
     for (let i = 0; i < 40; i++) closes.push(closes.at(-1)! + 12 * PIP);
     const bars = candles(closes);
 
-    const all = runBacktest(bars, SYMBOL, '15M', OPTS);
-    const filtered = runBacktest(bars, SYMBOL, '15M', { ...OPTS, confluentOnly: true });
+    const all = runBacktest(bars, SYMBOL, '30M', OPTS);
+    const filtered = runBacktest(bars, SYMBOL, '30M', { ...OPTS, confluentOnly: true });
 
     expect(filtered.trades.length).toBeLessThanOrEqual(all.trades.length);
     // Every trade the filter let through clears the agreement threshold.
@@ -179,16 +179,16 @@ describe('runBacktest', () => {
     for (let i = 0; i < 40; i++) closes.push(closes.at(-1)! + 12 * PIP);
     const bars = candles(closes);
 
-    const blind = runBacktest(bars, 'EUR/GBP', '15M', OPTS);
+    const blind = runBacktest(bars, 'EUR/GBP', '30M', OPTS);
     expect(blind.trades).toEqual([]);
     expect(blind.skipped.unsizable).toBeGreaterThan(0);
 
-    const withRate = runBacktest(bars, 'EUR/GBP', '15M', { ...OPTS, lookup: (s) => (s === 'GBP/USD' ? 1.27 : null) });
+    const withRate = runBacktest(bars, 'EUR/GBP', '30M', { ...OPTS, lookup: (s) => (s === 'GBP/USD' ? 1.27 : null) });
     expect(withRate.trades.length).toBeGreaterThan(0);
   });
 
   it('never reports more warm-up bars than it was given', () => {
-    const r = runBacktest(candles(upPath(80)), SYMBOL, '15M', OPTS);
+    const r = runBacktest(candles(upPath(80)), SYMBOL, '30M', OPTS);
     expect(r.warmupBars).toBeLessThanOrEqual(80);
     expect(r.warmupBars).toBe(EMA50_TOUCH.minBars);
   });

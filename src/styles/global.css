@@ -169,6 +169,19 @@ a {
   max-width: 64ch;
 }
 
+.filter-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.filter-row .input {
+  width: auto;
+  min-width: 132px;
+}
+
 /* ═════════════════════ Navbar ═════════════════════ */
 .nav {
   position: sticky;
@@ -1207,5 +1220,23 @@ select.input {
   color: var(--mint);
 }
 .check-detail {
+  font-size: 11px;
+}
+
+/* ═════════════════════ Ingest token ═════════════════════ */
+.token-form {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.token-form .input {
+  height: 30px;
+  width: 190px;
+  font-size: 12px;
+}
+.token-form .btn {
+  height: 30px;
+  padding: 0 12px;
   font-size: 11px;
 }

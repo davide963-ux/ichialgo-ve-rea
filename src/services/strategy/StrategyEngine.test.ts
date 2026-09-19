@@ -3,10 +3,10 @@ import { mergeSignals } from './StrategyEngine';
 import type { TouchSignal } from './types';
 
 const signal = (over: Partial<TouchSignal> = {}): TouchSignal => ({
-  id: 'ema50-touch|EUR/USD|15M|1000',
+  id: 'ema50-touch|EUR/USD|30M|1000',
   strategy: 'ema50-touch',
   symbol: 'EUR/USD',
-  timeframe: '15M',
+  timeframe: '30M',
   barTime: 1000,
   detectedAt: 10,
   source: 'candle',
