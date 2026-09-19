@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Ichialgo \u2014 quantitative Forex terminal (Phase 1: UI + real-time market data)",
+  "description": "Ichialgo \u2014 quantitative Forex terminal (Twelve Data)",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -15,7 +15,6 @@
   "dependencies": {
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "http-proxy-middleware": "^4.2.0",
     "lightweight-charts": "^5.2.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

@@ -2,7 +2,7 @@
  * Production server: built UI (dist/) + read-only market-data proxy.
  *   npm run build && npm start
  *
- * Binds to 127.0.0.1 by default. The proxy holds your provider credentials,
+ * Binds to 127.0.0.1 by default. The proxy holds your Twelve Data API keys,
  * so only expose it publicly behind authentication (VPN, basic auth, etc).
  */
 import 'dotenv/config';
@@ -24,13 +24,12 @@ app.use(express.static(dist, { index: false, maxAge: '1h' }));
 app.use((_req, res) => res.sendFile(path.join(dist, 'index.html'))); // SPA fallback
 
 app.listen(port, host, () => {
-  const { oanda, twelvedata } = api.config;
+  const { twelvedata } = api.config;
+  const n = twelvedata.keys.length;
   console.log(`Ichialgo → http://${host}:${port}`);
-  console.log(`OANDA (${oanda.env}): ${oanda.token && oanda.accountId ? 'configured' : 'not configured'}`);
-  const tdKeys = twelvedata.keys.length;
   console.log(
-    `Twelve Data: ${tdKeys === 0 ? 'not configured' : `${tdKeys} API key${tdKeys > 1 ? 's' : ''} pooled ` +
-      `(${twelvedata.creditsPerMinute * tdKeys} credits/min, ` +
-      `${twelvedata.creditsPerDay ? `${twelvedata.creditsPerDay * tdKeys}/day` : 'no daily cap'})`}`,
+    `Twelve Data: ${n === 0 ? 'not configured' : `${n} API key${n > 1 ? 's' : ''} pooled ` +
+      `(${twelvedata.creditsPerMinute * n} credits/min, ` +
+      `${twelvedata.creditsPerDay ? `${twelvedata.creditsPerDay * n}/day` : 'no daily cap'})`}`,
   );
 });

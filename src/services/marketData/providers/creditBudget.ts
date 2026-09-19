@@ -94,7 +94,7 @@ export class CreditBudget {
       const across = this.poolSize > 1 ? ` across ${this.poolSize} API keys` : '';
       throw new ProviderError(
         'rate_limit',
-        `Twelve Data daily limit reached (${this.day.used}/${this.perDay} credits${across}). Prices resume after 00:00 UTC, or switch to OANDA.`,
+        `Twelve Data daily limit reached (${this.day.used}/${this.perDay} credits${across}). Prices resume after 00:00 UTC.`,
         { retryAfterMs: Math.max(60_000, midnight - now) },
       );
     }

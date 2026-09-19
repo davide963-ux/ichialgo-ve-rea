@@ -4,7 +4,7 @@
  */
 import type { Timeframe } from '../../config/timeframes';
 
-export type ProviderId = 'oanda' | 'twelvedata' | 'yahoo';
+export type ProviderId = 'twelvedata';
 
 /** Connection state shown in the UI. */
 export type ConnectionStatus = 'LOADING' | 'ONLINE' | 'OFFLINE' | 'ERROR';

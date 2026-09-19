@@ -1,7 +1,7 @@
 import { APP_LOCALE } from './locale';
 
 /**
- * Parse RFC3339 timestamps safely. OANDA returns nanosecond precision
+ * Parse RFC3339 timestamps safely. Some feeds return nanosecond precision
  * ("2024-06-14T12:00:00.000000000Z") which some JS engines reject,
  * so we trim the fraction to milliseconds first.
  */

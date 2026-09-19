@@ -11,7 +11,7 @@ plans, and a backtest engine that runs the same detector over history.**
 | Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`), with Twelve Data multi-key failover |
 | Strategy | EMA50 touch + Ichimoku confluence + ATR trade plans + backtest (`src/services/strategy/`) |
 | Tests | Vitest (indicators, strategy, proxy, calculator math) |
-| Data | OANDA v20, Yahoo Finance or Twelve Data, behind a provider interface |
+| Data | Twelve Data, behind a provider interface |
 
 ---
 
@@ -26,133 +26,60 @@ npm run build             # typecheck + production bundle
 npm start                 # production server: dist/ + proxy on http://127.0.0.1:8080
 ```
 
-### Option A: OANDA (recommended)
-Real bid/ask, real spreads, HTTP streaming. A free **practice** account is enough.
+### Twelve Data keys
 
-1. Create a practice account at oanda.com, then open *Manage API Access* and generate a token.
-2. Find your account ID (format `101-004-XXXXXXX-001`).
-3. `.env`:
-   ```
-   VITE_MARKET_PROVIDER=oanda
-   OANDA_API_TOKEN=...
-   OANDA_ACCOUNT_ID=...
-   OANDA_ENV=practice
-   ```
-
-### Option B: Yahoo Finance — no account, no key, no country gate
+Twelve Data is the only provider. It is the one free forex source that serves intraday OHLC
+candles **to a server, from any country, without a broker account** — OANDA is licensed per
+country, Finnhub puts forex candles behind a paid plan, and Yahoo's unofficial endpoint blocks
+datacenter IPs, so none of them work from a cloud host.
 
 ```
-VITE_MARKET_PROVIDER=yahoo
+TWELVEDATA_API_KEY_1=key_from_account_1
+TWELVEDATA_API_KEY_2=key_from_account_2
+TWELVEDATA_API_KEY_3=key_from_account_3
+TWELVEDATA_API_KEY_4=key_from_account_4
+TWELVEDATA_API_KEY_5=key_from_account_5
 ```
 
-That is the entire configuration. There is nothing to sign up for, which is the point:
-**brokers are licensed per country** (OANDA will not open an account in Albania, for instance) and
-every other free forex source needs one. Finnhub puts forex candles behind a paid plan; Twelve
-Data's free tier is 8 credits/minute.
+One key per Twelve Data account; the numbering is the **failover order**. `TWELVEDATA_API_KEYS`
+(comma-separated) and a single `TWELVEDATA_API_KEY` also work and can be mixed — see
+`server/twelveDataKeyPool.mjs`.
 
-```
-GET /api/yahoo-chart?symbol=EURUSD=X&interval=15m&range=5d
-  → meta:      live price, % change vs previous close
-  → timestamp: UNIX seconds, one per bar
-  → quote[0]:  open[] high[] low[] close[] volume[]
-```
+#### The budget, and what more keys buy you
 
-The symbol travels as a query parameter rather than a path segment: Yahoo tickers contain `=`,
-and a static route is one less thing for a host's router to normalise. The proxy rebuilds the
-upstream URL from a validated symbol, interval and range — nothing the caller sends is pasted
-into a URL the server then fetches.
+Free Basic is **8 credits/min and 800 credits/day PER KEY**, and `/quote` costs **1 credit per
+symbol** — so a 7-pair refresh spends 7 credits. Candles (charts + the strategy) come out of the
+same budget.
 
-**One request per pair gives the quote AND the candles**, because `meta` carries the live price.
-A 7-pair refresh is 7 requests with no credit arithmetic at all.
+| Keys | Credits/min | Credits/day | Warm-up | Runtime/day at 60s polling |
+|---|---|---|---|---|
+| 1 | 8 | 800 | several minutes | ~1 h |
+| 3 | 24 | 2400 | ~46 s | ~2.9 h |
+| 5 | 40 | 4000 | ~46 s | **~4.8 h** |
 
-What it does not give, and other things worth knowing:
+Past ~3 keys the per-minute limit stops being the constraint and the **daily cap** becomes it.
+More keys buy runtime, not speed. To trade speed for runtime, change one number:
 
-| | |
-|---|---|
-| **No bid/ask** | those columns show `—`, same as Twelve Data |
-| **`volume` is always 0** | forex has no central exchange |
-| **Nulls in the OHLC arrays** | gaps and unformed bars; filtered out, or they would become candles at price 0 |
-| **No 4h interval** | 4H is resampled from 1h — exact, since four 1h bars tile a 4h bar |
-| **Intraday history is capped** | ~7 days at 1m, ~60 days at 5m–30m, ~2 years at 1h. `rangeFor()` picks the smallest window that covers the bars asked for, capped per interval |
-| **Unofficial** | Yahoo retired its public API in 2017; this endpoint has no stability guarantee and their terms do not permit commercial redistribution. Fine for a personal terminal, not something to build a product on |
-
-`VITE_YAHOO_POLL_MS` (default 15000, floor 5000) sets the refresh. At 15s a 7-pair scan is
-~28 requests/minute — polite for an unofficial endpoint, but note each one is a serverless
-invocation if you are on Vercel, so raise it if you leave the tab open all day.
-
-### Option C: Twelve Data
-```
-VITE_MARKET_PROVIDER=twelvedata
-TWELVEDATA_API_KEY=...
-VITE_TWELVEDATA_POLL_MS=60000
-VITE_TWELVEDATA_CREDITS_PER_MINUTE=8
-VITE_TWELVEDATA_CREDITS_PER_DAY=800
-```
-The free plan allows **8 credits/min and 800 credits/day**, at 1 credit per symbol. With 7 pairs:
-
-| Poll interval | Credits/min | Daily cap lasts |
+| `VITE_TWELVEDATA_POLL_MS` | Credits/hour | 5 keys (4000/day) |
 |---|---|---|
-| 60 s | 7 | ~1 h 55 min |
-| 5 min | 1.4 | ~9 h 30 min |
-| 15 min | 0.47 | ~28 h |
+| `30000` (30 s) | ~1680 | ~2.4 h |
+| `60000` (1 min, default) | ~840 | ~4.8 h |
+| `120000` (2 min) | ~420 | ~9.5 h |
+| `300000` (5 min) | ~168 | ~24 h |
 
-The app meters every request (`providers/creditBudget.ts`). When the per-minute budget is full it waits.
-When the daily cap is reached it shows a clear banner and resumes after 00:00 UTC. It never shows stale prices as live.
+(Quotes are 7 credits per refresh; candles cost roughly the same again.)
 
-#### Pooling several Twelve Data keys
-Those limits are **per API key**, so one key per Twelve Data account multiplies the budget.
-List them in failover order — the proxy serves from the first key that still has credits:
-```
-TWELVEDATA_API_KEYS=key_account_1,key_account_2,key_account_3
-# or, easier to paste into a host dashboard:
-TWELVEDATA_API_KEY_1=key_account_1
-TWELVEDATA_API_KEY_2=key_account_2
-```
-Three keys = **24 credits/min, 2400 credits/day** → ~5 h 45 min of 60-second polling instead of ~1 h 55 min.
+Check the pool any time at **`/api/td-rest/_status`** — key count, credits used today and each
+key's state, with the keys masked to their last 4 characters.
 
-```mermaid
-flowchart LR
-    REQ["GET /api/td-rest/quote<br/>symbol=EUR/USD,GBP/USD (2 credits)"] --> ACQ{"acquire(cost)<br/>first key with credits"}
-    ACQ -- "key #1" --> F1["fetch api.twelvedata.com"]
-    F1 -- "200 payload" --> OK["forward body<br/>X-TD-Key-Used: 1"]
-    F1 -- "429 / code:429<br/>'out of credits'" --> P1["park key #1<br/>(minute or until 00:00 UTC)"]
-    P1 --> ACQ2{"next key"}
-    ACQ2 -- "key #2" --> F2["retry the SAME request"]
-    F2 -- "200 payload" --> OK
-    ACQ2 -- "no key left" --> X["429 'All N keys are out of credits'<br/>+ Retry-After"]
-    F1 -- "404 bad symbol" --> FWD["forward untouched<br/>(rotating would only burn credits)"]
-```
-
-Two mechanisms, deliberately redundant:
-
-| | What it does | Why |
-|---|---|---|
-| **Proactive** | counts credits per key (minute window + UTC day) and skips a key it knows is spent | no wasted round-trip |
-| **Reactive** | on Twelve Data's own "out of credits", parks the key and **retries the same request** on the next one | the provider is the real authority; also the only thing that works on serverless, where in-memory counters die with each cold start |
-
-A key that answers `401/403` is dropped for the process (a wrong key never fixes itself).
-Bad-symbol and upstream 5xx errors are forwarded as-is — they'd fail identically on every key.
-
-`GET /api/td-rest/_status` reports the pool (`{keys, available, perMinuteTotal, perDayTotal, usedToday, pool:[…]}`)
-with keys masked to their last 4 chars. `TwelveDataProvider.assertConfigured()` calls it once per session — it costs
-no credits — and widens the browser-side meter to the pooled budget. Responses also carry
-`X-TD-Key-Used`, `X-TD-Keys-Available` and `X-TD-Credits-Used-Today` for debugging.
-
-> Keys are read server-side only (no `VITE_` prefix) and are never bundled into browser code.
-> Pooling free accounts is a budget question, not a bypass: each key keeps its own plan limits and is used within them.
-
-**For a live terminal, use OANDA, or a paid Twelve Data plan with the limits raised in `.env`.**
-The REST quote has **no bid/ask**, so those columns show `—`, and "24H change" is vs. the previous daily close.
-WebSocket streaming needs the Pro plan; it can be added in `TwelveDataProvider.subscribe()` without UI changes.
-
-> **Restart `npm run dev` after editing `.env`.** Secrets have no `VITE_` prefix, so they stay in the
-> Node proxy and are never bundled into browser code.
+> **Restart `npm run dev` after editing `.env`.** The keys have no `VITE_` prefix, so they stay in
+> the Node proxy and are never bundled into browser code.
 
 ### Security: the proxy is read-only
-An OANDA token can **place orders**. `server/api.mjs` therefore forwards only an allowlist of **GET** endpoints
-(account summary, pricing, pricing stream, candles, Twelve Data quote/time_series and the local `_status` report).
-Everything else gets `403`/`405`.
-That also stops a malicious website from sending a cross-site `POST` to your localhost to open trades.
+`server/api.mjs` forwards only an allowlist of **GET** endpoints (`quote`, `time_series`, and the
+local `_status` report). Everything else gets `403`/`405`, and any non-GET method gets `405`.
+Keeping it read-only and explicit means a bug here cannot turn the proxy into a general-purpose
+relay, and your API keys never leave the server.
 `npm start` binds to `127.0.0.1`. Don't expose it publicly without authentication in front.
 
 ### Why not TradingView for data?
@@ -171,23 +98,20 @@ flowchart TD
       Store["Market Data State<br/>state/marketStore.ts"]
       Svc["MarketDataService<br/>streaming · polling · staleness · errors · candle cache"]
       IF{{"MarketDataProvider interface"}}
-      OA["OandaProvider"]
       TD["TwelveDataProvider"]
     end
-    Proxy["server/api.mjs (read-only GET allowlist)<br/>injects token / api key"]
+    Proxy["server/api.mjs (read-only GET allowlist)<br/>injects the API key"]
     Pool["twelveDataKeyPool.mjs<br/>failover across N API keys"]
-    OANDA[("OANDA v20")]
     TDAPI[("Twelve Data")]
 
     UI --> Hooks --> Store
     Svc -- "setState()" --> Store
     Hooks -- "getCandles()" --> Svc
     Svc --> IF
-    IF --> OA & TD
-    OA -- "/api/oanda-rest, /api/oanda-stream" --> Proxy
+    IF --> TD
     TD -- "/api/td-rest" --> Proxy
     Proxy --> Pool
-    Proxy --> OANDA & TDAPI
+    Proxy --> TDAPI
 ```
 
 Rules enforced by the structure:
@@ -205,8 +129,7 @@ src/
     types.ts                 provider contract, Quote, Candle, ProviderError
     http.ts                  fetch + timeout + HTTP→error mapping
     MarketDataService.ts     orchestration (the heart of the data layer)
-    providers/               OandaProvider, YahooProvider, TwelveDataProvider,
-                             creditBudget, factory
+    providers/               TwelveDataProvider, creditBudget, factory
     index.ts                 singleton + public exports
   services/strategy/
     ema50Touch.ts            the detector: candles in, touches out (pure, tested)
@@ -230,7 +153,7 @@ src/
   components/chart/          kumoPrimitive (the Kumo fill)
   pages/                     Dashboard, PairPage, EquityCurve, Backtest, CalculatorPage
 server/
-  api.mjs                    read-only GET allowlist, Twelve Data failover, Yahoo passthrough
+  api.mjs                    read-only GET allowlist + Twelve Data key failover
   twelveDataKeyPool.mjs      multi-key credit pool (+ tests next to it)
   index.mjs                  production server (dist/ + the same proxy)
 api/                         Vercel entry points wrapping server/api.mjs
@@ -259,12 +182,6 @@ sequenceDiagram
     P-->>Svc: { quotes, failed }
     Svc->>S: quotes, status = ONLINE
     S-->>UI: each row re-renders only for its own symbol
-    alt provider can stream (OANDA)
-        Svc->>P: subscribe()
-        loop every tick / 5s heartbeat
-            P-->>Svc: quotes[] (empty array = heartbeat)
-            Svc->>S: merge quotes, lastContact = now
-        end
     else polling (Twelve Data)
         loop every pollIntervalMs
             Svc->>P: getQuotes()
@@ -296,32 +213,29 @@ Weekend closures are different: the connection stays `ONLINE` and rows show `CLO
 | Error kind | Example | What the service does | What the user sees |
 |---|---|---|---|
 | `config` | proxy not running, bad account id | halt | red banner + fix instructions + Reconnect |
-| `auth` | 401/403 | halt | "OANDA rejected the API token…" |
+| `auth` | 401/403 | halt | "Twelve Data rejected the API key…" |
 | `rate_limit` | 429 / Twelve Data credits | wait `Retry-After` (default 60s) | banner with countdown; OFFLINE if data ages out |
 | `network` | timeout, stream stalled | exponential backoff 5s→60s, stream re-open 15s→5min | OFFLINE + STALE rows |
-| `invalid_symbol` | pair not offered | drop that pair only (OANDA batch is split to isolate it) | row tagged UNAVAILABLE |
+| `invalid_symbol` | pair not offered | drop that pair only | row tagged UNAVAILABLE |
 | `no_data` | empty response | retry | ERROR/OFFLINE banner |
 
-### Streaming fallback (OANDA)
+### Streaming (not used today)
 
-```mermaid
-flowchart LR
-    A[stream open] -->|tick or heartbeat| B[mode = stream<br/>polling stopped]
-    A -->|no bytes 12s / disconnect| C[mode = poll<br/>poll now, then every 2s]
-    C --> D[re-open stream after 15s, 30s, 60s … max 5min]
-    D --> A
-```
+`MarketDataService` can drive a push stream and fall back to polling when it dies, but Twelve
+Data's WebSocket needs a Pro plan, so `capabilities.streaming` is `false` and the app polls.
+The plumbing is kept because adding streaming later means implementing `subscribe()` on the
+provider and nothing else.
 
 ### Candles
 
 `useCandles(symbol, timeframe)` loads 300 candles, refreshes every `candleRefreshMs`
-(15s OANDA / ≥120s Twelve Data), and patches the **forming** candle's high/low/close with live ticks.
+(≥120s on Twelve Data), and patches the **forming** candle's high/low/close with live ticks.
 It never creates bars. `CandlestickChart` calls `series.update()` for small changes (keeps the user's zoom)
 and `setData()` when the pair or timeframe changes.
 
 **24H change**
-- OANDA: first M5 candle at/after *now − 24h* is the reference; cached 5 min per pair.
-- Twelve Data: provider's `percent_change` vs. previous daily close (the column header tooltip says so).
+Twelve Data's own `percent_change`, measured against the previous daily close — the column header
+tooltip says so. There is no bid/ask on the REST quote, so those columns show `—`.
 
 ---
 
@@ -420,7 +334,7 @@ measured against a mock of the real free plan, 7 pairs:
 | Touches found in 2.5 min | 14 | 30 |
 
 A scan reuses `MarketDataService`'s candle cache, so a pair chart you already have open is not
-fetched twice. OANDA is not credit-metered, so none of this applies there.
+fetched twice.
 
 ### From touch to order ticket
 
@@ -631,7 +545,7 @@ Worked example (unit test): USD/JPY at 150.00, stop 150.50, $10,000, 1% risk
 
 **Add a pair:** append to `EXTRA_SYMBOLS` in `src/config/pairs.ts`. Nothing else changes.
 
-**Add a provider:**
+**Add a provider:** the interface is still there, so the UI, strategy and backtest need no changes.
 1. Implement `MarketDataProvider` in `providers/MyProvider.ts` (map symbols, map errors to `ProviderError`).
 2. Register it in `providers/index.ts` and add `'myprovider'` to `ProviderId`.
 3. Add a read-only route for it in `server/api.mjs` (`routes` array).
@@ -647,8 +561,7 @@ Worked example (unit test): USD/JPY at 150.00, stop 150.50, $10,000, 1% risk
    middleware whatever is in `api/`. `server/api.routes.test.mjs` derives the required shape from
    the route regexes and fails if a route and its file disagree.
 
-`YahooProvider` is the smallest worked example — no credentials, one endpoint, and it shows how
-to handle a source that lacks a timeframe (4H is resampled) and pads its arrays with nulls.
+
 
 **Add a strategy:** the EMA50 touch detector is the template. Write a pure
 `analyse(candles, symbol, timeframe) → signals` function, call it from `StrategyEngine.scan()`,
@@ -686,5 +599,6 @@ If you use your own reverse proxy instead, copy the **GET-only allowlist** from 
 Don't use a catch-all `/v3/` rule.
 
 ### Testing against a mock provider
-`OANDA_REST_URL` and `OANDA_STREAM_URL` override the upstream hosts, for local testing only.
-Point them at a mock server that returns OANDA-shaped JSON to exercise LOADING, ONLINE, OFFLINE and ERROR states offline.
+`TWELVEDATA_REST_URL` overrides the upstream host, for local testing only. Point it at a mock
+server that returns Twelve Data-shaped JSON to exercise LOADING, ONLINE, OFFLINE and ERROR states
+offline — including credit exhaustion, which is otherwise awkward to reproduce on purpose.

@@ -16,7 +16,7 @@
  *               already running for the scanner).
  *
  * COST NOTE: a scan costs one candle request per symbol (1 Twelve Data credit
- * each, free on OANDA). It reuses MarketDataService's candle cache, so a pair
+ * each). It reuses MarketDataService's candle cache, so a pair
  * chart that is already open is not fetched twice.
  *
  * BUDGET DISCIPLINE — three rules learned the hard way. On a free Twelve Data
