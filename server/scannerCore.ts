@@ -62,6 +62,17 @@ export interface ScannerConfig {
   outputSize: number;
   /** Refuse to run again within this window. */
   minIntervalMs: number;
+  /**
+   * Hard ceiling on Twelve Data credits one run may spend.
+   *
+   * The per-MINUTE limit is what bites: 8 per key, and a full pass over 7
+   * pairs on two timeframes plus a daily bias wants ~21. With one key that
+   * pass cannot complete, and without a cap the run simply fails on whichever
+   * pairs come last — the same pairs every time, so they would never be
+   * scanned at all. The cap plus the round-robin cursor turns that into
+   * "cover everything over several runs" instead of "never see the tail".
+   */
+  maxCreditsPerRun: number;
 }
 
 export const DEFAULT_SCANNER_CONFIG: ScannerConfig = {
@@ -75,6 +86,9 @@ export const DEFAULT_SCANNER_CONFIG: ScannerConfig = {
   expiryDays: 10,
   outputSize: 300,
   minIntervalMs: 14 * 60_000,
+  // Two keys' worth of a minute window, leaving room for the price checks that
+  // step 1 already spent. Raise it if you add keys.
+  maxCreditsPerRun: 16,
 };
 
 export interface MarketFeed {
@@ -94,6 +108,10 @@ export interface ScanResult {
   creditsUsed: number;
   frozen: string[];
   sessionActive: boolean;
+  /** Where the next run starts, so the tail of the list is not starved. */
+  nextOffset: number;
+  /** True when the credit cap stopped the run before every pair was seen. */
+  budgetExhausted: boolean;
   errors: string[];
   signals: { id: string; symbol: string; timeframe: string; signal: string; confidence: number }[];
   closures: { id: string; outcome: Outcome; price: number }[];
@@ -174,6 +192,8 @@ export async function runScan(options: RunScanOptions): Promise<ScanResult> {
     creditsUsed: 0,
     frozen: [],
     sessionActive: false,
+    nextOffset: 0,
+    budgetExhausted: false,
     errors: [],
     signals: [],
     closures: [],
@@ -281,8 +301,29 @@ export async function runScan(options: RunScanOptions): Promise<ScanResult> {
 
   const rows: SignalRow[] = [];
 
-  for (const symbol of config.symbols) {
-    if (frozen.has(symbol)) continue;
+  // Round-robin start, so a run cut short by the credit cap resumes where the
+  // last one stopped rather than always covering the same head of the list.
+  const startOffset = await db.lastCursor().catch(() => 0);
+  const order = config.symbols.map((_, k) => config.symbols[(startOffset + k) % config.symbols.length]!);
+
+  // Step 1's price checks already cost credits; the cap covers the whole run.
+  const budgetLeft = () => config.maxCreditsPerRun - feed.creditsUsed();
+  let scannedCount = 0;
+
+  for (const symbol of order) {
+    if (frozen.has(symbol)) {
+      scannedCount++;
+      continue;
+    }
+
+    // Stop BEFORE spending rather than after: a pair half-analysed is worse
+    // than one left for the next run, because its bias would be fetched and
+    // then thrown away.
+    const needed = (config.biasTimeframe ? 1 : 0) + 1;
+    if (budgetLeft() < needed) {
+      result.budgetExhausted = true;
+      break;
+    }
 
     // Higher-timeframe bias, computed once per pair and applied to every
     // timeframe below it. A setup the daily contradicts is not a high-
@@ -303,6 +344,10 @@ export async function runScan(options: RunScanOptions): Promise<ScanResult> {
     }
 
     for (const timeframe of config.timeframes) {
+      if (budgetLeft() < 1) {
+        result.budgetExhausted = true;
+        break;
+      }
       try {
         const candles = await feed.candles(symbol, timeframe, config.outputSize);
         const analysis = analyseConfluence(candles, {
@@ -340,7 +385,12 @@ export async function runScan(options: RunScanOptions): Promise<ScanResult> {
         result.errors.push(`${symbol} ${timeframe}: ${(err as Error).message}`);
       }
     }
+
+    scannedCount++;
   }
+
+  // Where the next run picks up. Wraps, so the cursor walks the list forever.
+  result.nextOffset = config.symbols.length === 0 ? 0 : (startOffset + scannedCount) % config.symbols.length;
 
   try {
     result.emitted = await db.recordSignals(rows);
@@ -370,6 +420,9 @@ const summaryOf = (r: ScanResult) => ({
   closed: r.closed,
   creditsUsed: r.creditsUsed,
   errors: r.errors,
+  // Carried in the run log so the NEXT run can read it back — the cursor has
+  // to survive a cold start, like everything else the scanner remembers.
+  detail: { nextOffset: r.nextOffset, budgetExhausted: r.budgetExhausted },
 });
 
 /**

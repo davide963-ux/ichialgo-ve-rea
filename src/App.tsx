@@ -3,11 +3,11 @@ import { Navbar } from './components/Navbar';
 import { DEFAULT_TIMEFRAME, isTimeframe } from './config/timeframes';
 import { useMarketDataConnection } from './hooks/useMarketData';
 import { useStrategyEngine } from './hooks/useSignals';
-import { useSignalPersistence } from './hooks/useSignalStorage';
 import { Backtest } from './pages/Backtest';
 import { CalculatorPage } from './pages/CalculatorPage';
 import { Dashboard } from './pages/Dashboard';
 import { History } from './pages/History';
+import { PerformancePage } from './pages/Performance';
 import { EquityCurve } from './pages/EquityCurve';
 import { NotFound } from './pages/NotFound';
 import { PairPage } from './pages/PairPage';
@@ -21,8 +21,8 @@ function StrategyRunner() {
   const [params] = useSearchParams();
   const tf = params.get('tf');
   useStrategyEngine(isTimeframe(tf) ? tf : DEFAULT_TIMEFRAME);
-  // Writes every signal the engine produces to the history store.
-  useSignalPersistence();
+  // Nothing is persisted from here: signals are produced by the server-side
+  // scanner, so what the browser computes is a live view, not the record.
   return null;
 }
 
@@ -31,7 +31,7 @@ function Footer() {
   return (
     <footer className="footer">
       <div className="footer-inner">
-        <span>Ichialgo: live market data + EMA50 touch strategy.</span>
+        <span>Ichialgo: 24/7 Ichimoku + EMA50 confluence scanner.</span>
         <span>Data: {provider}. Charts by TradingView Lightweight Charts.</span>
       </div>
     </footer>
@@ -49,6 +49,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/pair/:slug" element={<PairPage />} />
           <Route path="/history" element={<History />} />
+          <Route path="/performance" element={<PerformancePage />} />
           <Route path="/equity" element={<EquityCurve />} />
           <Route path="/backtest" element={<Backtest />} />
           <Route path="/calculator" element={<CalculatorPage />} />

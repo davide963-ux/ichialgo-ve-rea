@@ -52,6 +52,8 @@ export interface SignalsDb {
   closeSignal(id: string, outcome: Outcome, price: number): Promise<number>;
   markBreakeven(id: string): Promise<number>;
   lastRunStartedAt(): Promise<number | null>;
+  /** Round-robin cursor from the previous run, so the tail is not starved. */
+  lastCursor(): Promise<number>;
   startRun(): Promise<number | null>;
   finishRun(id: number | null, summary: RunSummary): Promise<void>;
   expireStale(days: number): Promise<number>;
@@ -236,6 +238,15 @@ export function createSignalsDb(cfg: SignalsDbConfig, fetchImpl: FetchLike = fet
       );
       const first = rows?.[0];
       return first ? Date.parse(first.started_at) : null;
+    },
+
+    async lastCursor() {
+      const rows = await call<{ detail: { nextOffset?: number } | null }[]>(
+        '/rest/v1/scanner_runs?select=detail&detail=not.is.null&order=started_at.desc&limit=1',
+        { method: 'GET' },
+      );
+      const offset = rows?.[0]?.detail?.nextOffset;
+      return typeof offset === 'number' && Number.isFinite(offset) && offset >= 0 ? offset : 0;
     },
 
     async startRun() {

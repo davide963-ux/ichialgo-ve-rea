@@ -1,34 +1,17 @@
 /**
- * Signal history: write and read, backed by Supabase Postgres.
+ * Read-only signal history.
  *
- *   browser ──POST /api/signals (Bearer INGEST_TOKEN)──▶ this ──▶ Supabase RPC
- *           ──GET  /api/signals?…──────────────────────▶ this ──▶ PostgREST
+ *   browser ──GET /api/signals──▶ this ──▶ Supabase (service key)
  *
- * One route, both verbs. Whether storage is switched on rides along in the GET
- * response rather than a /api/signals/_status sub-path, because the bare
- * /api/signals needs a STATIC Vercel function and a static function cannot
- * also serve sub-paths.
+ * WRITES USED TO LIVE HERE AND NO LONGER DO. Signals are produced by the
+ * server-side scanner now, not by whichever browser happened to be open, so
+ * there is nothing for the page to push. That removed the ingest token with
+ * it: the browser only reads.
  *
- * WHY IT GOES THROUGH THE SERVER
- * ──────────────────────────────
- * The `signals` table has RLS on with NO policies, so anon and publishable
- * keys can neither read nor write it. Only the service role can, and that key
- * lives here — never in the bundle. The browser has no Supabase credentials
- * at all.
- *
- * WHY WRITES NEED A TOKEN
- * ───────────────────────
- * The app has no login, so an unprotected write endpoint is writable by
- * anyone who finds the URL — and the whole point of this table is a history
- * worth trusting later. INGEST_TOKEN is a shared secret: set it server-side,
- * paste it into the app once. Reads are open; they are only market signals.
- *
- * Merging (live → candle upgrades, never downgrades) happens in SQL, in
- * public.upsert_signals — see the migration. Doing it here would race between
- * two open browsers.
+ * The service key stays server-side. The table has RLS on with no policies, so
+ * an anon key is refused even if it leaks.
  */
 
-const MAX_BATCH = 200;
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 1000;
 
@@ -36,71 +19,14 @@ export function readSignalsConfig(env) {
   return {
     url: (env.SUPABASE_URL || '').trim().replace(/\/+$/, ''),
     serviceKey: (env.SUPABASE_SERVICE_KEY || '').trim(),
-    ingestToken: (env.INGEST_TOKEN || '').trim(),
   };
 }
 
 const TIMEFRAMES = new Set(['30M', '1H', '4H', '1D']);
-const SOURCES = new Set(['candle', 'live']);
-const OUTCOMES = new Set(['bounce', 'cross', 'inside', 'pending']);
-const APPROACHES = new Set(['above', 'below']);
-const TRENDS = new Set(['up', 'down', 'flat']);
-const BIASES = new Set(['long', 'short', 'neutral']);
+const RESULTS = new Set(['pending', 'tp1', 'tp2', 'tp3', 'sl', 'be', 'expired', 'invalidated']);
+const DIRECTIONS = new Set(['long', 'short']);
 
-const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
-const str = (v, max = 64) => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : null);
-
-/**
- * Map one signal from the app's shape to the table's, rejecting anything that
- * does not fit. Returns null for a bad row rather than throwing, so one
- * malformed entry cannot lose a whole batch — and nothing unvalidated is ever
- * handed to Postgres.
- */
-export function toRow(signal) {
-  if (!signal || typeof signal !== 'object') return null;
-  const id = str(signal.id, 200);
-  const symbol = str(signal.symbol, 24);
-  const strategy = str(signal.strategy, 64);
-  const timeframe = str(signal.timeframe, 8);
-  const barTime = num(signal.barTime);
-  const detectedAt = num(signal.detectedAt);
-  if (!id || !symbol || !strategy || !timeframe || barTime === null || detectedAt === null) return null;
-  if (!TIMEFRAMES.has(timeframe) || !SOURCES.has(signal.source)) return null;
-  if (!OUTCOMES.has(signal.outcome) || !APPROACHES.has(signal.approach)) return null;
-  if (!TRENDS.has(signal.trend) || !BIASES.has(signal.bias)) return null;
-
-  const price = num(signal.price);
-  const ema = num(signal.ema);
-  if (price === null || ema === null) return null;
-
-  const ichimoku = signal.ichimoku && typeof signal.ichimoku === 'object' ? signal.ichimoku : null;
-
-  return {
-    id,
-    strategy,
-    symbol,
-    timeframe,
-    // The app speaks UNIX seconds for bars and milliseconds for wall-clock.
-    bar_time: new Date(barTime * 1000).toISOString(),
-    detected_at: new Date(detectedAt).toISOString(),
-    source: signal.source,
-    price,
-    ema,
-    atr: num(signal.atr) ?? 0,
-    tolerance_pips: num(signal.tolerancePips) ?? 0,
-    distance_pips: num(signal.distancePips) ?? 0,
-    approach: signal.approach,
-    outcome: signal.outcome,
-    trend: signal.trend,
-    bias: signal.bias,
-    counter_trend: signal.counterTrend === true,
-    ichimoku,
-    ichimoku_score: ichimoku && num(ichimoku.score) !== null ? ichimoku.score : null,
-    plan: signal.plan && typeof signal.plan === 'object' ? signal.plan : null,
-  };
-}
-
-/** Table row → the shape the UI already renders (TouchSignal). */
+/** Table row → the shape the UI renders. */
 export function fromRow(row) {
   return {
     id: row.id,
@@ -109,23 +35,37 @@ export function fromRow(row) {
     timeframe: row.timeframe,
     barTime: Math.floor(new Date(row.bar_time).getTime() / 1000),
     detectedAt: new Date(row.detected_at).getTime(),
-    source: row.source,
+    direction: row.direction,
+    signal: row.signal,
+    confidence: row.confidence,
+    marketCondition: row.market_condition,
+    setupStatus: row.setup_status,
     price: row.price,
-    ema: row.ema,
     atr: row.atr,
-    tolerancePips: row.tolerance_pips,
-    distancePips: row.distance_pips,
-    approach: row.approach,
-    outcome: row.outcome,
-    trend: row.trend,
-    bias: row.bias,
-    counterTrend: row.counter_trend,
-    ichimoku: row.ichimoku ?? null,
-    plan: row.plan ?? null,
+    entry: row.entry,
+    stopLoss: row.stop_loss,
+    takeProfit1: row.take_profit1,
+    takeProfit2: row.take_profit2,
+    takeProfit3: row.take_profit3,
+    stopPips: row.stop_pips,
+    result: row.result,
+    tp1Hit: row.tp1_hit,
+    closedPrice: row.closed_price,
+    closedAt: row.closed_at ? new Date(row.closed_at).getTime() : null,
+    rMultiple: row.r_multiple,
+    analysis: row.analysis ?? null,
+    reasons: row.reasons ?? [],
+    warnings: row.warnings ?? [],
   };
 }
 
-/** Build the PostgREST query for the history view from URL params. */
+/**
+ * Build the PostgREST query from URL params.
+ *
+ * Every filter is whitelisted and the limit is capped. The query string
+ * reaches PostgREST, so anything not checked here would be a way to construct
+ * an arbitrary database request from the browser.
+ */
 export function historyQuery(search) {
   const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
   const out = new URLSearchParams();
@@ -141,8 +81,11 @@ export function historyQuery(search) {
   const timeframe = params.get('timeframe');
   if (timeframe && TIMEFRAMES.has(timeframe)) out.set('timeframe', `eq.${timeframe}`);
 
-  const outcome = params.get('outcome');
-  if (outcome && OUTCOMES.has(outcome)) out.set('outcome', `eq.${outcome}`);
+  const result = params.get('result');
+  if (result && RESULTS.has(result)) out.set('result', `eq.${result}`);
+
+  const direction = params.get('direction');
+  if (direction && DIRECTIONS.has(direction)) out.set('direction', `eq.${direction}`);
 
   const since = Number(params.get('since'));
   if (Number.isFinite(since) && since > 0) out.set('bar_time', `gte.${new Date(since).toISOString()}`);
@@ -186,66 +129,6 @@ export function createSignalsApi(env = process.env) {
       req.on('error', reject);
     });
 
-  /**
-   * Constant-time-ish token compare. Not a timing-attack fortress, but it
-   * avoids the trivial early-exit of `===` on a shared secret.
-   */
-  const tokenOk = (req) => {
-    const given = String(req.headers?.authorization || '').replace(/^Bearer\s+/i, '');
-    if (!cfg.ingestToken || given.length !== cfg.ingestToken.length) return false;
-    let diff = 0;
-    for (let i = 0; i < given.length; i++) diff |= given.charCodeAt(i) ^ cfg.ingestToken.charCodeAt(i);
-    return diff === 0;
-  };
-
-  async function ingest(req, res) {
-    if (!configured) {
-      return sendJson(res, 503, { error: 'NOT_CONFIGURED', errorMessage: 'Set SUPABASE_URL and SUPABASE_SERVICE_KEY to store signals.' });
-    }
-    if (!cfg.ingestToken) {
-      return sendJson(res, 503, { error: 'NOT_CONFIGURED', errorMessage: 'Set INGEST_TOKEN before the app can write signals.' });
-    }
-    if (!tokenOk(req)) {
-      return sendJson(res, 401, { error: 'UNAUTHORIZED', errorMessage: 'Wrong or missing ingest token.' });
-    }
-
-    let payload;
-    try {
-      payload = JSON.parse(await readBody(req));
-    } catch {
-      return sendJson(res, 400, { error: 'BAD_REQUEST', errorMessage: 'Body must be JSON.' });
-    }
-    const incoming = Array.isArray(payload) ? payload : payload?.signals;
-    if (!Array.isArray(incoming)) {
-      return sendJson(res, 400, { error: 'BAD_REQUEST', errorMessage: 'Expected { signals: [...] }.' });
-    }
-    if (incoming.length > MAX_BATCH) {
-      return sendJson(res, 413, { error: 'TOO_MANY', errorMessage: `At most ${MAX_BATCH} signals per request.` });
-    }
-
-    const rows = incoming.map(toRow).filter(Boolean);
-    const rejected = incoming.length - rows.length;
-    if (rows.length === 0) return sendJson(res, 200, { stored: 0, rejected });
-
-    let upstream;
-    let text;
-    try {
-      upstream = await fetch(`${cfg.url}/rest/v1/rpc/upsert_signals`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ payload: rows }),
-        signal: AbortSignal.timeout(15_000),
-      });
-      text = await upstream.text();
-    } catch (err) {
-      return sendJson(res, 502, { errorMessage: `Database unreachable (${err.code || err.message})` });
-    }
-    if (!upstream.ok) {
-      return sendJson(res, 502, { errorMessage: `Database rejected the write: ${text.slice(0, 300)}` });
-    }
-    return sendJson(res, 200, { stored: rows.length, rejected });
-  }
-
   async function history(req, res) {
     if (!configured) {
       return sendJson(res, 503, { error: 'NOT_CONFIGURED', errorMessage: 'Set SUPABASE_URL and SUPABASE_SERVICE_KEY to read stored signals.' });
@@ -276,10 +159,8 @@ export function createSignalsApi(env = process.env) {
     return sendJson(res, 200, {
       signals: Array.isArray(rows) ? rows.map(fromRow) : [],
       configured,
-      // Never reveal the token itself, only whether one is required.
-      requiresToken: Boolean(cfg.ingestToken),
     });
   }
 
-  return { ingest, history, config: cfg };
+  return { history, config: cfg };
 }

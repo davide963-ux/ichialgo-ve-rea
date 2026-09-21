@@ -101,12 +101,17 @@ class FakeDb implements SignalsDb {
   async lastRunStartedAt() {
     return this.lastRun;
   }
+  cursor = 0;
+  async lastCursor() {
+    return this.cursor;
+  }
   async startRun() {
     this.runs.push(Date.now());
     return this.runs.length;
   }
-  async finishRun() {
-    /* recorded implicitly by startRun */
+  async finishRun(_id: number | null, summary: { detail?: unknown }) {
+    const detail = summary.detail as { nextOffset?: number } | undefined;
+    if (typeof detail?.nextOffset === 'number') this.cursor = detail.nextOffset;
   }
   async expireStale() {
     return this.expired;
@@ -442,6 +447,79 @@ describe('runScan — credits', () => {
     // Bias and scan both wanted EUR/USD 1H; only one of them cost a credit.
     expect(feed.candleCalls.filter((c) => c === 'EUR/USD|1H')).toHaveLength(2);
     expect(feed.credits).toBe(1);
+  });
+
+  it('stops at the credit cap instead of failing on the tail of the list', async () => {
+    const db = new FakeDb();
+    const feed = new FakeFeed(longSetupCandles);
+    const config = smallConfig({
+      symbols: ['A/USD', 'B/USD', 'C/USD', 'D/USD', 'E/USD'],
+      maxCreditsPerRun: 3,
+    });
+
+    const result = await runScan({ db, feed, config, now: () => MONDAY_NOON });
+
+    expect(result.budgetExhausted).toBe(true);
+    expect(feed.credits).toBeLessThanOrEqual(3);
+    expect(result.scanned).toBeLessThan(5);
+  });
+
+  it('resumes where it stopped, so the tail is not starved', async () => {
+    const db = new FakeDb();
+    const config = smallConfig({
+      symbols: ['A/USD', 'B/USD', 'C/USD', 'D/USD', 'E/USD'],
+      maxCreditsPerRun: 2,
+    });
+
+    const seen = new Set<string>();
+    // Five pairs, two credits a run: four runs must cover all five.
+    for (let run = 0; run < 4; run++) {
+      const feed = new FakeFeed(flatCandles);
+      await runScan({ db, feed, config, now: () => MONDAY_NOON + run * 20 * 60_000, force: true });
+      for (const call of feed.candleCalls) seen.add(call.split('|')[0]!);
+    }
+
+    expect([...seen].sort()).toEqual(['A/USD', 'B/USD', 'C/USD', 'D/USD', 'E/USD']);
+  });
+
+  it('the cursor wraps rather than running off the end', async () => {
+    const db = new FakeDb();
+    db.cursor = 1;
+    const config = smallConfig({ symbols: ['A/USD', 'B/USD'], maxCreditsPerRun: 50 });
+
+    const feed = new FakeFeed(flatCandles);
+    const result = await runScan({ db, feed, config, now: () => MONDAY_NOON, force: true });
+
+    // Started at B, wrapped to A.
+    expect(feed.candleCalls.map((c) => c.split('|')[0])).toEqual(['B/USD', 'A/USD']);
+    expect(result.nextOffset).toBe(1);
+  });
+
+  it('does not report budget trouble when there is room', async () => {
+    const db = new FakeDb();
+    const result = await runScan({
+      db,
+      feed: new FakeFeed(flatCandles),
+      config: smallConfig({ maxCreditsPerRun: 50 }),
+      now: () => MONDAY_NOON,
+    });
+    expect(result.budgetExhausted).toBe(false);
+  });
+
+  it('counts a frozen pair as covered, so freezing does not stall the cursor', async () => {
+    const db = new FakeDb();
+    db.pending = [pendingSignal({ symbol: 'A/USD' })];
+    const feed = new FakeFeed(flatCandles);
+    feed.prices.set('A/USD', 1.101); // stays open
+
+    const result = await runScan({
+      db,
+      feed,
+      config: smallConfig({ symbols: ['A/USD', 'B/USD'], maxCreditsPerRun: 50 }),
+      now: () => MONDAY_NOON,
+    });
+
+    expect(result.nextOffset).toBe(0); // both covered, wrapped back to the start
   });
 
   it('reports what it spent', async () => {

@@ -6,6 +6,7 @@ import { MarketStatus } from './MarketStatus';
 const LINKS = [
   { to: '/', label: 'Dashboard', end: true },
   { to: '/history', label: 'History' },
+  { to: '/performance', label: 'Performance' },
   { to: '/equity', label: 'Equity Curve' },
   { to: '/backtest', label: 'Backtest' },
   { to: '/calculator', label: 'Calculator' },
