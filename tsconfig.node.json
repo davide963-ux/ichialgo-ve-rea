@@ -20,6 +20,6 @@
     "vite.config.ts",
     "server/api.d.mts",
     "server/*.ts",
-    "api/*.ts"
+    "scripts/*.mjs"
   ]
 }

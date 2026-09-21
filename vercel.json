@@ -4,9 +4,6 @@
   "framework": "vite",
   "functions": {
     "api/**/*.js": {
-      "maxDuration": 15
-    },
-    "api/**/*.ts": {
       "maxDuration": 60
     }
   },
