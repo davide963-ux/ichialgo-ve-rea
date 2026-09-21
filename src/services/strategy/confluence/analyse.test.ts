@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CONFLUENCE_STRATEGY } from '../../../config/confluence';
-import type { Candle } from '../../marketData';
+import type { Candle } from '../../marketData/types';
 import { analyseConfluence } from './analyse';
 import { isActionable } from './scoring';
 

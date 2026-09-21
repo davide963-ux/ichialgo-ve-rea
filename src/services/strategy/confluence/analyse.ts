@@ -40,7 +40,7 @@ import { CONFLUENCE_STRATEGY, type ConfluenceStrategyConfig } from '../../../con
 import { atr, emaOfCloses, ichimoku } from '../../../lib/indicators';
 import { analyseStructure } from '../../../lib/indicators/marketStructure';
 import { pipSize } from '../../../lib/pips';
-import type { Candle } from '../../marketData';
+import type { Candle } from '../../marketData/types';
 import { analysePullback, findConfirmation } from './pullback';
 import { gradeSignal, isActionable, scoreSetup, type ScoreInput } from './scoring';
 import { ZONE_RANK, classifyCloud, classifyRegime, gradeSlope, gradeZone } from './states';
