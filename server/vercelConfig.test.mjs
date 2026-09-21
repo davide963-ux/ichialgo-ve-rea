@@ -45,6 +45,8 @@ describe('globToRegExp', () => {
     expect(globToRegExp('api/*.js').test('api/foo.js')).toBe(true);
     expect(globToRegExp('api/*.js').test('api/td-rest/foo.js')).toBe(false);
     expect(globToRegExp('api/**/*.js').test('api/handler.mjs')).toBe(false);
+    expect(globToRegExp('api/**/*.ts').test('api/scanner.ts')).toBe(true);
+    expect(globToRegExp('api/**/*.ts').test('api/scanner.js')).toBe(false);
   });
 });
 
@@ -69,7 +71,10 @@ describe('vercel.json functions', () => {
 
   it('leaves no serverless entry point without a matching pattern', () => {
     // Files starting with _ are shared helpers, never functions themselves.
-    const entries = files.filter((f) => f.endsWith('.js') && !f.includes('/_'));
+    // .ts counts: Vercel compiles TypeScript functions, and api/scanner.ts is
+    // one, so a pattern that only covered .js would silently drop its config
+    // (including the longer maxDuration a full scan needs).
+    const entries = files.filter((f) => /\.(js|ts)$/.test(f) && !f.includes('/_'));
     for (const file of entries) {
       expect(
         patterns.some((p) => globToRegExp(p).test(file)),

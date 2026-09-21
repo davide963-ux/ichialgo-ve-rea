@@ -1,93 +1,105 @@
 /**
- * Client for the stored signal history.
+ * Reading stored signals.
  *
- *   write  POST /api/signals   (Bearer <ingest token>)
- *   read   GET  /api/signals?symbol=&timeframe=&outcome=&limit=
- *
- * The browser has no database credentials: the server holds the Supabase
- * service key and the table denies everyone else. All this does is talk to
- * our own API.
+ * The browser no longer writes: the scanner produces signals server-side, so
+ * this is a read client and nothing more. The ingest token went with the write
+ * path.
  */
-import type { TouchSignal } from '../strategy';
+
+/** A stored signal, as /api/signals returns it. */
+export interface StoredSignal {
+  id: string;
+  strategy: string;
+  symbol: string;
+  timeframe: string;
+  /** Open time of the analysed bar, UNIX seconds. */
+  barTime: number;
+  detectedAt: number;
+  direction: 'long' | 'short';
+  signal: string;
+  confidence: number;
+  marketCondition: string;
+  setupStatus: string;
+  price: number;
+  atr: number;
+  entry: number | null;
+  stopLoss: number | null;
+  takeProfit1: number | null;
+  takeProfit2: number | null;
+  takeProfit3: number | null;
+  stopPips: number | null;
+  result: 'pending' | 'tp1' | 'tp2' | 'tp3' | 'sl' | 'be' | 'expired' | 'invalidated';
+  tp1Hit: boolean;
+  closedPrice: number | null;
+  closedAt: number | null;
+  /** Result in multiples of risk. Null while open. */
+  rMultiple: number | null;
+  /** The full structured analysis, so a signal can be re-explained. */
+  analysis: Record<string, unknown> | null;
+  reasons: string[];
+  warnings: string[];
+}
 
 export interface HistoryFilters {
   symbol?: string;
   timeframe?: string;
-  outcome?: string;
+  result?: string;
+  direction?: string;
   limit?: number;
-}
-
-export interface HistoryResponse {
-  signals: TouchSignal[];
-  /** False when SUPABASE_URL / SUPABASE_SERVICE_KEY are not set on the server. */
-  configured: boolean;
-  requiresToken: boolean;
 }
 
 export class SignalStoreError extends Error {
   constructor(
     message: string,
-    readonly kind: 'not-configured' | 'unauthorized' | 'network' | 'server',
+    readonly kind: 'not-configured' | 'network' | 'server',
   ) {
     super(message);
     this.name = 'SignalStoreError';
   }
 }
 
-async function readError(res: Response, fallback: string): Promise<string> {
-  try {
-    const body = (await res.json()) as { errorMessage?: string };
-    return body.errorMessage ?? fallback;
-  } catch {
-    return fallback;
-  }
+export interface HistoryResponse {
+  signals: StoredSignal[];
+  configured: boolean;
 }
 
 export async function fetchHistory(filters: HistoryFilters = {}, signal?: AbortSignal): Promise<HistoryResponse> {
-  const qs = new URLSearchParams();
-  if (filters.symbol) qs.set('symbol', filters.symbol);
-  if (filters.timeframe) qs.set('timeframe', filters.timeframe);
-  if (filters.outcome) qs.set('outcome', filters.outcome);
-  if (filters.limit) qs.set('limit', String(filters.limit));
+  const params = new URLSearchParams();
+  if (filters.symbol) params.set('symbol', filters.symbol);
+  if (filters.timeframe) params.set('timeframe', filters.timeframe);
+  if (filters.result) params.set('result', filters.result);
+  if (filters.direction) params.set('direction', filters.direction);
+  if (filters.limit) params.set('limit', String(filters.limit));
 
   let res: Response;
   try {
-    res = await fetch(`/api/signals?${qs}`, { signal, headers: { Accept: 'application/json' } });
-  } catch {
-    throw new SignalStoreError('Cannot reach the signal store', 'network');
+    res = await fetch(`/api/signals${params.size ? `?${params}` : ''}`, { signal });
+  } catch (err) {
+    throw new SignalStoreError(`Could not reach the history endpoint (${(err as Error).message})`, 'network');
   }
-  if (res.status === 503) throw new SignalStoreError(await readError(res, 'Signal storage is not configured'), 'not-configured');
-  if (!res.ok) throw new SignalStoreError(await readError(res, `HTTP ${res.status}`), 'server');
-  return (await res.json()) as HistoryResponse;
-}
 
-export interface StoreResult {
-  stored: number;
-  rejected: number;
-}
+  const body = (await res.json().catch(() => null)) as (HistoryResponse & { errorMessage?: string }) | null;
 
-export async function storeSignals(signals: TouchSignal[], token: string): Promise<StoreResult> {
-  let res: Response;
-  try {
-    res = await fetch('/api/signals', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ signals }),
-    });
-  } catch {
-    throw new SignalStoreError('Cannot reach the signal store', 'network');
+  if (res.status === 503) {
+    throw new SignalStoreError(body?.errorMessage ?? 'Signal storage is not configured.', 'not-configured');
   }
-  if (res.status === 401) throw new SignalStoreError('The ingest token was rejected', 'unauthorized');
-  if (res.status === 503) throw new SignalStoreError(await readError(res, 'Signal storage is not configured'), 'not-configured');
-  if (!res.ok) throw new SignalStoreError(await readError(res, `HTTP ${res.status}`), 'server');
-  return (await res.json()) as StoreResult;
+  if (!res.ok) {
+    throw new SignalStoreError(body?.errorMessage ?? `History request failed (HTTP ${res.status})`, 'server');
+  }
+  return { signals: body?.signals ?? [], configured: body?.configured ?? false };
 }
 
-/**
- * What identifies a "version" of a signal for sending purposes.
- *
- * The same bar is re-reported as it resolves — a live tick becomes a forming
- * candle, then a closed one with a real outcome. Keying on id alone would
- * send only the first of those and store a permanently 'pending' row.
- */
-export const signalVersion = (s: TouchSignal) => `${s.id}|${s.source}|${s.outcome}`;
+/** Open trades have no result yet and must not count toward any statistic. */
+export const isClosed = (s: StoredSignal): boolean => s.result !== 'pending' && s.rMultiple !== null;
+
+/** Human label for a result code. */
+export const RESULT_LABEL: Record<StoredSignal['result'], string> = {
+  pending: 'Open',
+  tp1: 'TP1',
+  tp2: 'TP2',
+  tp3: 'TP3',
+  sl: 'Stopped',
+  be: 'Breakeven',
+  expired: 'Expired',
+  invalidated: 'Invalidated',
+};

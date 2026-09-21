@@ -15,7 +15,6 @@
  *   GET /api/td-rest/time_series       →  https://api.twelvedata.com/time_series
  *   GET /api/td-rest/_status           →  local key-pool report (no upstream call)
  *   GET  /api/signals                  →  stored signal history (Supabase)
- *   POST /api/signals                  →  store signals (requires INGEST_TOKEN)
  *
  * Twelve Data requests are NOT proxied blindly: they go through a key pool
  * (server/twelveDataKeyPool.mjs) that fails over to the next API key when one
@@ -166,8 +165,8 @@ export function createMarketDataApi(env = process.env) {
     return sendJson(res, 200, tdPool.snapshot());
   }
 
-  // `method` defaults to GET. /api/signals is the one POST the proxy accepts,
-  // and it is the only route that writes anything anywhere.
+  // Every route is a GET. Signals are written by the scanner, server-side, so
+  // this proxy reads and never writes.
   const routes = [
     {
       re: /^\/api\/td-rest\/(quote|time_series)(\?.*)?$/,
@@ -187,14 +186,6 @@ export function createMarketDataApi(env = process.env) {
     },
     {
       re: /^\/api\/signals(\?.*)?$/,
-      method: 'POST',
-      ready: () => true,
-      missing: '',
-      to: (m) => `/signals${m[1] ?? ''}`,
-      proxy: signals.ingest,
-    },
-    {
-      re: /^\/api\/signals(\?.*)?$/,
       ready: () => true,
       missing: '',
       to: (m) => `/signals${m[1] ?? ''}`,
@@ -208,8 +199,8 @@ export function createMarketDataApi(env = process.env) {
     if (!url.startsWith('/api/')) return next();
 
     const method = req.method || 'GET';
-    if (method !== 'GET' && method !== 'POST') {
-      return sendJson(res, 405, { error: 'METHOD_NOT_ALLOWED', errorMessage: 'Only GET and POST are accepted.' });
+    if (method !== 'GET') {
+      return sendJson(res, 405, { error: 'METHOD_NOT_ALLOWED', errorMessage: 'Only GET is accepted.' });
     }
     for (const route of routes) {
       if ((route.method ?? 'GET') !== method) continue;

@@ -5,6 +5,9 @@
   "functions": {
     "api/**/*.js": {
       "maxDuration": 15
+    },
+    "api/**/*.ts": {
+      "maxDuration": 60
     }
   },
   "rewrites": [

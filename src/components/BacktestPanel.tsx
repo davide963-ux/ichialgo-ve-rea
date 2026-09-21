@@ -13,8 +13,10 @@ export interface BacktestRequest {
   endDate: string;
   startingBalance: number;
   riskPct: number;
-  /** Only trade touches Ichimoku agrees with. */
+  /** Only trade touches Ichimoku agrees with. EMA50-touch strategy only. */
   confluentOnly: boolean;
+  /** Which strategy to run. Both stay available; neither replaces the other. */
+  strategy: 'confluence' | 'ema50-touch';
 }
 
 interface Props {
@@ -34,6 +36,7 @@ export function BacktestPanel({ onRun, busy = false }: Props) {
     startingBalance: '10000',
     riskPct: '1',
     confluentOnly: false,
+    strategy: 'confluence' as BacktestRequest['strategy'],
   });
   const [errors, setErrors] = useState<string[]>([]);
 
@@ -105,14 +108,31 @@ export function BacktestPanel({ onRun, busy = false }: Props) {
           </div>
         </div>
 
-        <label className="overlay-toggle" style={{ fontSize: 12 }}>
-          <input
-            type="checkbox"
-            checked={form.confluentOnly}
-            onChange={(e) => set('confluentOnly', e.target.checked)}
-          />
-          Only trade Ichimoku-confluent touches
-        </label>
+        <div className="field">
+          <label htmlFor="bt-strategy">Strategy</label>
+          <select
+            id="bt-strategy"
+            className="input"
+            value={form.strategy}
+            onChange={(e) => set('strategy', e.target.value as BacktestRequest['strategy'])}
+          >
+            <option value="confluence">Ichimoku + EMA50 confluence</option>
+            <option value="ema50-touch">EMA50 touch (original)</option>
+          </select>
+        </div>
+
+        {/* Only the touch strategy has a confluence filter; the confluence
+            engine scores Ichimoku as part of its own hierarchy. */}
+        {form.strategy === 'ema50-touch' && (
+          <label className="overlay-toggle" style={{ fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={form.confluentOnly}
+              onChange={(e) => set('confluentOnly', e.target.checked)}
+            />
+            Only trade Ichimoku-confluent touches
+          </label>
+        )}
 
         {errors.length > 0 && (
           <ul className="msg-list err" role="alert">

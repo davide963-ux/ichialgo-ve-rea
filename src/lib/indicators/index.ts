@@ -12,3 +12,12 @@ export {
   type IchimokuSeries,
   type KumoSide,
 } from './ichimoku';
+export {
+  analyseStructure,
+  findSwings,
+  microStructure,
+  type MarketStructure,
+  type StructureDirection,
+  type StructureOptions,
+  type Swing,
+} from './marketStructure';

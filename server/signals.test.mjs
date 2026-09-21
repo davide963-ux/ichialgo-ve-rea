@@ -1,253 +1,180 @@
 /**
- * The signals endpoints through the real middleware, with Supabase stubbed.
- * The write path is the only thing in this app that can be POSTed to, so its
- * auth and validation get the most attention here.
+ * The signal history endpoint is READ-ONLY. Writes live in the scanner now, so
+ * the tests that mattered most here are the ones about what a browser-supplied
+ * query string is allowed to reach: the URL goes to PostgREST, so an
+ * unvalidated filter would be a way to build an arbitrary database request
+ * from the client.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createMarketDataApi } from './api.mjs';
-import { fromRow, historyQuery, toRow } from './signals.mjs';
+import { describe, expect, it, vi } from 'vitest';
+import { createSignalsApi, fromRow, historyQuery, readSignalsConfig } from './signals.mjs';
 
-const ENV = {
-  SUPABASE_URL: 'https://db.example.co',
-  SUPABASE_SERVICE_KEY: 'service-key',
-  INGEST_TOKEN: 'correct-horse',
-};
+const ENV = { SUPABASE_URL: 'https://db.example.com', SUPABASE_SERVICE_KEY: 'service-key' };
 
-function fakeRes() {
-  const res = {
-    statusCode: 200, headers: {}, body: '', headersSent: false,
-    setHeader: (k, v) => void (res.headers[k.toLowerCase()] = String(v)),
-    end: (chunk) => { res.body = chunk ?? ''; res.headersSent = true; res.done.resolve(res); },
-  };
-  res.done = Promise.withResolvers();
-  return res;
-}
-
-/** A request whose body is delivered like a real stream. */
-function call(api, url, { method = 'GET', body, token } = {}) {
-  const res = fakeRes();
-  const handlers = {};
-  const req = {
-    url, method,
-    headers: token ? { authorization: `Bearer ${token}` } : {},
-    on(event, cb) { handlers[event] = cb; return req; },
-    destroy() {},
-  };
-  api.middleware(req, res, () => res.end(''));
-  if (body !== undefined) {
-    queueMicrotask(() => {
-      handlers.data?.(Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)));
-      handlers.end?.();
-    });
-  }
-  return res.done.promise;
-}
-
-const signal = (over = {}) => ({
-  id: 'ema50-touch|EUR/USD|1H|1700000000',
-  strategy: 'ema50-touch',
+const row = (over = {}) => ({
+  id: 'ichimoku-ema50-confluence|EUR/USD|1H|1700000000',
+  strategy: 'ichimoku-ema50-confluence',
   symbol: 'EUR/USD',
   timeframe: '1H',
-  barTime: 1_700_000_000,
-  detectedAt: 1_700_000_500_000,
-  source: 'candle',
-  price: 1.085,
-  ema: 1.0849,
-  atr: 0.0012,
-  tolerancePips: 2.1,
-  distancePips: 0.4,
-  approach: 'above',
-  outcome: 'bounce',
-  trend: 'up',
-  bias: 'long',
-  counterTrend: false,
-  ichimoku: { score: 4, agrees: true },
-  plan: { direction: 'LONG', entry: 1.0849 },
+  bar_time: '2026-09-20T10:00:00Z',
+  detected_at: '2026-09-20T10:01:00Z',
+  direction: 'long',
+  signal: 'LONG',
+  confidence: 72,
+  market_condition: 'TRENDING_BULLISH',
+  setup_status: 'CONFIRMED',
+  price: 1.1,
+  atr: 0.001,
+  entry: 1.1,
+  stop_loss: 1.098,
+  take_profit1: 1.103,
+  take_profit2: 1.105,
+  take_profit3: 1.107,
+  stop_pips: 20,
+  result: 'tp2',
+  tp1_hit: true,
+  closed_price: 1.105,
+  closed_at: '2026-09-20T14:00:00Z',
+  r_multiple: 2.5,
+  analysis: { ok: true },
+  reasons: ['a'],
+  warnings: [],
   ...over,
 });
 
-afterEach(() => vi.unstubAllGlobals());
+/** Minimal res double. */
+function makeRes() {
+  return {
+    statusCode: 0,
+    headers: {},
+    body: null,
+    setHeader(k, v) { this.headers[k] = v; },
+    end(text) { this.body = text ? JSON.parse(text) : null; },
+  };
+}
 
-describe('toRow', () => {
-  it('maps the app shape to the table, converting both time units', () => {
-    const row = toRow(signal());
-    expect(row.bar_time).toBe('2023-11-14T22:13:20.000Z'); // seconds → ISO
-    expect(row.detected_at).toBe('2023-11-14T22:21:40.000Z'); // millis → ISO
-    expect(row.counter_trend).toBe(false);
-    expect(row.ichimoku_score).toBe(4); // lifted out of the jsonb for indexing
+describe('readSignalsConfig', () => {
+  it('trims and strips a trailing slash', () => {
+    const cfg = readSignalsConfig({ SUPABASE_URL: ' https://x.co/// ', SUPABASE_SERVICE_KEY: ' k ' });
+    expect(cfg).toEqual({ url: 'https://x.co', serviceKey: 'k' });
   });
 
-  it('rejects anything that does not fit, rather than trusting the caller', () => {
-    expect(toRow(null)).toBeNull();
-    expect(toRow({})).toBeNull();
-    expect(toRow(signal({ timeframe: '5M' }))).toBeNull(); // no longer offered
-    expect(toRow(signal({ source: 'guess' }))).toBeNull();
-    expect(toRow(signal({ outcome: 'maybe' }))).toBeNull();
-    expect(toRow(signal({ approach: 'sideways' }))).toBeNull();
-    expect(toRow(signal({ trend: 'up-ish' }))).toBeNull();
-    expect(toRow(signal({ bias: 'bullish' }))).toBeNull();
-    expect(toRow(signal({ price: 'cheap' }))).toBeNull();
-    expect(toRow(signal({ barTime: Number.NaN }))).toBeNull();
-    expect(toRow(signal({ id: 'x'.repeat(500) }))).toBeNull();
-  });
-
-  it('defaults the optional numbers instead of writing null into NOT NULL columns', () => {
-    const row = toRow(signal({ atr: undefined, tolerancePips: undefined, distancePips: undefined }));
-    expect(row).toMatchObject({ atr: 0, tolerance_pips: 0, distance_pips: 0 });
-  });
-
-  it('accepts a signal with no Ichimoku context yet', () => {
-    const row = toRow(signal({ ichimoku: null }));
-    expect(row.ichimoku).toBeNull();
-    expect(row.ichimoku_score).toBeNull();
-  });
-
-  it('round-trips through fromRow', () => {
-    const original = signal();
-    const back = fromRow(toRow(original));
-    expect(back).toMatchObject({
-      id: original.id, symbol: original.symbol, timeframe: original.timeframe,
-      barTime: original.barTime, detectedAt: original.detectedAt,
-      outcome: original.outcome, counterTrend: false,
-    });
+  it('has no ingest token any more — the browser never writes', () => {
+    expect(readSignalsConfig(ENV)).not.toHaveProperty('ingestToken');
   });
 });
 
-describe('historyQuery', () => {
-  it('always sorts newest first and caps the page size', () => {
-    const q = historyQuery('?limit=99999');
+describe('fromRow', () => {
+  it('converts both time units the UI expects', () => {
+    const s = fromRow(row());
+    expect(s.barTime).toBe(Math.floor(Date.parse('2026-09-20T10:00:00Z') / 1000));
+    expect(s.detectedAt).toBe(Date.parse('2026-09-20T10:01:00Z'));
+    expect(s.closedAt).toBe(Date.parse('2026-09-20T14:00:00Z'));
+  });
+
+  it('carries the trade result through', () => {
+    const s = fromRow(row());
+    expect(s).toMatchObject({ result: 'tp2', rMultiple: 2.5, tp1Hit: true, closedPrice: 1.105 });
+  });
+
+  it('leaves an open trade without a close', () => {
+    const s = fromRow(row({ result: 'pending', closed_at: null, closed_price: null, r_multiple: null }));
+    expect(s.closedAt).toBeNull();
+    expect(s.rMultiple).toBeNull();
+  });
+
+  it('defaults the arrays rather than handing the UI undefined', () => {
+    const s = fromRow(row({ reasons: null, warnings: null, analysis: null }));
+    expect(s.reasons).toEqual([]);
+    expect(s.warnings).toEqual([]);
+    expect(s.analysis).toBeNull();
+  });
+});
+
+describe('historyQuery — only whitelisted filters reach PostgREST', () => {
+  it('always orders newest first and selects everything', () => {
+    const q = historyQuery('');
     expect(q.get('order')).toBe('bar_time.desc');
-    expect(q.get('limit')).toBe('1000');
+    expect(q.get('select')).toBe('*');
   });
 
-  it('defaults a missing or silly limit', () => {
-    expect(historyQuery('').get('limit')).toBe('200');
-    expect(historyQuery('?limit=-5').get('limit')).toBe('200');
-  });
-
-  it('passes through only filters it recognises', () => {
-    const q = historyQuery('?symbol=EUR/USD&timeframe=4H&outcome=bounce');
+  it('passes through the filters it recognises', () => {
+    const q = historyQuery('?symbol=EUR/USD&timeframe=4H&result=sl&direction=short');
     expect(q.get('symbol')).toBe('eq.EUR/USD');
     expect(q.get('timeframe')).toBe('eq.4H');
-    expect(q.get('outcome')).toBe('eq.bounce');
+    expect(q.get('result')).toBe('eq.sl');
+    expect(q.get('direction')).toBe('eq.short');
   });
 
-  it('drops filters that do not match the expected shape', () => {
-    // A PostgREST operator smuggled through a filter would change the query.
-    const q = historyQuery('?symbol=EUR/USD);drop&timeframe=5M&outcome=whatever');
-    expect(q.get('symbol')).toBeNull();
+  it('drops a filter whose value is not a known one', () => {
+    const q = historyQuery('?timeframe=5S&result=profit&direction=sideways');
     expect(q.get('timeframe')).toBeNull();
-    expect(q.get('outcome')).toBeNull();
+    expect(q.get('result')).toBeNull();
+    expect(q.get('direction')).toBeNull();
+  });
+
+  it('drops a symbol that is not a currency pair', () => {
+    expect(historyQuery('?symbol=*').get('symbol')).toBeNull();
+    expect(historyQuery("?symbol=EUR/USD';drop table signals--").get('symbol')).toBeNull();
+  });
+
+  it('ignores any parameter it does not know about', () => {
+    const q = historyQuery('?or=(id.eq.1)&apikey=stolen&select=secret');
+    expect(q.get('or')).toBeNull();
+    expect(q.get('apikey')).toBeNull();
+    expect(q.get('select')).toBe('*');
+  });
+
+  it('caps the limit', () => {
+    expect(Number(historyQuery('?limit=999999').get('limit'))).toBe(1000);
+    expect(Number(historyQuery('?limit=-5').get('limit'))).toBe(200);
+    expect(Number(historyQuery('?limit=abc').get('limit'))).toBe(200);
+  });
+
+  it('accepts a since cutoff as a timestamp', () => {
+    const since = Date.parse('2026-09-01T00:00:00Z');
+    expect(historyQuery(`?since=${since}`).get('bar_time')).toBe('gte.2026-09-01T00:00:00.000Z');
   });
 });
 
-describe('POST /api/signals', () => {
-  it('refuses without the token', async () => {
-    const res = await call(createMarketDataApi(ENV), '/api/signals', { method: 'POST', body: { signals: [signal()] } });
-    expect(res.statusCode).toBe(401);
+describe('history endpoint', () => {
+  it('answers 503 when the database is not configured, without erroring', async () => {
+    const api = createSignalsApi({});
+    const res = makeRes();
+    await api.history({ url: '/signals' }, res);
+    expect(res.statusCode).toBe(503);
+    expect(res.body.error).toBe('NOT_CONFIGURED');
   });
 
-  it('refuses with the wrong token, and does not touch the database', async () => {
-    const used = [];
-    vi.stubGlobal('fetch', async (u) => { used.push(String(u)); return new Response('1', { status: 200 }); });
-    const res = await call(createMarketDataApi(ENV), '/api/signals', { method: 'POST', token: 'wrong', body: { signals: [signal()] } });
-    expect(res.statusCode).toBe(401);
-    expect(used).toEqual([]);
-  });
+  it('reads through to Supabase with the service key and maps the rows', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, text: async () => JSON.stringify([row()]) });
+    vi.stubGlobal('fetch', fetchMock);
 
-  it('stores a valid batch through the merge function', async () => {
-    const calls = [];
-    vi.stubGlobal('fetch', async (u, init) => {
-      calls.push({ url: String(u), body: JSON.parse(init.body), auth: init.headers.Authorization });
-      return new Response('1', { status: 200, headers: { 'content-type': 'application/json' } });
-    });
-    const res = await call(createMarketDataApi(ENV), '/api/signals', { method: 'POST', token: 'correct-horse', body: { signals: [signal()] } });
+    const api = createSignalsApi(ENV);
+    const res = makeRes();
+    await api.history({ url: '/signals?symbol=EUR/USD' }, res);
 
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual({ stored: 1, rejected: 0 });
-    // Merge rules live in SQL, so the write goes through the RPC, not the table.
-    expect(calls[0].url).toBe('https://db.example.co/rest/v1/rpc/upsert_signals');
-    expect(calls[0].auth).toBe('Bearer service-key');
-    expect(calls[0].body.payload[0].id).toBe(signal().id);
+    expect(res.body.configured).toBe(true);
+    expect(res.body.signals).toHaveLength(1);
+    expect(res.body.signals[0].rMultiple).toBe(2.5);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toContain('https://db.example.com/rest/v1/signals?');
+    expect(url).toContain('symbol=eq.EUR%2FUSD');
+    expect(init.headers.Authorization).toBe('Bearer service-key');
+    vi.unstubAllGlobals();
   });
 
-  it('drops bad rows and reports the count, keeping the good ones', async () => {
-    vi.stubGlobal('fetch', async () => new Response('1', { status: 200 }));
-    const res = await call(createMarketDataApi(ENV), '/api/signals', {
-      method: 'POST', token: 'correct-horse',
-      body: { signals: [signal(), { junk: true }, signal({ id: 'other', outcome: 'nope' })] },
-    });
-    expect(JSON.parse(res.body)).toEqual({ stored: 1, rejected: 2 });
-  });
-
-  it('never calls the database when every row is junk', async () => {
-    const used = [];
-    vi.stubGlobal('fetch', async (u) => { used.push(String(u)); return new Response('1', { status: 200 }); });
-    const res = await call(createMarketDataApi(ENV), '/api/signals', { method: 'POST', token: 'correct-horse', body: { signals: [{}, null] } });
-    expect(JSON.parse(res.body)).toEqual({ stored: 0, rejected: 2 });
-    expect(used).toEqual([]);
-  });
-
-  it('rejects an oversized batch', async () => {
-    const res = await call(createMarketDataApi(ENV), '/api/signals', {
-      method: 'POST', token: 'correct-horse',
-      body: { signals: Array.from({ length: 201 }, (_, i) => signal({ id: `s${i}` })) },
-    });
-    expect(res.statusCode).toBe(413);
-  });
-
-  it('rejects a body that is not JSON, or not a signal array', async () => {
-    const api = createMarketDataApi(ENV);
-    expect((await call(api, '/api/signals', { method: 'POST', token: 'correct-horse', body: 'not json' })).statusCode).toBe(400);
-    expect((await call(api, '/api/signals', { method: 'POST', token: 'correct-horse', body: { signals: 'nope' } })).statusCode).toBe(400);
-  });
-
-  it('says so plainly when storage is not configured at all', async () => {
-    const res = await call(createMarketDataApi({}), '/api/signals', { method: 'POST', token: 'x', body: { signals: [signal()] } });
-    expect(res.statusCode).toBe(503);
-    expect(JSON.parse(res.body).error).toBe('NOT_CONFIGURED');
-  });
-
-  it('reports a database failure instead of claiming success', async () => {
-    vi.stubGlobal('fetch', async () => new Response('permission denied', { status: 403 }));
-    const res = await call(createMarketDataApi(ENV), '/api/signals', { method: 'POST', token: 'correct-horse', body: { signals: [signal()] } });
+  it('reports a database failure as a 502 rather than a blank page', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, text: async () => 'boom' }));
+    const api = createSignalsApi(ENV);
+    const res = makeRes();
+    await api.history({ url: '/signals' }, res);
     expect(res.statusCode).toBe(502);
-    expect(JSON.parse(res.body).errorMessage).toMatch(/rejected the write/);
-  });
-});
-
-describe('GET /api/signals', () => {
-  it('returns stored signals in the shape the UI already renders', async () => {
-    vi.stubGlobal('fetch', async () =>
-      new Response(JSON.stringify([toRow(signal())]), { status: 200, headers: { 'content-type': 'application/json' } }));
-    const res = await call(createMarketDataApi(ENV), '/api/signals?symbol=EUR/USD&limit=10');
-
-    const body = JSON.parse(res.body);
-    expect(res.statusCode).toBe(200);
-    expect(body.configured).toBe(true);
-    expect(body.requiresToken).toBe(true);
-    expect(body.signals[0]).toMatchObject({ id: signal().id, barTime: 1_700_000_000, outcome: 'bounce' });
+    vi.unstubAllGlobals();
   });
 
-  it('needs no token to read', async () => {
-    vi.stubGlobal('fetch', async () => new Response('[]', { status: 200 }));
-    expect((await call(createMarketDataApi(ENV), '/api/signals')).statusCode).toBe(200);
-  });
-
-  it('reports 503 when storage is off, so the UI can say so', async () => {
-    const res = await call(createMarketDataApi({}), '/api/signals');
-    expect(res.statusCode).toBe(503);
-  });
-});
-
-describe('method handling', () => {
-  it('still rejects verbs nobody serves', async () => {
-    const res = await call(createMarketDataApi(ENV), '/api/signals', { method: 'DELETE' });
-    expect(res.statusCode).toBe(405);
-  });
-
-  it('will not let a POST reach the read-only market-data routes', async () => {
-    const res = await call(createMarketDataApi(ENV), '/api/td-rest/quote?symbol=EUR/USD', { method: 'POST', body: {} });
-    expect(res.statusCode).toBe(405);
+  it('exposes no write path at all', () => {
+    expect(createSignalsApi(ENV)).not.toHaveProperty('ingest');
   });
 });

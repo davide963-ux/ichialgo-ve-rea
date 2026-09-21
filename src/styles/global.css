@@ -182,6 +182,63 @@ a {
   min-width: 132px;
 }
 
+/* ══════════ Signal detail (History "Why?" row) ══════════ */
+.row-detail > td {
+  background: color-mix(in srgb, var(--panel) 92%, var(--bg));
+  padding: 16px 18px;
+}
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 20px;
+}
+.detail-grid h4 {
+  margin: 0 0 8px;
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.reason-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+}
+.reason-list.warn {
+  color: var(--warn, #e0b341);
+}
+/* Label/value pairs side by side rather than the browser's stacked default. */
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 14px;
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+.kv dt {
+  color: var(--muted);
+}
+.kv dd {
+  margin: 0;
+}
+/* A group too small to read anything into — visible, but not shouting. */
+.row-dim {
+  opacity: 0.62;
+}
+.btn-sm {
+  padding: 4px 10px;
+  font-size: var(--fs-xs);
+}
+.badge-muted {
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+  color: var(--muted);
+}
+.badge-neutral {
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+  color: var(--fg);
+}
+
 /* ═════════════════════ Navbar ═════════════════════ */
 .nav {
   position: sticky;
