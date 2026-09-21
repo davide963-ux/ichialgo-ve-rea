@@ -3,7 +3,6 @@ import { BacktestResults } from '../components/BacktestResults';
 import { ConfluenceResults } from '../components/ConfluenceResults';
 import { EmptyState } from '../components/EmptyState';
 import { MarketStatus } from '../components/MarketStatus';
-import { EMA50_TOUCH } from '../config/strategy';
 import { useBacktest } from '../hooks/useBacktest';
 
 /**
@@ -24,13 +23,11 @@ export function Backtest() {
         <div>
           <h1>Backtest</h1>
           <p>
-            Historical candles through the live engine. The confluence strategy enters at the EMA50/Kijun zone after a
-            confirmed pullback, with a structure-anchored stop and three targets; EMA{EMA50_TOUCH.period} touch is the
-            original detector, kept for comparison. One position at a time either way.
+            What the strategy would have done on real past prices. Pick a pair and a date range, and it replays every
+            candle through the same engine that produces live signals.
           </p>
           <p className="panel-sub">
-            Results are in-sample and measure the range you choose. Nothing here establishes that a strategy is
-            profitable — that needs out-of-sample testing over far more data than one pair and one range.
+            One pair over one period is a sanity check, not proof. A strategy can look good on a lucky stretch.
           </p>
         </div>
       </div>
@@ -76,7 +73,11 @@ export function Backtest() {
 
           {status === 'DONE' && confluence && (
             <div className="panel-body">
-              <ConfluenceResults result={confluence} />
+              <ConfluenceResults
+                result={confluence}
+                startingBalance={request?.startingBalance ?? 10_000}
+                riskPct={request?.riskPct ?? 1}
+              />
             </div>
           )}
 

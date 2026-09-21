@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
-    "start": "node server/index.mjs"
+    "start": "node server/index.mjs",
+    "docs": "python3 scripts/buildStrategyDoc.py"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
