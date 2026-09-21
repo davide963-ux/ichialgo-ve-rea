@@ -53,6 +53,9 @@ function deployedRoutes() {
 export const serves = (deployed, { prefix, hasSubPath }) =>
   deployed.some((d) => d.prefix === prefix && (hasSubPath ? d.kind === 'catchall' || d.kind === 'static' : d.kind === 'static'));
 
+/** Functions that are not market-data proxy routes and never will be. */
+const STANDALONE = new Set(['scanner']);
+
 describe('proxy routes vs Vercel functions', () => {
   it('finds the route table (so this cannot pass by reading nothing)', () => {
     const routes = proxyRoutes();
@@ -95,15 +98,59 @@ describe('proxy routes vs Vercel functions', () => {
   it('does not ship a function for a route that no longer exists', () => {
     const prefixes = new Set(proxyRoutes().map((r) => r.prefix));
     for (const d of deployedRoutes()) {
+      if (STANDALONE.has(d.prefix)) continue;
       expect(prefixes, `api/ deploys ${d.prefix} but server/api.mjs serves no /api/${d.prefix} route`).toContain(d.prefix);
     }
   });
 
-  it('points every function at the shared handler, so they cannot drift', () => {
+  it('points every proxy function at the shared handler, so they cannot drift', () => {
     for (const d of deployedRoutes()) {
+      if (STANDALONE.has(d.prefix)) continue;
       const file = d.kind === 'static' ? join(apiDir, `${d.prefix}.js`) : join(apiDir, d.prefix, '[...path].js');
       const path = existsSync(file) ? file : join(apiDir, d.prefix, 'index.js');
       expect(readFileSync(path, 'utf8')).toMatch(/_lib\/handler\.mjs'/);
     }
+  });
+});
+
+/**
+ * The scanner is its own function, and the rules it has to obey are different
+ * from the proxy's — but they are the ones that actually broke production, so
+ * they are checked just as hard.
+ */
+describe('the scanner function', () => {
+  const source = () => readFileSync(join(apiDir, 'scanner.js'), 'utf8');
+
+  it('is a STATIC file, because /api/scanner is a bare path', () => {
+    expect(existsSync(join(apiDir, 'scanner.js'))).toBe(true);
+    expect(existsSync(join(apiDir, 'scanner', '[...path].js'))).toBe(false);
+  });
+
+  it('is .js, not .ts', () => {
+    // A .ts entry point importing the app's extensionless graph died with
+    // ERR_MODULE_NOT_FOUND under pure Node ESM, surfacing only as
+    // FUNCTION_INVOCATION_FAILED with no message in the response.
+    expect(existsSync(join(apiDir, 'scanner.ts'))).toBe(false);
+  });
+
+  it('imports the pre-built bundle rather than reaching into src/', () => {
+    const text = source();
+    expect(text).toMatch(/_lib\/scanner\.bundle\.mjs/);
+    // Any path out of api/ would drag the extensionless graph back in.
+    expect(text).not.toMatch(/from '\.\.\//);
+  });
+
+  it('reports a boot failure instead of dying silently', () => {
+    const text = source();
+    // The import must be INSIDE the handler: a static one that fails to
+    // resolve kills the function before any of this code can run.
+    expect(text).toMatch(/await import\(/);
+    expect(text).toMatch(/catch/);
+    expect(text).toMatch(/SCANNER_BOOT_FAILED/);
+  });
+
+  it('is built by the build command, so the bundle exists before deploy', () => {
+    const pkg = JSON.parse(readFileSync(join(apiDir, '..', 'package.json'), 'utf8'));
+    expect(pkg.scripts.build).toMatch(/buildScanner/);
   });
 });
