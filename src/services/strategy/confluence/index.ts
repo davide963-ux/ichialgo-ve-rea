@@ -6,6 +6,8 @@
  * outside this folder should not need the individual stages.
  */
 export { analyseConfluence } from './analyse';
+export { SetupTracker, setupKey } from './setupTracker';
+export type { EmitReason, TrackedSetup, TrackerDecision, TrackerOptions } from './setupTracker';
 export type { AnalyseOptions } from './analyse';
 export { gradeSignal, isActionable, scoreSetup } from './scoring';
 export type { GateInput, ScoreInput, ScoreResult } from './scoring';
