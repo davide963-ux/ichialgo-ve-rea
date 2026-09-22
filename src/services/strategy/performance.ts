@@ -198,8 +198,8 @@ export function regimeFamily(condition: string): string {
   if (condition === 'TRENDING_BULLISH' || condition === 'TRENDING_BEARISH') return 'Trending';
   if (condition === 'RANGING') return 'Ranging';
   if (condition === 'CHOPPY') return 'Choppy';
-  if (condition === 'TRANSITION') return 'Transition';
-  if (condition === 'OVEREXTENDED') return 'Overextended';
+  if (condition === 'TRANSITION' || condition === 'REVERSAL') return 'Reversal';
+  if (condition === 'COMPRESSION') return 'Compression';
   return 'Unknown';
 }
 

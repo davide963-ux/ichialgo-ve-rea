@@ -39,7 +39,7 @@
  * where candles come from or what the clock says, which is what lets the
  * tests drive it through a whole trade lifecycle without a network or a wait.
  */
-import { analyse, SetupTracker, isActionable, setupKey } from '../src/services/strategy';
+import { analyse, SetupTracker, isActionable, isOpportunity, setupKey, TIER_LABEL } from '../src/services/strategy';
 import type { AnalyseOptions, Direction, StrategyAnalysis } from '../src/services/strategy';
 import type { Candle } from '../src/services/marketData/types';
 import { toSignalRow, type Outcome, type PendingSignal, type SignalRow, type SignalsDb } from './signalsDb';
@@ -52,14 +52,29 @@ import { toSignalRow, type Outcome, type PendingSignal, type SignalRow, type Sig
  * tell apart afterwards, and a backtest of the new rules cannot be compared
  * against history produced by the old ones.
  */
-export const STRATEGY_ID = 'unconfigured';
+export const STRATEGY_ID = 'mtf-confluence-v1';
 
 export interface ScannerConfig {
   symbols: readonly string[];
-  /** Scanned in order; the first is also used as the higher-timeframe bias. */
+  /**
+   * Where setups are FOUND. The strategy's main working timeframe.
+   *
+   * The three timeframes do different jobs and are deliberately not required
+   * to agree: `biasTimeframe` supplies directional context, these are scanned
+   * for the setup itself, and `entryTimeframe` times the entry. Demanding all
+   * three look identical is the over-filtering the strategy spec rules out.
+   */
   timeframes: readonly string[];
-  /** Timeframe whose bias gates the others. Null disables the MTF filter. */
+  /** Directional context. Endorses or objects; never vetoes. Null disables it. */
   biasTimeframe: string | null;
+  /**
+   * Entry timing and confirmation.
+   *
+   * Costs one extra credit per pair, and buys the difference between "this
+   * level is holding" and "this level has held" — which on a 1H setup is
+   * typically several pips of entry and a tighter stop. Null disables it.
+   */
+  entryTimeframe: string | null;
   /** UTC hours [from, to) in which NEW setups may be found. */
   sessionHours: [number, number];
   /** Skip a pair for this long after one of its trades closes. */
@@ -85,8 +100,10 @@ export interface ScannerConfig {
 
 export const DEFAULT_SCANNER_CONFIG: ScannerConfig = {
   symbols: ['EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF', 'AUD/USD', 'USD/CAD', 'NZD/USD'],
-  timeframes: ['4H', '1H'],
-  biasTimeframe: '1D',
+  // 4H context, 1H setup, 15M entry — the split the strategy spec asks for.
+  timeframes: ['1H'],
+  biasTimeframe: '4H',
+  entryTimeframe: '15min',
   // London open to New York close. Outside it, spreads widen and the moves
   // this strategy looks for do not develop.
   sessionHours: [7, 21],
@@ -123,6 +140,37 @@ export interface ScanResult {
   errors: string[];
   signals: { id: string; symbol: string; timeframe: string; signal: string; confidence: number }[];
   closures: { id: string; outcome: Outcome; price: number }[];
+  /**
+   * Every pair worth looking at this run, best first.
+   *
+   * Distinct from `signals`, and deliberately so. `signals` is what was
+   * RECORDED as a trade — actionable tiers only, deduplicated by the tracker,
+   * one per pair. This is what was SEEN: every tier above NEUTRAL including
+   * EARLY and WATCHLIST, ranked by confidence, whether or not a position was
+   * taken.
+   *
+   * A scanner that only reports what it traded cannot answer "what is
+   * developing right now?", which is most of what a scanner is for.
+   */
+  opportunities: Opportunity[];
+}
+
+export interface Opportunity {
+  symbol: string;
+  timeframe: string;
+  /** Tier as the spec words it: STRONG BUY, BUY, EARLY BUY, WATCHLIST… */
+  tier: string;
+  signal: string;
+  confidence: number;
+  direction: string;
+  marketCondition: string;
+  entry: number | null;
+  stopLoss: number | null;
+  takeProfit: number | null;
+  /** Reward-to-risk of the first target, when there is a ticket. */
+  rewardRisk: number | null;
+  /** One sentence naming the conditions that produced the reading. */
+  explanation: string;
 }
 
 export interface RunScanOptions {
@@ -220,6 +268,7 @@ export async function runScan(options: RunScanOptions): Promise<ScanResult> {
     errors: [],
     signals: [],
     closures: [],
+    opportunities: [],
   };
 
   // ── Guard: refuse to run twice in quick succession ──────────────────────
@@ -366,6 +415,23 @@ export async function runScan(options: RunScanOptions): Promise<ScanResult> {
       }
     }
 
+    // Entry-timeframe confirmation, fetched once per pair like the bias.
+    // A failure here is NOT fatal: it costs the confirmation bonus and the
+    // setup is scored without it, rather than the pair being skipped.
+    let entryBias: Direction | null = null;
+    if (config.entryTimeframe) {
+      try {
+        const entryCandles = await feed.candles(symbol, config.entryTimeframe, config.outputSize);
+        entryBias = analyseWith(entryCandles, {
+          symbol,
+          timeframe: config.entryTimeframe,
+          lastBarClosed: lastBarClosed(entryCandles),
+        }).direction;
+      } catch (err) {
+        result.errors.push(`entry ${symbol}: ${(err as Error).message}`);
+      }
+    }
+
     for (const timeframe of config.timeframes) {
       if (budgetLeft() < 1) {
         result.budgetExhausted = true;
@@ -378,8 +444,16 @@ export async function runScan(options: RunScanOptions): Promise<ScanResult> {
           timeframe,
           lastBarClosed: lastBarClosed(candles),
           higherTimeframeBias: bias ?? undefined,
+          entryConfirmation: entryBias ?? undefined,
         });
         result.scanned++;
+
+        // Record the READING before the tracker decides whether it is news:
+        // a developing setup is worth surfacing every run, even though it is
+        // only ever recorded as a trade once.
+        if (isOpportunity(analysis.signal)) {
+          result.opportunities.push(toOpportunity(analysis));
+        }
 
         const decision = tracker.update(analysis);
         if (!decision.emit) continue;
@@ -432,6 +506,9 @@ export async function runScan(options: RunScanOptions): Promise<ScanResult> {
   result.frozen = [...frozen];
   result.ok = result.ok && result.errors.length < config.symbols.length;
 
+  // Best first — the scanner's job is to put the strongest setup at the top.
+  result.opportunities.sort((a, b) => b.confidence - a.confidence);
+
   await db.finishRun(runId, summaryOf(result)).catch(() => {});
   return result;
 }
@@ -470,4 +547,37 @@ export async function analyseOne(
 ): Promise<StrategyAnalysis> {
   const candles = await feed.candles(symbol, timeframe, outputSize);
   return analyse(candles, { symbol, timeframe, lastBarClosed: lastBarClosed(candles) });
+}
+
+/**
+ * Flatten an analysis into the scan-list row.
+ *
+ * The explanation is assembled from the scored reasons rather than written
+ * alongside them, so it cannot drift from the number it explains. Warnings are
+ * appended because "why is this only EARLY" is usually the more useful half.
+ */
+function toOpportunity(a: StrategyAnalysis): Opportunity {
+  const why = a.reasons.slice(0, 3).join('; ');
+  const caveat = a.warnings.length > 0 ? ` ${a.warnings[0]}` : '';
+  const stop = a.risk.stop;
+  const target = a.risk.targets[0] ?? null;
+  const rewardRisk =
+    a.risk.entry === null || stop === null || target === null || Math.abs(a.risk.entry - stop) === 0
+      ? null
+      : Math.abs(target - a.risk.entry) / Math.abs(a.risk.entry - stop);
+
+  return {
+    symbol: a.symbol,
+    timeframe: a.timeframe,
+    tier: TIER_LABEL[a.signal],
+    signal: a.signal,
+    confidence: a.confidence,
+    direction: a.direction,
+    marketCondition: a.marketCondition,
+    entry: a.risk.entry,
+    stopLoss: stop,
+    takeProfit: target,
+    rewardRisk: rewardRisk === null ? null : Math.round(rewardRisk * 100) / 100,
+    explanation: `${TIER_LABEL[a.signal]} ${a.confidence}% — ${why}.${caveat}`,
+  };
 }
