@@ -45,8 +45,20 @@ const json = (res: ScannerHttpResponse, status: number, body: unknown): void => 
   res.end(JSON.stringify(body));
 };
 
+/**
+ * Read a header without caring how the client capitalised it.
+ *
+ * The previous version did `headers[name] ?? headers[name.toLowerCase()]`,
+ * which looks case-insensitive and is not: every call site already passes a
+ * lowercase name, so both lookups probe the same key and a header sent as
+ * `X-Scanner-Token` is simply missed. Node lowercases incoming headers so
+ * production was unaffected, but the dev-server path does not have to, and a
+ * 401 caused by capitalisation is close to undiagnosable from the outside.
+ */
 const header = (req: ScannerHttpRequest, name: string): string => {
-  const raw = req.headers[name] ?? req.headers[name.toLowerCase()];
+  const wanted = name.toLowerCase();
+  const key = Object.keys(req.headers).find((k) => k.toLowerCase() === wanted);
+  const raw = key === undefined ? undefined : req.headers[key];
   return Array.isArray(raw) ? (raw[0] ?? '') : (raw ?? '');
 };
 
@@ -62,6 +74,30 @@ function tokenMatches(given: string, expected: string): boolean {
   let diff = 0;
   for (let i = 0; i < expected.length; i++) diff |= given.charCodeAt(i) ^ expected.charCodeAt(i);
   return diff === 0;
+}
+
+/**
+ * Why a 401 says a little about itself.
+ *
+ * A bare `{"error":"UNAUTHORIZED"}` cannot distinguish the three ways a cron
+ * job gets this wrong, and they have completely different fixes:
+ *
+ *   header absent          → the header went in the wrong field entirely
+ *   present, wrong length  → trailing newline, truncated paste, stale value
+ *   present, right length  → genuinely a different secret
+ *
+ * Diagnosing that blind costs a round trip per guess, against a scheduler you
+ * cannot watch. So the refusal reports whether a header ARRIVED and whether it
+ * was the RIGHT LENGTH — never any part of either value.
+ *
+ * The only thing this concedes is the secret's length, and only to someone who
+ * probes for it. For a random token that is not a foothold: length does not
+ * narrow the search space in any practical way, and the guessing itself is
+ * what an attacker has to do either way. Set against hours of a cron job
+ * failing silently, that is a trade worth making.
+ */
+function refusalHint(given: string, expected: string) {
+  return { headerPresent: given.length > 0, lengthMatch: given.length === expected.length };
 }
 
 export function createScannerHandler(options: HandlerOptions = {}) {
@@ -85,8 +121,9 @@ export function createScannerHandler(options: HandlerOptions = {}) {
         configured: false,
       });
     }
-    if (!tokenMatches(header(req, 'x-scanner-token'), secret)) {
-      return json(res, 401, { error: 'UNAUTHORIZED' });
+    const given = header(req, 'x-scanner-token');
+    if (!tokenMatches(given, secret)) {
+      return json(res, 401, { error: 'UNAUTHORIZED', ...refusalHint(given, secret) });
     }
 
     const dbConfig = readDbConfig(env);
