@@ -10,6 +10,10 @@ export { analyse, hasEnoughBars, MIN_BARS, NO_STRATEGY_REASON } from './analyse'
 export {
   directionOf,
   isActionable,
+  isOpportunity,
+  tierFor,
+  TIER_LABEL,
+  TIER_THRESHOLDS,
   type AnalyseOptions,
   type Direction,
   type RiskTicket,

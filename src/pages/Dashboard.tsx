@@ -12,11 +12,10 @@
  *
  * So the rule now: this page shows PRICES, which are facts, and the SCANNER'S
  * OWN STATE, which is the truth about what is being recorded. It does not
- * render a second opinion from anywhere else. When a strategy is configured,
- * its signals appear here — the ones the scanner actually stores, not a
- * parallel calculation done in the browser.
+ * render a second opinion from anywhere else. Signals are whatever the scanner
+ * actually stored, never a parallel calculation done in the browser.
  */
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { ConnectionBanner } from '../components/ConnectionBanner';
 import { ForexTable } from '../components/ForexTable';
 import { MarketStatus } from '../components/MarketStatus';
@@ -26,7 +25,6 @@ import { TimeframeSelector } from '../components/TimeframeSelector';
 import { DEFAULT_TIMEFRAME, isTimeframe, type Timeframe } from '../config/timeframes';
 import { useNow } from '../hooks/useNow';
 import { formatAgo, formatClock } from '../lib/time';
-import { NO_STRATEGY_REASON } from '../services/strategy';
 import { useMarketStore } from '../state/marketStore';
 
 export function Dashboard() {
@@ -83,10 +81,11 @@ export function Dashboard() {
           <ScannerStatus />
         </div>
         <div className="panel-body empty">
-          <strong>{NO_STRATEGY_REASON}</strong>
+          <strong>Signals are recorded by the 24/7 scanner, not by this page.</strong>
           <p>
-            Prices, charts and the scanner are running. Nothing is being scored, so no signals will be produced until
-            a strategy is plugged in.
+            Every 15 minutes it reads 4H context, 1H structure and 15M entry timing across all pairs, scores the
+            confluence, and records the setups that confirm. See <Link to="/results">Results</Link> for what it has
+            produced.
           </p>
         </div>
       </section>

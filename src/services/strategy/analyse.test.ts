@@ -7,7 +7,7 @@
  * `analyse()` is about to break.
  */
 import { describe, expect, it } from 'vitest';
-import { analyse, hasEnoughBars, MIN_BARS, NO_STRATEGY_REASON } from './analyse';
+import { analyse, hasEnoughBars, MIN_BARS } from './analyse';
 import { directionOf, isActionable } from './contract';
 import type { Candle } from '../marketData/types';
 
@@ -32,50 +32,66 @@ describe('analyse always returns a well-formed answer', () => {
   });
 
   it('echoes the symbol and timeframe it was asked about', () => {
-    const a = analyse(series(200), { symbol: 'GBP/JPY', timeframe: '4H' });
+    const a = analyse(series(260), { symbol: 'GBP/JPY', timeframe: '4H' });
     expect(a.symbol).toBe('GBP/JPY');
     expect(a.timeframe).toBe('4H');
   });
 
   it('reports the bar it analysed, not the newest one, when given an index', () => {
     // The backtest relies on this to replay history without lookahead.
-    const candles = series(200);
-    const a = analyse(candles, { symbol: 'EUR/USD', timeframe: '1H', index: 50 });
-    expect(a.barTime).toBe(candles[50]!.time);
-    expect(a.price).toBe(candles[50]!.close);
+    const candles = series(320);
+    const a = analyse(candles, { symbol: 'EUR/USD', timeframe: '1H', index: 250 });
+    expect(a.barTime).toBe(candles[250]!.time);
+    expect(a.price).toBe(candles[250]!.close);
   });
 
   it('defaults to the final bar', () => {
-    const candles = series(200);
-    expect(analyse(candles, { symbol: 'EUR/USD', timeframe: '1H' }).barTime).toBe(candles[199]!.time);
+    const candles = series(260);
+    expect(analyse(candles, { symbol: 'EUR/USD', timeframe: '1H' }).barTime).toBe(candles[259]!.time);
   });
 
   it('carries the forming-bar flag through untouched', () => {
-    const a = analyse(series(200), { symbol: 'EUR/USD', timeframe: '1H', lastBarClosed: false });
+    const a = analyse(series(260), { symbol: 'EUR/USD', timeframe: '1H', lastBarClosed: false });
     expect(a.barClosed).toBe(false);
   });
 });
 
-describe('with no strategy installed', () => {
-  it('refuses every pair, and says why in a warning the UI can render', () => {
-    const a = analyse(series(200), { symbol: 'EUR/USD', timeframe: '1H' });
+describe('the engine answers rather than refusing', () => {
+  it('returns a real verdict on a flat series instead of an error', () => {
+    // Dead-flat data is a legitimate market state, not a fault. The engine
+    // must grade it (low), not throw or refuse.
+    const a = analyse(series(260), { symbol: 'EUR/USD', timeframe: '1H' });
+    expect(a.signal).not.toBe('NO_TRADE');
+    expect(a.confidence).toBeGreaterThanOrEqual(0);
+    expect(a.confidence).toBeLessThanOrEqual(100);
+  });
+
+  it('refuses only when there genuinely is not enough history', () => {
+    const a = analyse(series(50), { symbol: 'EUR/USD', timeframe: '1H' });
     expect(a.signal).toBe('NO_TRADE');
-    expect(a.direction).toBe('none');
-    expect(a.confidence).toBe(0);
-    expect(a.warnings).toContain(NO_STRATEGY_REASON);
+    expect(a.marketCondition).toBe('INSUFFICIENT_DATA');
+    expect(a.warnings[0]).toMatch(/Needs \d+ bars/);
   });
 
-  it('proposes no trade ticket at all', () => {
-    // A signal with a direction but no levels would be recorded as a trade
-    // with nothing to execute or measure.
-    const { risk } = analyse(series(200), { symbol: 'EUR/USD', timeframe: '1H' });
-    expect(risk.entry).toBeNull();
-    expect(risk.stop).toBeNull();
-    expect(risk.targets).toEqual([]);
+  it('never emits an actionable signal without a complete ticket', () => {
+    // A tradeable tier with no entry, stop or target would be recorded as a
+    // trade with nothing to execute or measure.
+    const a = analyse(series(260), { symbol: 'EUR/USD', timeframe: '1H' });
+    if (isActionable(a.signal)) {
+      expect(a.risk.entry).not.toBeNull();
+      expect(a.risk.stop).not.toBeNull();
+      expect(a.risk.targets.length).toBeGreaterThan(0);
+    }
   });
 
-  it('is never actionable', () => {
-    expect(isActionable(analyse(series(200), { symbol: 'EUR/USD', timeframe: '1H' }).signal)).toBe(false);
+  it('records the full structured read for later audit', () => {
+    const d = analyse(series(260), { symbol: 'EUR/USD', timeframe: '1H' }).detail;
+    expect(d).toHaveProperty('structure');
+    expect(d).toHaveProperty('levels');
+    expect(d).toHaveProperty('ema50');
+    expect(d).toHaveProperty('ichimoku');
+    expect(d).toHaveProperty('scores');
+    expect(d).toHaveProperty('scoreBreakdown');
   });
 });
 

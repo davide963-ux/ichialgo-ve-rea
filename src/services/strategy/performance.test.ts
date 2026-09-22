@@ -152,8 +152,12 @@ describe('regimeFamily', () => {
   it('keeps the non-trending regimes distinct', () => {
     expect(regimeFamily('RANGING')).toBe('Ranging');
     expect(regimeFamily('CHOPPY')).toBe('Choppy');
-    expect(regimeFamily('TRANSITION')).toBe('Transition');
-    expect(regimeFamily('OVEREXTENDED')).toBe('Overextended');
+    expect(regimeFamily('COMPRESSION')).toBe('Compression');
+  });
+
+  it('groups a confirmed reversal with a transition, since both are turns', () => {
+    expect(regimeFamily('REVERSAL')).toBe('Reversal');
+    expect(regimeFamily('TRANSITION')).toBe('Reversal');
   });
 
   it('does not guess at an unknown regime', () => {

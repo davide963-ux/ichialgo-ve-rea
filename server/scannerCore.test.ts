@@ -180,6 +180,8 @@ class FakeFeed implements MarketFeed {
   prices = new Map<string, number>();
   series = new Map<string, Candle[]>();
   failSymbols = new Set<string>();
+  /** Fail one timeframe across every pair — a flaky fast series. */
+  failTimeframes = new Set<string>();
   private cache = new Map<string, Candle[]>();
 
   constructor(private readonly fallback: () => Candle[] = flatCandles) {}
@@ -192,6 +194,7 @@ class FakeFeed implements MarketFeed {
     const key = `${symbol}|${timeframe}`;
     this.candleCalls.push(key);
     if (this.failSymbols.has(symbol)) throw new Error(`feed down for ${symbol}`);
+    if (this.failTimeframes.has(timeframe)) throw new Error(`feed down for ${timeframe}`);
     const cached = this.cache.get(key);
     if (cached) return cached;
     this.credits += 1;
@@ -221,7 +224,12 @@ const smallConfig = (over: Partial<ScannerConfig> = {}): ScannerConfig => ({
   ...DEFAULT_SCANNER_CONFIG,
   symbols: ['EUR/USD', 'GBP/USD'],
   timeframes: ['1H'],
+  // Both extra timeframes off by default: these tests are about the scan
+  // mechanics — freezing, dedup, credits, the cursor — and an extra fetch per
+  // pair would change every credit assertion for reasons unrelated to them.
+  // The multi-timeframe wiring has its own describe block below.
   biasTimeframe: null,
+  entryTimeframe: null,
   ...over,
 });
 
@@ -506,7 +514,7 @@ describe('runScan — credits', () => {
     await runScan({
       db,
       feed,
-      config: smallConfig({ symbols: ['EUR/USD'], timeframes: ['1H'], biasTimeframe: '1H' }),
+      config: smallConfig({ symbols: ['EUR/USD'], timeframes: ['1H'], biasTimeframe: '1H', entryTimeframe: null }),
       now: () => MONDAY_NOON,
     });
 
@@ -634,5 +642,61 @@ describe('runScan — a whole trade lifecycle', () => {
     const atTp3 = await runScan({ db, feed: feed3, config, now: () => MONDAY_NOON + 7_200_000, force: true });
     expect(atTp3.closed).toBe(1);
     expect(db.closes.at(-1)).toMatchObject({ id: row.id, outcome: 'tp3' });
+  });
+});
+
+describe('runScan — multi-timeframe', () => {
+  it('fetches context, setup and entry timeframes for each pair', async () => {
+    const db = new FakeDb();
+    const feed = new FakeFeed(longSetupCandles);
+
+    await runScan({
+      db,
+      feed,
+      analyse: alwaysLong,
+      config: smallConfig({ symbols: ['EUR/USD'], timeframes: ['1H'], biasTimeframe: '4H', entryTimeframe: '15min' }),
+      now: () => MONDAY_NOON,
+    });
+
+    expect(feed.candleCalls).toContain('EUR/USD|4H');
+    expect(feed.candleCalls).toContain('EUR/USD|1H');
+    expect(feed.candleCalls).toContain('EUR/USD|15min');
+  });
+
+  it('still scans when the entry timeframe fetch fails', async () => {
+    // Losing the 15M costs the confirmation bonus, not the setup. Skipping the
+    // pair would make a data hiccup on the fastest, flakiest series silently
+    // mute the whole strategy.
+    const db = new FakeDb();
+    const feed = new FakeFeed(longSetupCandles);
+    feed.failTimeframes.add('15min');
+
+    const result = await runScan({
+      db,
+      feed,
+      analyse: alwaysLong,
+      config: smallConfig({ symbols: ['EUR/USD'], timeframes: ['1H'], biasTimeframe: null, entryTimeframe: '15min' }),
+      now: () => MONDAY_NOON,
+    });
+
+    expect(result.scanned).toBeGreaterThan(0);
+    expect(result.errors.some((e) => e.includes('entry'))).toBe(true);
+  });
+
+  it('spends three credits per pair with all three timeframes on', async () => {
+    // 7 pairs x 3 = 21, against a 16-credit cap: the round-robin cursor is
+    // what stops the tail pairs from never being scanned at all.
+    const db = new FakeDb();
+    const feed = new FakeFeed(longSetupCandles);
+
+    await runScan({
+      db,
+      feed,
+      analyse: neverSignals,
+      config: smallConfig({ symbols: ['EUR/USD'], timeframes: ['1H'], biasTimeframe: '4H', entryTimeframe: '15min' }),
+      now: () => MONDAY_NOON,
+    });
+
+    expect(new Set(feed.candleCalls).size).toBe(3);
   });
 });

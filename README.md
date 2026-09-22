@@ -1,11 +1,7 @@
 # Ichialgo — Forex terminal
 
-**Live Forex market data, a 24/7 server-side signal scanner, a backtest that replays the same
-code the scanner runs, and an R-multiple results page.**
-
-> **No strategy is currently installed.** Prices, charts, the scanner, the database and the
-> backtest all run; nothing is being scored. See [§4](#4-strategy) for the one file that
-> changes.
+**Live Forex market data, a 24/7 multi-timeframe confluence scanner, a backtest that replays the
+same code the scanner runs, and an R-multiple results page.**
 
 | Stack | |
 |---|---|
@@ -13,8 +9,8 @@ code the scanner runs, and an R-multiple results page.**
 | Charts | TradingView Lightweight Charts v5 (open-source charting library) |
 | Build | Vite 8 |
 | Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`), with Twelve Data multi-key failover |
-| Strategy | **none installed** — one seam at `src/services/strategy/analyse.ts` |
-| Tests | Vitest — 234 across indicators, lifecycle, backtest, scanner, proxy, calculator |
+| Strategy | Multi-timeframe confluence: structure, BOS/CHoCH, S/R, patterns, EMA50, Ichimoku |
+| Tests | Vitest — 336 across the engine, indicators, lifecycle, backtest, scanner, proxy |
 | Data | Twelve Data, behind a provider interface |
 
 ---
@@ -136,8 +132,16 @@ src/
     providers/               TwelveDataProvider, creditBudget, factory
     index.ts                 singleton + public exports
   services/strategy/
-    analyse.ts               THE SEAM — the strategy goes here (stub: always NO_TRADE)
-    contract.ts              StrategyAnalysis, the types every consumer reads
+    analyse.ts               the orchestrator: scores both sides, picks the better
+    contract.ts              StrategyAnalysis + tiers, the types every consumer reads
+    engine/config.ts         every threshold, ATR-normalised
+    engine/structure.ts      swings, trend, BOS vs CHoCH (pure, tested)
+    engine/levels.ts         S/R zones, breakout episodes, retests (pure, tested)
+    engine/chartPatterns.ts  reversal / continuation / bilateral (pure, tested)
+    engine/candles.ts        21 candlestick patterns (pure, tested)
+    engine/trendTools.ts     EMA50, Ichimoku, momentum readers
+    engine/scoring.ts        weighted confluence, contextual + capped (tested)
+    engine/risk.ts           structural stop, structural targets, RR gate (tested)
     lifecycle.ts             SetupTracker: turns states into events (pure, tested)
     backtest.ts              replays candles through analyse() (pure, tested)
     performance.ts           R-multiple metrics, shared with live results (tested)
@@ -240,79 +244,136 @@ tooltip says so. There is no bid/ask on the REST quote, so those columns show `�
 
 ---
 
-## 4. Strategy
+## 4. Strategy: multi-timeframe confluence
 
-**There is no strategy installed.** This is deliberate, and it is the current state of the
-repository, not an omission.
+Weighted confluence over market structure, support/resistance, chart and
+candlestick patterns, EMA50 and Ichimoku — scored across three timeframes.
 
-Two engines used to live here — an EMA50-touch detector driving the dashboard, and an
-Ichimoku + EMA50 confluence engine driving the 24/7 scanner. They shared no decision code, so
-the dashboard advertised setups the scanner would never act on, and neither could be removed
-because every consumer had grown a dependency on one or the other. Both are gone.
-
-### The seam
-
-Everything a strategy needs is built, tested and waiting. One file has to change.
+### The hierarchy
 
 ```
-candles ──▶ analyse() ──▶ StrategyAnalysis ──┬──▶ SetupTracker  is this news?
-               ▲                             ├──▶ scanner       record it
-               │                             ├──▶ backtest      replay it
-      src/services/strategy/analyse.ts       └──▶ UI            show it
+4H  ──▶ directional context      (endorses or objects; never vetoes)
+1H  ──▶ where setups are found   (the working timeframe)
+15M ──▶ entry timing             (confirmation bonus)
 ```
 
-| File | Role |
-|---|---|
-| `strategy/analyse.ts` | **the seam.** Returns `NO_TRADE` for everything. Replace this. |
-| `strategy/contract.ts` | the types every consumer reads. Strategy-neutral by design. |
-| `strategy/lifecycle.ts` | turns a stream of states into a stream of events. Plumbing. |
-| `strategy/backtest.ts` | replays candles through the same `analyse()` the scanner calls. |
-| `strategy/performance.ts` | R-multiple metrics, shared by the backtest and live results. |
-| `lib/indicators/` | Ichimoku, EMA, ATR, market structure. Pure, tested, no opinion. |
+They are deliberately **not** required to agree. The 4H supplies context, the
+1H finds the setup, the 15M times the entry. Demanding all three look identical
+is the over-filtering that makes a scanner silent for days.
 
-Nothing outside `src/services/strategy/` imports anything deeper than the barrel. That is what
-makes the strategy replaceable without touching the scanner, the backtest or the UI.
+### What is measured
 
-### The contract
+| Family | Weight | What it reads |
+|---|--:|---|
+| Market structure | 20 | HH/HL/LH/LL, swing highs and lows, trend, ranging |
+| BOS / CHoCH | 15 | break of structure vs change of character |
+| Support / resistance | 15 | multi-touch zones, role flips, headroom |
+| Chart pattern | 10 | reversal, continuation, bilateral |
+| Candlestick | 10 | 21 patterns, weighted by **location** |
+| EMA50 | 10 | side, slope, retest, reclaim, breakdown, extension |
+| Ichimoku | 10 | cloud side, Tenkan/Kijun, future cloud, Chikou |
+| Breakout / momentum | 10 | breakout, retest-and-hold, directional drive |
+| Multi-timeframe | 10 | 4H agreement, 15M confirmation |
 
-`analyse()` returns a `StrategyAnalysis` on **every** path, including refusals. Four rules:
+### BOS vs CHoCH
 
-1. **Never throw.** The scanner runs unattended every fifteen minutes; a throw is an error in a
-   log nobody reads, while a `NO_TRADE` carrying a reason appears in the dry-run output and on
-   the dashboard.
-2. **Never report `CONFIRMED` on an unclosed bar.** The rejection you think you see can still be
-   erased before the candle closes.
-3. **Put strategy-specific values in `detail`.** It is stored verbatim as the `analysis` JSON
-   column and nothing outside the strategy reads it, so it costs nothing and makes every
-   decision auditable afterwards.
-4. **Set `anchor`** to whatever identifies *this* setup — usually the price the move started
-   from. The tracker uses it to tell a genuinely new opportunity from the same one still
-   developing. Get it wrong and you either re-signal every candle or go silent.
+The same price action is one or the other depending on the trend **in force
+when it happened**:
 
-### What the plumbing guarantees, whatever the rules are
+```
+uptrend   + break of last swing HIGH → BOS   (continuation)
+uptrend   + break of last swing LOW  → CHoCH (character change)
+downtrend + break of last swing LOW  → BOS   (continuation)
+downtrend + break of last swing HIGH → CHoCH (character change)
+```
 
-- **One position per pair.** An `ACTIVE` setup suppresses every signal for its pair until its
-  trade closes — and the tracker is released when it does, which is the difference between
-  working correctly and going permanently silent while looking healthy.
-- **A signal is an event, not a state.** Emitted on *entering* `CONFIRMED`, never while sitting
-  in it. A confidence wobble below `upgradeDelta` is not news.
-- **Cold-start safety.** Tracker state is persisted to `setup_state` and rehydrated, because a
-  serverless scanner starts with an empty Map every single run.
-- **Backtest and live cannot diverge.** Both call the same `analyse()`. There is no "backtest
-  version" of the rules.
-- **The backtest errs against you.** When one bar covers both the stop and a target, OHLC cannot
-  order them, so the stop is taken. R is always measured against the *original* stop, never one
-  moved to breakeven.
+Neither requires the other. A CHoCH followed by a BOS **in the new direction**
+is the strongest reversal evidence available and is reported as such. The trend
+is rebuilt bar by bar rather than read from the end of the series — classifying
+an old break with today's trend is hindsight, and it relabels the CHoCH that
+*started* the current trend as a BOS.
 
-### Verifying a strategy once installed
+### Scoring is contextual, not additive
+
+- A bullish **CHoCH in a downtrend** is a reversal warning — near-full points.
+  The same CHoCH in an uptrend is a swing break; a quarter of that.
+- A bullish **BOS in an uptrend** is continuation — full points. In a downtrend
+  it is a counter-trend poke, worth far less.
+- A **candlestick's location is a multiplier**: mid-range it earns 30% of its
+  weight, at support/EMA/a retested breakout it earns all of it.
+- **Bilateral patterns get no direction.** A symmetrical triangle damps the
+  score and warns; it never picks a side before the breakout.
+- **Correlated evidence is capped.** Price above cloud + bullish cloud +
+  Tenkan over Kijun is one trending fact seen three ways, so the family is
+  capped at its weight.
+
+### The score is normalised against available evidence
+
+This is the mechanism that stops over-filtering. A family that had data but
+found nothing counts at **half weight** in the denominator; a family with no
+data at all is excluded. The spec's own wording is the model: *"No recent BOS,
+therefore confidence is reduced slightly"* — slightly, not by fifteen points.
+
+Without it, a clean trend reaction at support with a good candle and full
+indicator agreement could not reach the tradeable band, because three unrelated
+families happened to be silent.
+
+### Tiers
+
+| Score | Tier |
+|--:|---|
+| 85–100 | STRONG BUY / STRONG SELL |
+| 72–84 | BUY / SELL |
+| 62–71 | EARLY BUY / EARLY SELL |
+| 52–61 | WATCHLIST |
+| < 52 | NEUTRAL |
+
+Only **BUY and above are recorded as trades**. EARLY and WATCHLIST are visible
+in the scan's ranked `opportunities` list but never entered — recording a setup
+the strategy itself called unconfirmed would book the outcome of a trade nobody
+should have taken.
+
+### Entry, stop and target
+
+Stops are anchored to **structure** — the swing the setup was built on, the
+zone it rejected, or the pattern's invalidation — plus an ATR buffer, because a
+stop sitting exactly on an obvious swing low is the most reliably hunted price
+in the market. Targets are the next real obstacle.
+
+A first target that does not pay `minRewardRisk` **rejects the ticket**, and an
+actionable tier with no ticket is demoted to EARLY rather than emitted. A level
+too close to pay for the stop is not noise to be ignored; it is the reason not
+to take the trade.
+
+### What is measured, not assumed
+
+Over 12 generated markets (regime-switching, 12k bars):
+
+- **~5 trades per day** across 7 pairs on 1H — several opportunities every day
+- **~10%** of bars carry an actionable signal; EARLY and WATCHLIST are commoner
+- **causality verified**: replacing every bar after the analysed one with
+  garbage does not change the answer
+
+> The expectancy on that generated data says nothing about real markets — the
+> generator injects trends 45% of the time, so a trend-following strategy
+> should profit on it by construction. What the numbers establish is
+> **frequency, causality and ticket coherence**, not edge.
+
+### Tuning
+
+Every threshold lives in `src/services/strategy/engine/config.ts`, ATR-
+normalised so one number means the same thing on EUR/CHF and GBP/JPY, and on
+15M as on 4H.
+
+### Seeing why a pair is or is not signalling
 
 ```bash
 curl -sS -H 'x-scanner-token: TOKEN' \
-  'https://<your-app>/api/scanner?dry=EUR/USD&tf=4H'
+  'https://<your-app>/api/scanner?dry=EUR/USD&tf=1H'
 ```
 
-Writes nothing; returns the full analysis for one pair including `reasons` and `warnings` —
-which is how you find out *why* a pair is or is not signalling, rather than guessing.
+Writes nothing; returns the full analysis including `reasons`, `warnings` and
+the complete score breakdown.
 
 
 ## 5. Position-size calculator
@@ -448,10 +509,10 @@ the query string cannot be used to construct an arbitrary PostgREST request.
 
 
 
-**Add a strategy:** replace the body of `src/services/strategy/analyse.ts`, honouring the four
-rules in [§4](#4-strategy), and set `STRATEGY_ID` in `server/scannerCore.ts`. Nothing else
-changes — the tracker, scanner, database, backtest and Results page are all strategy-agnostic,
-and `analyse.test.ts` asserts the contract they depend on.
+**Tune the strategy:** everything is in `src/services/strategy/engine/config.ts`. **Replace** it:
+rewrite `analyse.ts` against the same `StrategyAnalysis` contract and bump `STRATEGY_ID` in
+`server/scannerCore.ts`. Nothing else changes — the tracker, scanner, database, backtest and
+Results page are all strategy-agnostic, and `analyse.test.ts` asserts the contract they depend on.
 
 ```mermaid
 flowchart LR

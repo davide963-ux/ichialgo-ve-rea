@@ -42,12 +42,23 @@ export type Direction = 'long' | 'short' | 'none';
 export type SignalTier =
   | 'STRONG_LONG'
   | 'LONG'
+  | 'EARLY_LONG'
   | 'WATCH_LONG'
   | 'NEUTRAL'
   | 'WATCH_SHORT'
+  | 'EARLY_SHORT'
   | 'SHORT'
   | 'STRONG_SHORT'
   | 'NO_TRADE';
+
+/**
+ * Score bands, high to low. The tier is a band, not a separate judgement.
+ *
+ * EARLY and WATCH exist so a developing setup can be SEEN without being
+ * TRADED. Collapsing them into NEUTRAL is what makes a scanner look dead for
+ * days at a time; collapsing them into LONG is what makes it untrustworthy.
+ */
+export const TIER_THRESHOLDS = { strong: 85, actionable: 72, early: 62, watch: 52 } as const;
 
 /**
  * Setup lifecycle, owned by `lifecycle.ts` rather than by any strategy.
@@ -138,14 +149,56 @@ export interface AnalyseOptions {
   index?: number;
   /** False when the final candle is still open. */
   lastBarClosed?: boolean;
-  /** Direction from a higher timeframe, when the caller has fetched one. */
+  /**
+   * Direction from a higher timeframe, when the caller has fetched one.
+   * Context, not permission — a reversal necessarily starts against it.
+   */
   higherTimeframeBias?: Direction;
+  /** Direction confirmed on a faster timeframe, for entry timing. */
+  entryConfirmation?: Direction;
 }
 
-/** Signals that warrant placing an order, as opposed to watching. */
+/**
+ * Signals that warrant placing an order, as opposed to watching.
+ *
+ * EARLY is deliberately excluded. It means "this is forming and needs more
+ * confirmation", which is information, not an instruction — recording it as a
+ * trade would book the outcome of a setup the strategy itself said was not
+ * ready.
+ */
 export function isActionable(signal: SignalTier): boolean {
   return signal === 'LONG' || signal === 'SHORT' || signal === 'STRONG_LONG' || signal === 'STRONG_SHORT';
 }
+
+/** True for anything worth showing on a scan list, actionable or not. */
+export function isOpportunity(signal: SignalTier): boolean {
+  return signal !== 'NEUTRAL' && signal !== 'NO_TRADE';
+}
+
+/** Map a 0–100 confluence score and a side onto a tier. */
+export function tierFor(score: number, direction: Direction): SignalTier {
+  if (direction === 'none') return 'NEUTRAL';
+  const long = direction === 'long';
+  if (score >= TIER_THRESHOLDS.strong) return long ? 'STRONG_LONG' : 'STRONG_SHORT';
+  if (score >= TIER_THRESHOLDS.actionable) return long ? 'LONG' : 'SHORT';
+  if (score >= TIER_THRESHOLDS.early) return long ? 'EARLY_LONG' : 'EARLY_SHORT';
+  if (score >= TIER_THRESHOLDS.watch) return long ? 'WATCH_LONG' : 'WATCH_SHORT';
+  return 'NEUTRAL';
+}
+
+/** Human label, matching the words the spec uses. */
+export const TIER_LABEL: Record<SignalTier, string> = {
+  STRONG_LONG: 'STRONG BUY',
+  LONG: 'BUY',
+  EARLY_LONG: 'EARLY BUY',
+  WATCH_LONG: 'WATCHLIST',
+  NEUTRAL: 'NEUTRAL',
+  WATCH_SHORT: 'WATCHLIST',
+  EARLY_SHORT: 'EARLY SELL',
+  SHORT: 'SELL',
+  STRONG_SHORT: 'STRONG SELL',
+  NO_TRADE: 'NO TRADE',
+};
 
 /** The side a signal implies, ignoring its grade. */
 export function directionOf(signal: SignalTier): Direction {
