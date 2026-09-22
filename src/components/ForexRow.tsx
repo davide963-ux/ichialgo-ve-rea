@@ -3,10 +3,8 @@ import { getPair } from '../config/pairs';
 import type { Timeframe } from '../config/timeframes';
 import { formatNumber, formatPrice } from '../lib/format';
 import { formatClock } from '../lib/time';
-import { useSymbolSignal } from '../hooks/useSignals';
 import { useMarketStore } from '../state/marketStore';
 import { PriceChange } from './PriceChange';
-import { SignalBadge } from './SignalBadge';
 
 interface Props {
   symbol: string;
@@ -23,7 +21,6 @@ export const ForexRow = memo(function ForexRow({ symbol, timeframe, onOpen }: Pr
   const live = useMarketStore((s) => s.status === 'ONLINE');
   const loading = useMarketStore((s) => s.status === 'LOADING');
   const symbolError = useMarketStore((s) => s.symbolErrors[symbol]);
-  const signal = useSymbolSignal(symbol);
   const pair = getPair(symbol);
 
   // Brief green/red flash on price change.
@@ -64,7 +61,6 @@ export const ForexRow = memo(function ForexRow({ symbol, timeframe, onOpen }: Pr
         <div className="pair-cell">
           <span className="pair-flag" aria-hidden="true">{pair.base}</span>
           <span className="pair-name">{symbol}</span>
-          {signal && <SignalBadge signal={signal} compact />}
           {symbolError && <span className="tag warn" title={symbolError}>UNAVAILABLE</span>}
           {stale && <span className="tag warn" title="Connection lost — last known value">STALE</span>}
           {!stale && closed && <span className="tag" title="Market closed — last traded price">CLOSED</span>}

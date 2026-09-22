@@ -1,21 +1,15 @@
 import { BacktestPanel } from '../components/BacktestPanel';
 import { BacktestResults } from '../components/BacktestResults';
-import { ConfluenceResults } from '../components/ConfluenceResults';
 import { EmptyState } from '../components/EmptyState';
 import { MarketStatus } from '../components/MarketStatus';
 import { useBacktest } from '../hooks/useBacktest';
 
 /**
- * Runs a strategy over historical candles, through the SAME code the live
- * scanner uses — so a backtested trade and a live signal cannot diverge.
- *
- * Both strategies are available. The confluence engine is what the scanner
- * runs; the EMA50 touch is kept because it is still on the dashboard and
- * removing it would throw away the comparison.
+ * Runs the strategy over historical candles, through the SAME `analyse()` the
+ * live scanner calls — so a backtested trade and a live signal cannot diverge.
  */
 export function Backtest() {
-  const { status, result, confluence, error, request, run } = useBacktest();
-  const isConfluence = request?.strategy === 'confluence';
+  const { status, result, error, request, run } = useBacktest();
 
   return (
     <main className="page">
@@ -40,9 +34,7 @@ export function Backtest() {
             <h2 className="panel-title">Results</h2>
             {request && status === 'DONE' && (
               <span className="panel-sub">
-                {request.pair} {request.timeframe} · {request.startDate} to {request.endDate} ·{' '}
-                {isConfluence ? 'Ichimoku + EMA50 confluence' : 'EMA50 touch'}
-                {!isConfluence && request.confluentOnly && ' · Ichimoku-confluent only'}
+                {request.pair} {request.timeframe} · {request.startDate} to {request.endDate}
               </span>
             )}
           </div>
@@ -71,19 +63,13 @@ export function Backtest() {
             </div>
           )}
 
-          {status === 'DONE' && confluence && (
+          {status === 'DONE' && result && (
             <div className="panel-body">
-              <ConfluenceResults
-                result={confluence}
+              <BacktestResults
+                result={result}
                 startingBalance={request?.startingBalance ?? 10_000}
                 riskPct={request?.riskPct ?? 1}
               />
-            </div>
-          )}
-
-          {status === 'DONE' && result && (
-            <div className="panel-body">
-              <BacktestResults result={result} />
             </div>
           )}
         </section>

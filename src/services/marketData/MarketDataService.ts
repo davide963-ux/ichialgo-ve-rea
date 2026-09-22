@@ -16,9 +16,10 @@
  *   Freshness watchdog (1s): no contact within the allowed window ─▶ OFFLINE.
  *   Prices are never presented as live unless status === 'ONLINE'.
  *
- * Later phases plug in here:
- *   MarketDataService ─▶ StrategyEngine ─▶ SignalGenerator ─▶ Signal Store
- * via onQuotes()/getCandles() — the strategy never talks to a provider directly.
+ * The strategy never talks to a provider directly; it is handed candles.
+ * Signals are produced by the server-side scanner, not in the browser, so
+ * nothing here feeds a strategy — this service exists to keep the UI's prices
+ * and charts honest.
  */
 import type { Timeframe } from '../../config/timeframes';
 import { marketStore } from '../../state/marketStore';
@@ -136,7 +137,7 @@ export class MarketDataService {
     void this.start();
   }
 
-  /** Future StrategyEngine hook: receive every live quote batch. */
+  /** Hook for anything that wants every live quote batch. */
   onQuotes(cb: QuoteSubscriber): () => void {
     this.quoteSubscribers.add(cb);
     return () => this.quoteSubscribers.delete(cb);

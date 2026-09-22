@@ -14,7 +14,7 @@
  *                               ├─ 2. GATE                 (session? weekend?)
  *                               │
  *                               └─ 3. LOOK FOR SETUPS      (skips frozen pairs)
- *                                     candles → analyseConfluence → tracker
+ *                                     candles → analyse → tracker
  *                                     → only TRANSITIONS are recorded
  *
  * ORDER MATTERS. Trade management runs first and unconditionally: a stop must
@@ -39,12 +39,20 @@
  * where candles come from or what the clock says, which is what lets the
  * tests drive it through a whole trade lifecycle without a network or a wait.
  */
-import { analyseConfluence, SetupTracker, isActionable, setupKey } from '../src/services/strategy/confluence';
-import type { ConfluenceAnalysis, Direction } from '../src/services/strategy/confluence';
+import { analyse, SetupTracker, isActionable, setupKey } from '../src/services/strategy';
+import type { AnalyseOptions, Direction, StrategyAnalysis } from '../src/services/strategy';
 import type { Candle } from '../src/services/marketData/types';
 import { toSignalRow, type Outcome, type PendingSignal, type SignalRow, type SignalsDb } from './signalsDb';
 
-export const STRATEGY_ID = 'ichimoku-ema50-confluence';
+/**
+ * Stamped on every recorded signal, and part of each row's deterministic id.
+ *
+ * Change it when the RULES change, not when they are merely tuned: rows keep
+ * their old id, so two strategies writing under one name become impossible to
+ * tell apart afterwards, and a backtest of the new rules cannot be compared
+ * against history produced by the old ones.
+ */
+export const STRATEGY_ID = 'unconfigured';
 
 export interface ScannerConfig {
   symbols: readonly string[];
@@ -124,7 +132,21 @@ export interface RunScanOptions {
   now?: () => number;
   /** Skip the minimum-interval guard. Used by the tests and by ?force=1. */
   force?: boolean;
+  /**
+   * The strategy. Defaults to the one installed at `services/strategy`.
+   *
+   * Injectable because the scanner's own behaviour — freezing a pair on a
+   * signal, not re-emitting the same setup, releasing a pair when its trade
+   * closes, surviving a cold start — is plumbing that must hold for ANY
+   * strategy. Testing it through whichever strategy happens to be installed
+   * makes those tests fail the moment the rules change, which says nothing
+   * about the plumbing and is exactly what happened the first time.
+   */
+  analyse?: Analyse;
 }
+
+/** The one function a strategy has to provide. */
+export type Analyse = (candles: readonly Candle[], options: AnalyseOptions) => StrategyAnalysis;
 
 /**
  * Is the market open for NEW signals?
@@ -183,6 +205,7 @@ export async function runScan(options: RunScanOptions): Promise<ScanResult> {
   const config = options.config ?? DEFAULT_SCANNER_CONFIG;
   const now = options.now ?? (() => Date.now());
   const { db, feed } = options;
+  const analyseWith = options.analyse ?? analyse;
 
   const result: ScanResult = {
     ok: true,
@@ -332,7 +355,7 @@ export async function runScan(options: RunScanOptions): Promise<ScanResult> {
     if (config.biasTimeframe) {
       try {
         const biasCandles = await feed.candles(symbol, config.biasTimeframe, config.outputSize);
-        const biasAnalysis = analyseConfluence(biasCandles, {
+        const biasAnalysis = analyseWith(biasCandles, {
           symbol,
           timeframe: config.biasTimeframe,
           lastBarClosed: lastBarClosed(biasCandles),
@@ -350,11 +373,11 @@ export async function runScan(options: RunScanOptions): Promise<ScanResult> {
       }
       try {
         const candles = await feed.candles(symbol, timeframe, config.outputSize);
-        const analysis = analyseConfluence(candles, {
+        const analysis = analyseWith(candles, {
           symbol,
           timeframe,
           lastBarClosed: lastBarClosed(candles),
-          higherTimeframeBias: bias,
+          higherTimeframeBias: bias ?? undefined,
         });
         result.scanned++;
 
@@ -444,7 +467,7 @@ export async function analyseOne(
   symbol: string,
   timeframe: string,
   outputSize = 300,
-): Promise<ConfluenceAnalysis> {
+): Promise<StrategyAnalysis> {
   const candles = await feed.candles(symbol, timeframe, outputSize);
-  return analyseConfluence(candles, { symbol, timeframe, lastBarClosed: lastBarClosed(candles) });
+  return analyse(candles, { symbol, timeframe, lastBarClosed: lastBarClosed(candles) });
 }

@@ -1413,3 +1413,20 @@ select.input {
   padding: 0 12px;
   font-size: 11px;
 }
+
+/* Inline account/risk controls on the Results verdict.
+   They sit INSIDE the verdict block on purpose: the money figure above them
+   is derived from these two numbers, and separating the control from the
+   number it drives is how a reader ends up mistrusting both. */
+.field-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.input-sm {
+  width: 92px;
+  padding: 5px 8px;
+  font-size: 12px;
+}

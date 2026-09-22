@@ -1,18 +1,32 @@
-import { useMemo, useState } from 'react';
+/**
+ * Market scanner — live prices, and an honest account of what the system is
+ * doing with them.
+ *
+ * WHAT CHANGED AND WHY
+ * ────────────────────
+ * This page used to show "EMA50 touches" as trade ideas. Those came from a
+ * retired engine that the 24/7 scanner never ran, so a pair could sit here
+ * looking like a textbook setup while the scanner correctly ignored it — the
+ * page advertised signals the system would never act on, with nothing saying
+ * the two were different.
+ *
+ * So the rule now: this page shows PRICES, which are facts, and the SCANNER'S
+ * OWN STATE, which is the truth about what is being recorded. It does not
+ * render a second opinion from anywhere else. When a strategy is configured,
+ * its signals appear here — the ones the scanner actually stores, not a
+ * parallel calculation done in the browser.
+ */
 import { useSearchParams } from 'react-router-dom';
 import { ConnectionBanner } from '../components/ConnectionBanner';
 import { ForexTable } from '../components/ForexTable';
 import { MarketStatus } from '../components/MarketStatus';
 import { MetricCard } from '../components/MetricCard';
-import { SignalTable } from '../components/SignalTable';
-import { TimeframeSelector } from '../components/TimeframeSelector';
-import { EMA50_TOUCH, ICHIMOKU_CONFLUENCE } from '../config/strategy';
-import { DEFAULT_TIMEFRAME, isTimeframe, type Timeframe } from '../config/timeframes';
-import { useLastScanAt, useScanProgress, useSignals, useSignalSummary, useStrategyStatus } from '../hooks/useSignals';
-import { ICHIMOKU_CHECKS } from '../services/strategy';
 import { ScannerStatus } from '../components/ScannerStatus';
+import { TimeframeSelector } from '../components/TimeframeSelector';
+import { DEFAULT_TIMEFRAME, isTimeframe, type Timeframe } from '../config/timeframes';
 import { useNow } from '../hooks/useNow';
 import { formatAgo, formatClock } from '../lib/time';
+import { NO_STRATEGY_REASON } from '../services/strategy';
 import { useMarketStore } from '../state/marketStore';
 
 export function Dashboard() {
@@ -27,35 +41,9 @@ export function Dashboard() {
   const lastContact = useMarketStore((s) => s.lastContact);
   const mode = useMarketStore((s) => s.mode);
   const provider = useMarketStore((s) => s.provider.label);
-  const signals = useSignals();
-  const summary = useSignalSummary();
-  const strategyStatus = useStrategyStatus();
-  const lastScanAt = useLastScanAt();
-  const progress = useScanProgress();
-  const [confluentOnly, setConfluentOnly] = useState(false);
   const now = useNow();
 
-  // Filtering, not hiding: the toggle is off by default so a weak setup is
-  // still visible and can be judged rather than silently dropped.
-  const shown = useMemo(
-    () => (confluentOnly ? signals.filter((s) => s.ichimoku?.agrees) : signals),
-    [signals, confluentOnly],
-  );
-  const confluentCount = useMemo(() => signals.filter((s) => s.ichimoku?.agrees).length, [signals]);
-
   const modeLabel = mode === 'stream' ? 'Streaming' : mode === 'poll' ? 'Polling' : 'Connecting';
-  // A scan covers the pair list over several cycles to stay inside the
-  // provider's credit budget, so show how far it has got rather than a
-  // "loading" that sits there for minutes.
-  const warming = progress.total > 0 && progress.scanned < progress.total;
-  const strategyHint =
-    strategyStatus === 'ERROR'
-      ? 'Strategy has no candles'
-      : warming
-        ? `Warming up: ${progress.scanned} of ${progress.total} pairs analysed`
-        : strategyStatus === 'READY'
-          ? `EMA${EMA50_TOUCH.period} touch on ${timeframe}`
-          : 'Waiting for prices…';
 
   return (
     <main className="page">
@@ -74,14 +62,7 @@ export function Dashboard() {
 
       <section className="metric-strip" aria-label="Scanner overview">
         <MetricCard label="Markets" value={symbols.length} hint={`${quoteCount} priced by ${provider}`} />
-        <MetricCard
-          label="At the EMA now"
-          value={summary.active}
-          hint={strategyStatus === 'READY' && !warming ? `Pairs inside the EMA${EMA50_TOUCH.period} band` : strategyHint}
-          accent={summary.active > 0}
-        />
-        <MetricCard label="Touches today" value={summary.today} hint={strategyHint} />
-        <MetricCard label="Scanner status" value={<MarketStatus />} hint={`${modeLabel}, synced ${formatAgo(lastContact, now)}`} />
+        <MetricCard label="Connection" value={<MarketStatus />} hint={`${modeLabel}, synced ${formatAgo(lastContact, now)}`} />
         <MetricCard
           label="Last market update"
           value={formatAgo(lastUpdate, now)}
@@ -90,50 +71,32 @@ export function Dashboard() {
         />
       </section>
 
+      {/* The one place that says whether signals are being produced at all.
+          Stated plainly here rather than left to be inferred from an empty
+          table, which is exactly how the old page misled. */}
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <h2 className="panel-title">Signals</h2>
+            <span className="panel-sub">What the 24/7 scanner is recording.</span>
+          </div>
+          <ScannerStatus />
+        </div>
+        <div className="panel-body empty">
+          <strong>{NO_STRATEGY_REASON}</strong>
+          <p>
+            Prices, charts and the scanner are running. Nothing is being scored, so no signals will be produced until
+            a strategy is plugged in.
+          </p>
+        </div>
+      </section>
+
       <section className="panel">
         <div className="panel-head">
           <h2 className="panel-title">Forex market</h2>
           <span className="panel-sub">Last updated: {formatAgo(lastContact, now)}</span>
         </div>
         <ForexTable timeframe={timeframe} />
-      </section>
-
-      <section className="panel">
-        <div className="panel-head">
-          <div>
-            <h2 className="panel-title">EMA{EMA50_TOUCH.period} touches</h2>
-            <span className="panel-sub">
-              Fires when price reaches the EMA{EMA50_TOUCH.period} on the {timeframe} chart, within a
-              volatility-scaled band. One signal per approach, not per bar.
-            </span>
-          </div>
-          <div className="page-head-aside">
-            <label className="overlay-toggle">
-              <input type="checkbox" checked={confluentOnly} onChange={(e) => setConfluentOnly(e.target.checked)} />
-              Ichimoku confluent only
-            </label>
-            <span className="panel-sub">
-              {warming
-                ? `${progress.scanned}/${progress.total} pairs analysed · `
-                : `${confluentCount} of ${signals.length} confluent · `}
-              scanned {formatAgo(lastScanAt, now)}
-            </span>
-            <span className="panel-sub">
-              <ScannerStatus />
-            </span>
-          </div>
-        </div>
-        <SignalTable
-          signals={shown}
-          limit={25}
-          emptyHint={
-            confluentOnly && signals.length > 0
-              ? `None of the ${signals.length} touches reach ${ICHIMOKU_CONFLUENCE.agreeThreshold}/${ICHIMOKU_CHECKS} Ichimoku agreement. Untick the filter to see them all.`
-              : strategyStatus === 'READY'
-                ? `Watching ${symbols.length} pairs on ${timeframe}. Nothing has reached its EMA${EMA50_TOUCH.period} yet.`
-                : strategyHint
-          }
-        />
       </section>
     </main>
   );
