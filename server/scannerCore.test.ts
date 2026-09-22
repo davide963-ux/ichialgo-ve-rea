@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Candle } from '../src/services/marketData/types';
-import type { TrackedSetup } from '../src/services/strategy/confluence';
+import type { TrackedSetup } from '../src/services/strategy';
 import {
   DEFAULT_SCANNER_CONFIG,
   isSessionActive,
   resolveOutcome,
   runScan,
+  STRATEGY_ID,
+  type Analyse,
   type MarketFeed,
   type ScannerConfig,
 } from './scannerCore';
@@ -29,15 +31,68 @@ function toCandles(closes: readonly number[], wickPips = 4): Candle[] {
 const wave = (n: number, drift: number, amp: number, period: number) =>
   Array.from({ length: n }, (_, i) => 1.05 + i * drift * PIP + Math.sin((i / period) * 2 * Math.PI) * amp * PIP);
 
-/** An uptrend pulled back into the zone with a rejection bar — fires LONG. */
+/** Ordinary trending bars. What the STRATEGY makes of them is stubbed below. */
 function longSetupCandles(): Candle[] {
-  const bars = toCandles(wave(130, 0.8, 25, 16));
-  const last = bars[bars.length - 1]!;
-  last.low = last.close - 20 * PIP;
-  last.close = last.open + 6 * PIP;
-  last.high = last.close + 1 * PIP;
-  return bars;
+  return toCandles(wave(130, 0.8, 25, 16));
 }
+
+/**
+ * A stub strategy that always reports a confirmed LONG.
+ *
+ * WHY THE SCANNER TESTS DO NOT USE THE REAL STRATEGY
+ * ──────────────────────────────────────────────────
+ * Everything below tests the SCANNER: that a pair freezes the moment it
+ * signals, that the same setup is not emitted twice, that a pair is released
+ * when its trade closes, that tracker state survives a cold start. None of
+ * that is a property of any particular set of rules, and it all has to keep
+ * working when the rules are replaced.
+ *
+ * Driving these through whichever strategy happens to be installed couples
+ * them to it — and when the strategy was removed, six of them failed at once
+ * while reporting nothing at all about the plumbing they exist to protect.
+ * So the strategy is injected, and it is the dullest one that can possibly
+ * produce a signal.
+ */
+const alwaysLong: Analyse = (candles, options) => {
+  const last = candles[options.index ?? candles.length - 1]!;
+  const entry = last.close;
+  return {
+    symbol: options.symbol,
+    timeframe: options.timeframe,
+    barTime: last.time,
+    barClosed: options.lastBarClosed ?? true,
+    direction: 'long',
+    signal: 'LONG',
+    confidence: 70,
+    marketCondition: 'TRENDING_BULLISH',
+    status: 'CONFIRMED',
+    price: entry,
+    risk: {
+      entry,
+      stop: entry - 20 * PIP,
+      targets: [entry + 30 * PIP, entry + 50 * PIP, entry + 70 * PIP],
+      stopPips: 20,
+      invalidation: 'Close below the stop.',
+    },
+    // Fixed, so every bar reads as the SAME setup: that is what lets the
+    // re-emission tests mean what they say.
+    anchor: 1,
+    reasons: ['Stub strategy — always long.'],
+    warnings: [],
+    detail: {},
+  };
+};
+
+/** A strategy that never signals, for the paths that must stay silent. */
+const neverSignals: Analyse = (candles, options) => ({
+  ...alwaysLong(candles, options),
+  direction: 'none',
+  signal: 'NO_TRADE',
+  confidence: 0,
+  status: 'FORMING',
+  risk: { entry: null, stop: null, targets: [], stopPips: null, invalidation: null },
+  reasons: [],
+});
 
 /** A dead flat market — nothing should ever fire on it. */
 const flatCandles = () => toCandles(Array.from({ length: 130 }, () => 1.1));
@@ -274,7 +329,7 @@ describe('runScan — trade management runs even when the market is shut', () =>
     const feed = new FakeFeed();
     feed.prices.set('EUR/USD', 1.0979); // stop hit
 
-    const result = await runScan({ db, feed, config: smallConfig(), now: () => SATURDAY_NOON });
+    const result = await runScan({ db, feed, analyse: alwaysLong, config: smallConfig(), now: () => SATURDAY_NOON });
 
     expect(result.sessionActive).toBe(false);
     expect(db.closes).toEqual([{ id: 'sig-1', outcome: 'sl', price: 1.0979 }]);
@@ -284,7 +339,7 @@ describe('runScan — trade management runs even when the market is shut', () =>
     const db = new FakeDb();
     const feed = new FakeFeed(longSetupCandles);
 
-    const result = await runScan({ db, feed, config: smallConfig(), now: () => SATURDAY_NOON });
+    const result = await runScan({ db, feed, analyse: alwaysLong, config: smallConfig(), now: () => SATURDAY_NOON });
 
     expect(result.scanned).toBe(0);
     expect(feed.candleCalls).toHaveLength(0);
@@ -299,7 +354,7 @@ describe('runScan — freezing', () => {
     const feed = new FakeFeed(longSetupCandles);
     feed.prices.set('EUR/USD', 1.101); // nothing hit — stays open
 
-    await runScan({ db, feed, config: smallConfig(), now: () => MONDAY_NOON });
+    await runScan({ db, feed, analyse: alwaysLong, config: smallConfig(), now: () => MONDAY_NOON });
 
     expect(feed.candleCalls).not.toContain('EUR/USD|1H');
     expect(feed.candleCalls).toContain('GBP/USD|1H');
@@ -311,7 +366,7 @@ describe('runScan — freezing', () => {
     const feed = new FakeFeed(longSetupCandles);
     feed.prices.set('EUR/USD', 1.0979); // stop hit → closes → pair free again
 
-    const result = await runScan({ db, feed, config: smallConfig(), now: () => MONDAY_NOON });
+    const result = await runScan({ db, feed, analyse: alwaysLong, config: smallConfig(), now: () => MONDAY_NOON });
 
     expect(result.closed).toBe(1);
     expect(feed.candleCalls).toContain('EUR/USD|1H');
@@ -324,6 +379,7 @@ describe('runScan — freezing', () => {
     const result = await runScan({
       db,
       feed,
+      analyse: alwaysLong,
       config: smallConfig({ timeframes: ['1H', '4H'] }),
       now: () => MONDAY_NOON,
     });
@@ -340,12 +396,15 @@ describe('runScan — emitting', () => {
     const db = new FakeDb();
     const feed = new FakeFeed(longSetupCandles);
 
-    const result = await runScan({ db, feed, config: smallConfig(), now: () => MONDAY_NOON });
+    const result = await runScan({ db, feed, analyse: alwaysLong, config: smallConfig(), now: () => MONDAY_NOON });
 
     expect(result.emitted).toBeGreaterThan(0);
     const row = db.recorded[0]!;
     expect(row.direction).toBe('long');
-    expect(row.id).toMatch(/^ichimoku-ema50-confluence\|EUR\/USD\|1H\|\d+$/);
+    // Deterministic id: strategy|symbol|timeframe|barTime. Asserted against the
+    // exported constant rather than a literal, so renaming the strategy does
+    // not silently weaken the idempotency this id provides.
+    expect(row.id).toMatch(new RegExp(`^${STRATEGY_ID}\\|EUR/USD\\|1H\\|\\d+$`));
     expect(row.entry).not.toBeNull();
     expect(row.take_profit1).not.toBeNull();
     expect(row.analysis).toBeTruthy();
@@ -353,7 +412,7 @@ describe('runScan — emitting', () => {
 
   it('emits nothing on a flat market', async () => {
     const db = new FakeDb();
-    const result = await runScan({ db, feed: new FakeFeed(flatCandles), config: smallConfig(), now: () => MONDAY_NOON });
+    const result = await runScan({ db, feed: new FakeFeed(flatCandles), analyse: neverSignals, config: smallConfig(), now: () => MONDAY_NOON });
 
     expect(result.emitted).toBe(0);
     expect(db.recorded).toHaveLength(0);
@@ -363,11 +422,11 @@ describe('runScan — emitting', () => {
     const db = new FakeDb();
     const config = smallConfig();
 
-    const first = await runScan({ db, feed: new FakeFeed(longSetupCandles), config, now: () => MONDAY_NOON, force: true });
+    const first = await runScan({ db, feed: new FakeFeed(longSetupCandles), analyse: alwaysLong, config, now: () => MONDAY_NOON, force: true });
     expect(first.emitted).toBeGreaterThan(0);
 
     // A second run, same market, tracker state reloaded from the fake db.
-    const second = await runScan({ db, feed: new FakeFeed(longSetupCandles), config, now: () => MONDAY_NOON + 20 * 60_000, force: true });
+    const second = await runScan({ db, feed: new FakeFeed(longSetupCandles), analyse: alwaysLong, config, now: () => MONDAY_NOON + 20 * 60_000, force: true });
     expect(second.emitted).toBe(0);
   });
 
@@ -376,7 +435,7 @@ describe('runScan — emitting', () => {
     const config = smallConfig({ symbols: ['EUR/USD'] });
 
     // Signal, so the tracker marks the pair ACTIVE.
-    const first = await runScan({ db, feed: new FakeFeed(longSetupCandles), config, now: () => MONDAY_NOON, force: true });
+    const first = await runScan({ db, feed: new FakeFeed(longSetupCandles), analyse: alwaysLong, config, now: () => MONDAY_NOON, force: true });
     expect(first.emitted).toBe(1);
     expect(db.setupState.some((s) => s.status === 'ACTIVE')).toBe(true);
 
@@ -386,14 +445,21 @@ describe('runScan — emitting', () => {
     // The tracker must be released, or this pair can never signal again.
     // Without the reconciliation the setup stays ACTIVE, update() returns
     // emit:false for ever, and this list is empty.
-    const after = await runScan({ db, feed: new FakeFeed(longSetupCandles), config, now: () => MONDAY_NOON + 60_000, force: true });
+    const after = await runScan({ db, feed: new FakeFeed(longSetupCandles), analyse: alwaysLong, config, now: () => MONDAY_NOON + 60_000, force: true });
     expect(after.signals.length).toBeGreaterThan(0);
     expect(after.errors).toEqual([]);
   });
 
   it('persists tracker state so a cold start does not re-emit', async () => {
     const db = new FakeDb();
-    await runScan({ db, feed: new FakeFeed(longSetupCandles), config: smallConfig(), now: () => MONDAY_NOON, force: true });
+    await runScan({
+      db,
+      feed: new FakeFeed(longSetupCandles),
+      analyse: alwaysLong,
+      config: smallConfig(),
+      now: () => MONDAY_NOON,
+      force: true,
+    });
     expect(db.setupState.length).toBeGreaterThan(0);
     expect(db.setupState.some((s) => s.status === 'ACTIVE')).toBe(true);
   });
@@ -405,7 +471,7 @@ describe('runScan — resilience', () => {
     const feed = new FakeFeed(longSetupCandles);
     feed.failSymbols.add('EUR/USD');
 
-    const result = await runScan({ db, feed, config: smallConfig(), now: () => MONDAY_NOON });
+    const result = await runScan({ db, feed, analyse: alwaysLong, config: smallConfig(), now: () => MONDAY_NOON });
 
     expect(result.errors.some((e) => e.includes('EUR/USD'))).toBe(true);
     expect(feed.candleCalls).toContain('GBP/USD|1H');
@@ -525,7 +591,7 @@ describe('runScan — credits', () => {
   it('reports what it spent', async () => {
     const db = new FakeDb();
     const feed = new FakeFeed(longSetupCandles);
-    const result = await runScan({ db, feed, config: smallConfig(), now: () => MONDAY_NOON });
+    const result = await runScan({ db, feed, analyse: alwaysLong, config: smallConfig(), now: () => MONDAY_NOON });
     expect(result.creditsUsed).toBe(feed.credits);
     expect(result.creditsUsed).toBeGreaterThan(0);
   });
@@ -537,7 +603,7 @@ describe('runScan — a whole trade lifecycle', () => {
     const config = smallConfig({ symbols: ['EUR/USD'] });
 
     // 1. Signal.
-    const opened = await runScan({ db, feed: new FakeFeed(longSetupCandles), config, now: () => MONDAY_NOON, force: true });
+    const opened = await runScan({ db, feed: new FakeFeed(longSetupCandles), analyse: alwaysLong, config, now: () => MONDAY_NOON, force: true });
     expect(opened.emitted).toBe(1);
     const row = db.recorded[0]!;
 

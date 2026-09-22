@@ -183,12 +183,16 @@ export function groupBy(trades: readonly MeasuredTrade[], key: (t: MeasuredTrade
 }
 
 /**
- * Collapse the seven regimes into the distinction the strategy rests on.
+ * Collapse a strategy's market conditions into trending / not-trending.
  *
- * The premise is that a pullback into confluence works in a trend and not in
- * chop. Splitting results this way is the most direct test of that claim: if
- * the ranging bucket performs as well as the trending one, the regime filter
- * is not earning its place.
+ * Most strategies claim, somewhere, to work in one kind of market and not
+ * another. Splitting results this way is the most direct test of that claim:
+ * if the ranging bucket performs as well as the trending one, whatever filter
+ * is meant to separate them is not earning its place.
+ *
+ * The names below are the ones the first strategy used. A strategy reporting
+ * different conditions falls through to 'Unknown', which is honest — better
+ * than silently sorting its regimes into buckets that mean something else.
  */
 export function regimeFamily(condition: string): string {
   if (condition === 'TRENDING_BULLISH' || condition === 'TRENDING_BEARISH') return 'Trending';

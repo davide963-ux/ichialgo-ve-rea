@@ -1,39 +1,23 @@
 /**
- * Setup state tracking — the anti-duplication layer.
+ * Setup lifecycle tracking — plumbing, not strategy.
  *
- * `analyseConfluence` is stateless: given the same candles it always returns
- * the same answer, which is what makes it testable and what lets the backtest
- * and the live scanner agree. But a setup does not vanish when it is found.
- * A CONFIRMED long stays confirmed for as long as the conditions hold, so an
- * engine that emitted on every scan would emit the same trade ten times.
+ * WHY THIS SURVIVED THE STRATEGY WIPE
+ * ───────────────────────────────────
+ * This answers "is this news?", which is a different question from "is this a
+ * good trade?". Whatever rules replace the old ones, a scanner running every
+ * fifteen minutes will re-derive the same conclusion from the same candles
+ * over and over, and something has to turn that stream of states into a
+ * stream of EVENTS. That job does not change when the rules do, and the
+ * `setup_state` table already stores exactly this shape.
  *
- * This module holds the memory. It compares the current analysis against what
- * it last saw for that (symbol, timeframe) and emits ONLY on a transition
- * worth telling someone about.
+ * It is also the only thing enforcing one position per pair, which is a
+ * risk rule rather than an opinion about the market.
  *
- *                    ┌──────────── reset ─────────────┐
- *                    ▼                                │
- *   (none) ──▶ FORMING ──▶ CONFIRMING ──▶ CONFIRMED ──▶ ACTIVE ──▶ COMPLETED
- *                 │             │              │           │
- *                 └─────────────┴──────────────┴───────────┴──▶ INVALIDATED
- *
- * WHAT COUNTS AS A NEW SETUP
- * ──────────────────────────
- * Not "the direction is still long". A genuinely new setup means the previous
- * one ended — invalidated, completed, or the market left the zone and came
- * back. Tracking the IMPULSE the pullback belongs to is what distinguishes
- * "the same pullback, six bars later" from "a new pullback in the same trend":
- * the second one has a different impulse origin.
- *
- * WHY ACTIVE IS SEPARATE FROM CONFIRMED
- * ─────────────────────────────────────
- * CONFIRMED is "a trade is warranted now". ACTIVE is "a trade was taken and is
- * running". The scanner promotes CONFIRMED → ACTIVE when it records the
- * signal, and from then on the setup is not re-emitted; the TP/SL checker owns
- * it until it closes.
+ * It reads just four fields of an analysis — symbol, timeframe, direction,
+ * status — plus the strategy's own `anchor`. It cannot see confluence,
+ * pullbacks or clouds, and must not learn to.
  */
-import type { ConfluenceAnalysis, Direction, SetupStatus } from './types';
-import { isActionable } from './scoring';
+import { isActionable, type Direction, type SetupStatus, type StrategyAnalysis } from './contract';
 
 export interface TrackedSetup {
   key: string;
@@ -45,12 +29,9 @@ export interface TrackedSetup {
   firstBarTime: number;
   /** Bar of the most recent update. */
   lastBarTime: number;
-  /**
-   * Origin of the impulse this pullback belongs to. A different origin means a
-   * different setup, even in the same trend and the same direction.
-   */
-  impulseOrigin: number | null;
-  /** Confidence when it was last emitted — used to report a material upgrade. */
+  /** The strategy's `anchor` — a different one means a different setup. */
+  anchor: number | null;
+  /** Confidence when last emitted, so a material upgrade can be spotted. */
   emittedConfidence: number | null;
   emittedAt: number | null;
 }
@@ -58,7 +39,7 @@ export interface TrackedSetup {
 export type EmitReason = 'new-setup' | 'confirmed' | 'invalidated' | 'upgraded';
 
 export interface TrackerDecision {
-  /** True when the caller should record/publish this analysis. */
+  /** True when the caller should record and publish this analysis. */
   emit: boolean;
   reason: EmitReason | null;
   setup: TrackedSetup;
@@ -67,11 +48,11 @@ export interface TrackerDecision {
 export interface TrackerOptions {
   /**
    * Re-emit an already-emitted setup only if confidence improved by at least
-   * this much. Without it, noise around the threshold produces a stream of
-   * near-identical signals.
+   * this much. Without it, noise either side of a threshold produces a stream
+   * of near-identical signals for one opportunity.
    */
   upgradeDelta?: number;
-  /** A setup untouched for this many ms is forgotten. */
+  /** A setup untouched for this long is forgotten. */
   staleMs?: number;
   now?: () => number;
 }
@@ -85,7 +66,8 @@ export const setupKey = (symbol: string, timeframe: string): string => `${symbol
  *
  * Deliberately not a store or a singleton: the scanner owns an instance, the
  * backtest owns its own, and neither can contaminate the other. State that
- * must survive a restart is rehydrated with `load()`.
+ * must survive a restart is rehydrated with `load()`, because a serverless
+ * scanner starts cold every time.
  */
 export class SetupTracker {
   private readonly setups = new Map<string, TrackedSetup>();
@@ -99,7 +81,6 @@ export class SetupTracker {
     this.now = options.now ?? (() => Date.now());
   }
 
-  /** Rehydrate from persisted state — a serverless scanner starts cold. */
   load(setups: readonly TrackedSetup[]): void {
     for (const s of setups) this.setups.set(s.key, { ...s });
   }
@@ -118,7 +99,13 @@ export class SetupTracker {
     if (s) s.status = 'ACTIVE';
   }
 
-  /** Close an ACTIVE setup once its trade resolved. */
+  /**
+   * Release an ACTIVE setup once its trade resolved.
+   *
+   * Nothing else clears ACTIVE, and an ACTIVE setup suppresses every future
+   * signal for its pair — so a caller that forgets to call this leaves the
+   * pair permanently silent while the scanner still looks healthy.
+   */
   complete(symbol: string, timeframe: string): void {
     const s = this.setups.get(setupKey(symbol, timeframe));
     if (s) s.status = 'COMPLETED';
@@ -130,17 +117,16 @@ export class SetupTracker {
    * The order of the checks is the policy:
    *   1. an ACTIVE trade suppresses everything — one position per pair
    *   2. invalidation is always news, and clears the slot
-   *   3. a different impulse means a genuinely new setup
+   *   3. a direction flip or a different anchor means a genuinely new setup
    *   4. crossing into CONFIRMED is the signal
    *   5. a materially better CONFIRMED setup is an upgrade
    *   6. anything else is the same setup, still developing → silence
    */
-  update(analysis: ConfluenceAnalysis): TrackerDecision {
+  update(analysis: StrategyAnalysis): TrackerDecision {
     const key = setupKey(analysis.symbol, analysis.timeframe);
     this.evict();
 
     const existing = this.setups.get(key);
-    const impulseOrigin = analysis.setup.retracementPct === null ? null : (analysis.risk.suggestedStopReference ?? null);
     const nowMs = this.now();
 
     const fresh = (status: SetupStatus): TrackedSetup => ({
@@ -151,7 +137,7 @@ export class SetupTracker {
       status,
       firstBarTime: analysis.barTime,
       lastBarTime: analysis.barTime,
-      impulseOrigin,
+      anchor: analysis.anchor,
       emittedConfidence: null,
       emittedAt: null,
     });
@@ -163,7 +149,10 @@ export class SetupTracker {
     }
 
     // 2. Invalidation is worth recording — it is how a watched setup ends.
-    if (analysis.setup.status === 'INVALIDATED') {
+    //    Emitting requires a PREVIOUS live setup: without one there was never
+    //    anything to invalidate, and a strategy reporting INVALIDATED on a
+    //    cold start would otherwise fire a signal about nothing.
+    if (analysis.status === 'INVALIDATED') {
       if (!existing || existing.status === 'INVALIDATED') {
         const setup = fresh('INVALIDATED');
         this.setups.set(key, setup);
@@ -174,18 +163,18 @@ export class SetupTracker {
       return { emit: true, reason: 'invalidated', setup: existing };
     }
 
-    // 3. Direction flip or a different impulse — the old setup is over.
+    // 3. Direction flip, a finished setup, or a different anchor — the old one is over.
     const differentSetup =
       existing !== undefined &&
       (existing.direction !== analysis.direction ||
         existing.status === 'COMPLETED' ||
         existing.status === 'INVALIDATED' ||
-        (impulseOrigin !== null && existing.impulseOrigin !== null && impulseOrigin !== existing.impulseOrigin));
+        (analysis.anchor !== null && existing.anchor !== null && analysis.anchor !== existing.anchor));
 
     if (existing === undefined || differentSetup) {
-      const setup = fresh(analysis.setup.status);
+      const setup = fresh(analysis.status);
       this.setups.set(key, setup);
-      const emit = analysis.setup.status === 'CONFIRMED' && isActionable(analysis.signal);
+      const emit = analysis.status === 'CONFIRMED' && isActionable(analysis.signal);
       if (emit) {
         setup.emittedConfidence = analysis.confidence;
         setup.emittedAt = nowMs;
@@ -195,12 +184,12 @@ export class SetupTracker {
 
     // 4/5/6. Same setup: only a state change or a real improvement is news.
     const wasConfirmed = existing.status === 'CONFIRMED';
-    existing.status = analysis.setup.status;
+    existing.status = analysis.status;
     existing.lastBarTime = analysis.barTime;
     existing.direction = analysis.direction;
-    if (impulseOrigin !== null) existing.impulseOrigin = impulseOrigin;
+    if (analysis.anchor !== null) existing.anchor = analysis.anchor;
 
-    const nowConfirmed = analysis.setup.status === 'CONFIRMED' && isActionable(analysis.signal);
+    const nowConfirmed = analysis.status === 'CONFIRMED' && isActionable(analysis.signal);
     if (!nowConfirmed) return { emit: false, reason: null, setup: existing };
 
     if (!wasConfirmed || existing.emittedConfidence === null) {
@@ -218,7 +207,12 @@ export class SetupTracker {
     return { emit: false, reason: null, setup: existing };
   }
 
-  /** Forget setups nothing has touched in a long time. */
+  /**
+   * Forget setups nothing has touched in a long time.
+   *
+   * ACTIVE is never evicted: a running trade must keep suppressing its pair
+   * however long it stays open.
+   */
   private evict(): void {
     const cutoff = this.now() - this.staleMs;
     for (const [key, s] of this.setups) {

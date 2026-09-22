@@ -21,7 +21,8 @@ export interface StoredSignal {
   marketCondition: string;
   setupStatus: string;
   price: number;
-  atr: number;
+  /** ATR at the signal bar, when the strategy reports one. */
+  atr: number | null;
   entry: number | null;
   stopLoss: number | null;
   takeProfit1: number | null;

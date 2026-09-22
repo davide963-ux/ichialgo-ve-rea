@@ -1,14 +1,49 @@
 /**
- * Public entry point of the strategy layer.
- * UI code imports from here — never from the detector directly.
+ * The strategy layer's public surface.
+ *
+ * Everything outside `src/services/strategy/` imports from here and nowhere
+ * deeper. That is what keeps the strategy replaceable: the scanner, the
+ * backtest and the UI depend on this barrel, not on whichever engine happens
+ * to be behind it.
  */
-export { strategyEngine, StrategyEngine, mergeSignals } from './StrategyEngine';
-export { analyseEma50Touch, checkLiveTouch, signalId, touchTimeMs } from './ema50Touch';
-export type { TouchAnalysis } from './ema50Touch';
-export { runBacktest, summarise } from './backtest';
-export type { BacktestOptions, BacktestResult, BacktestStats, BacktestTrade, ExitReason } from './backtest';
-export { ICHIMOKU_CHECKS, explainContext, ichimokuContextAt } from './ichimokuContext';
-export type { IchimokuContext } from './ichimokuContext';
-export { calculatorLink, directionOf, planFromTouch } from './tradePlan';
-export type { TradePlan } from './tradePlan';
-export type { Approach, Bias, StrategyId, TouchOutcome, TouchSignal, Trend, WatchLevel } from './types';
+export { analyse, hasEnoughBars, MIN_BARS, NO_STRATEGY_REASON } from './analyse';
+export {
+  directionOf,
+  isActionable,
+  type AnalyseOptions,
+  type Direction,
+  type RiskTicket,
+  type SetupStatus,
+  type SignalTier,
+  type StrategyAnalysis,
+} from './contract';
+export {
+  SetupTracker,
+  setupKey,
+  type EmitReason,
+  type TrackedSetup,
+  type TrackerDecision,
+  type TrackerOptions,
+} from './lifecycle';
+export {
+  runBacktest,
+  resolveBar,
+  rMultipleOf,
+  type BacktestExit,
+  type BacktestOptions,
+  type BacktestResult,
+  type BacktestTrade,
+} from './backtest';
+export {
+  buildReport,
+  computeMetrics,
+  groupBy,
+  regimeFamily,
+  signalStrength,
+  MIN_RELIABLE_TRADES,
+  type Group,
+  type MeasuredTrade,
+  type Metrics,
+  type PerformanceReport,
+  type TradeOutcome,
+} from './performance';

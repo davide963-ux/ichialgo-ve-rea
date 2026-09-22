@@ -1,23 +1,17 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { EMA50_TOUCH } from '../config/strategy';
 import type { Timeframe } from '../config/timeframes';
 import { useCandles } from '../hooks/useCandles';
 import { useNow } from '../hooks/useNow';
-import { useStrategyNotice, useTouchAnalysis, useTradePlan } from '../hooks/useSignals';
+import { CHART_EMA_PERIOD, useChartIndicators } from '../hooks/useChartIndicators';
 import { formatNumber, formatPrice } from '../lib/format';
-import { pipSize } from '../lib/pips';
-import { formatAgo, formatStamp } from '../lib/time';
-import { touchTimeMs } from '../services/strategy';
+import { formatAgo } from '../lib/time';
 import { useMarketStore } from '../state/marketStore';
 import { CandlestickChart } from './CandlestickChart';
 import { EmptyState } from './EmptyState';
 import { MarketStatus } from './MarketStatus';
 import { PriceChange } from './PriceChange';
-import { IchimokuPanel } from './IchimokuPanel';
-import { SignalTable } from './SignalTable';
 import { TimeframeSelector } from './TimeframeSelector';
-import { TradePlanCard } from './TradePlanCard';
 
 interface Props {
   symbol: string;
@@ -32,19 +26,10 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
   const bidAsk = useMarketStore((s) => s.provider.capabilities.bidAsk);
   const symbolError = useMarketStore((s) => s.symbolErrors[symbol]);
   const { status: chartStatus, candles, error, fetchedAt, reload } = useCandles(symbol, timeframe);
-  const analysis = useTouchAnalysis(symbol, timeframe, candles);
-  const latestTouch = analysis.signals.at(-1) ?? null;
-  const plan = useTradePlan(latestTouch);
-  const strategyNotice = useStrategyNotice(symbol);
+  const indicators = useChartIndicators(candles);
   const now = useNow();
   const [showIchimoku, setShowIchimoku] = useState(true);
   const live = status === 'ONLINE';
-
-  // Distance to the EMA right now, from the same bars the chart is showing.
-  const level = analysis.level;
-  const distancePips =
-    level && quote ? (quote.price - level.ema) / pipSize(symbol) : null;
-  const atTheLevel = level !== null && distancePips !== null && Math.abs(distancePips) <= level.tolerancePips;
 
   return (
     <>
@@ -103,7 +88,7 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
           <div>
             <h2 className="panel-title">Price chart</h2>
             <span className="panel-sub">
-              {bidAsk ? 'Mid-price candles, times in UTC' : 'Candles, times in UTC'} · EMA{EMA50_TOUCH.period}
+              {bidAsk ? 'Mid-price candles, times in UTC' : 'Candles, times in UTC'} · EMA{CHART_EMA_PERIOD}
               {showIchimoku ? ' + Ichimoku' : ''} overlay
             </span>
           </div>
@@ -121,9 +106,9 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
             symbol={symbol}
             timeframe={timeframe}
             candles={candles}
-            ema={analysis.ema}
-            signals={analysis.signals}
-            ichimoku={analysis.ichimoku}
+            ema={indicators.ema}
+            emaLabel={`EMA${CHART_EMA_PERIOD}`}
+            ichimoku={indicators.ichimoku ?? undefined}
             showIchimoku={showIchimoku}
           />
           {chartStatus === 'LOADING' && (
@@ -161,86 +146,6 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
         </div>
       </section>
 
-      <section className="panel">
-        <div className="panel-head">
-          <div>
-            <h2 className="panel-title">EMA{EMA50_TOUCH.period} touch</h2>
-            <span className="panel-sub">
-              A touch is price entering a band of ±{level ? formatNumber(level.tolerancePips, 1) : '—'} pips
-              around the EMA{EMA50_TOUCH.period} — scaled to current volatility (ATR{EMA50_TOUCH.atrPeriod}).
-            </span>
-          </div>
-          {atTheLevel && <span className="tag pos" title="Price is inside the band right now">AT THE LEVEL</span>}
-        </div>
-
-        {level ? (
-          <>
-            <dl className="quote-grid panel-body">
-              <div>
-                <dt>EMA{EMA50_TOUCH.period}</dt>
-                <dd className="num">{formatPrice(symbol, level.ema)}</dd>
-              </div>
-              <div>
-                <dt>Distance</dt>
-                <dd className={`num${atTheLevel ? ' pos' : ''}`}>
-                  {distancePips === null ? '—' : `${distancePips > 0 ? '+' : '−'}${formatNumber(Math.abs(distancePips), 1)} pips`}
-                </dd>
-              </div>
-              <div>
-                <dt>EMA trend</dt>
-                <dd className={level.trend === 'up' ? 'pos' : level.trend === 'down' ? 'neg' : 'muted'}>
-                  {level.trend.toUpperCase()}
-                </dd>
-              </div>
-              <div>
-                <dt>State</dt>
-                <dd className="muted" title="Armed = ready to signal the next approach">
-                  {level.armed ? 'ARMED' : 'IN ZONE'}
-                </dd>
-              </div>
-            </dl>
-            <SignalTable
-              signals={analysis.signals.slice().reverse()}
-              limit={10}
-              emptyHint={`No EMA${EMA50_TOUCH.period} touch in the last ${candles.length} ${timeframe} candles.`}
-            />
-          </>
-        ) : (
-          <EmptyState title="Not enough history" compact>
-            {strategyNotice ??
-              `The EMA${EMA50_TOUCH.period} needs at least ${EMA50_TOUCH.minBars} ${timeframe} candles; ${candles.length} loaded.`}
-          </EmptyState>
-        )}
-      </section>
-
-      {latestTouch && (
-        <section className="panel">
-          <div className="panel-head">
-            <div>
-              <h2 className="panel-title">Trade plan</h2>
-              <span className="panel-sub">
-                From the last touch ({formatStamp(touchTimeMs(latestTouch))}). Entry at the EMA, stop sized from ATR,
-                position sized to your account — edit the numbers on the Calculator page.
-              </span>
-            </div>
-          </div>
-          <TradePlanCard signal={latestTouch} plan={plan} />
-        </section>
-      )}
-
-      {latestTouch && (
-        <section className="panel">
-          <div className="panel-head">
-            <div>
-              <h2 className="panel-title">Ichimoku confluence</h2>
-              <span className="panel-sub">
-                Does the cloud agree with the last touch? Five checks, read in the direction the touch implies.
-              </span>
-            </div>
-          </div>
-          <IchimokuPanel signal={latestTouch} series={analysis.ichimoku} candles={candles} />
-        </section>
-      )}
     </>
   );
 }

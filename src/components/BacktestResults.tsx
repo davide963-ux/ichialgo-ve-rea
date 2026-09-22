@@ -1,144 +1,318 @@
+/**
+ * Backtest results.
+ *
+ * WHAT THIS PAGE IS FOR
+ * ─────────────────────
+ * Answering "what happened?" in one sentence, before any jargon. The previous
+ * version opened with Average R, Total R, Profit factor and Max drawdown —
+ * six numbers, none of them defined on screen, and none of them in the
+ * currency the user had just typed into the form. You could not tell whether
+ * the strategy had made or lost money without doing arithmetic.
+ *
+ * So the order is now: plain verdict → money → the curve → the numbers →
+ * the breakdowns, folded away. A reader who stops after the first line has
+ * still got the answer.
+ *
+ * WHY MONEY, AND HOW IT IS COMPUTED
+ * ─────────────────────────────────
+ * The form already asks for a starting balance and a risk percentage. Risk is
+ * a FIXED fraction of the STARTING balance, not compounded: with £10,000 at
+ * 1%, every trade risks £100, win or lose. That is the conservative reading —
+ * compounding would flatter the result — and it is simple enough to state in
+ * one line, which matters more here than squeezing out the last percent of
+ * realism.
+ */
+import { useMemo } from 'react';
+import { MIN_RELIABLE_TRADES, type Group } from '../services/strategy/performance';
+import type { BacktestResult, BacktestTrade } from '../services/strategy';
+import { EquityCurve, type EquityPoint } from './EquityCurve';
 import { MetricCard } from './MetricCard';
-import { EquityChart } from './EquityChart';
-import { EmptyState } from './EmptyState';
-import { getPair } from '../config/pairs';
-import { formatMoney, formatNumber, formatPct } from '../lib/format';
-import { formatStamp } from '../lib/time';
-import type { BacktestResult } from '../services/strategy';
 
-const stamp = (t: number | null) => (t === null ? '—' : formatStamp(t * 1000));
+interface Props {
+  result: BacktestResult;
+  startingBalance: number;
+  riskPct: number;
+}
 
-/** Stats, equity curve and the trade list for one backtest run. */
-export function BacktestResults({ result }: { result: BacktestResult }) {
-  const { stats, trades, equity, skipped } = result;
-  const digits = getPair(result.symbol).digits;
-  const price = (v: number | null) => (v === null ? '—' : v.toFixed(digits));
-  const skippedTotal = skipped.positionOpen + skipped.notConfluent + skipped.unsizable;
+const pct = (v: number | null): string => (v === null ? '—' : `${v.toFixed(0)}%`);
+const r = (v: number | null, digits = 2): string => (v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(digits)}R`);
+/**
+ * Profit factor, in words where a symbol would not help.
+ *
+ * Infinity is mathematically correct when nothing lost, and meaningless to
+ * most readers — "no losses yet" says the same thing and cannot be misread.
+ */
+const pf = (v: number | null): string =>
+  v === null ? '—' : v === Infinity ? 'no losses' : v.toFixed(2);
+
+const money = (v: number): string =>
+  `${v < 0 ? '−' : v > 0 ? '+' : ''}$${Math.abs(Math.round(v)).toLocaleString()}`;
+
+const EXIT_LABEL: Record<BacktestTrade['exit'], string> = {
+  tp1: 'Target 1',
+  tp2: 'Target 2',
+  tp3: 'Target 3',
+  sl: 'Stopped out',
+  be: 'Breakeven',
+  open: 'Still open',
+};
+
+const day = (t: number) => new Date(t * 1000).toLocaleDateString([], { month: 'short', day: 'numeric' });
+
+export function BacktestResults({ result, startingBalance, riskPct }: Props) {
+  const { overall } = result.report;
+  const riskPerTrade = (startingBalance * riskPct) / 100;
+
+  const closed = useMemo(
+    () => result.trades.filter((t) => t.rMultiple !== null).sort((a, b) => a.entryTime - b.entryTime),
+    [result.trades],
+  );
+
+  const curve = useMemo<EquityPoint[]>(() => {
+    let balance = startingBalance;
+    return closed.map((t, i) => {
+      balance += t.rMultiple! * riskPerTrade;
+      return {
+        n: i + 1,
+        balance,
+        r: t.rMultiple!,
+        label: `${t.direction === 'long' ? 'Long' : 'Short'} ${day(t.entryTime)} · ${EXIT_LABEL[t.exit]}`,
+      };
+    });
+  }, [closed, riskPerTrade, startingBalance]);
+
+  const priceOf = (v: number) => v.toFixed(result.symbol.toUpperCase().endsWith('/JPY') ? 3 : 5);
+
+  if (result.trades.length === 0) {
+    return (
+      <div className="empty">
+        <strong>No trades — the strategy never got a valid setup here.</strong>
+        <p>
+          It checked {result.barsAnalysed.toLocaleString()} candles and found nothing that produced a setup. Try a longer date range, a different pair, or the 4H timeframe.
+        </p>
+      </div>
+    );
+  }
+
+  const netMoney = overall.totalR * riskPerTrade;
+  const endBalance = startingBalance + netMoney;
+  const returnPct = (netMoney / startingBalance) * 100;
+  const drawdownMoney = overall.maxDrawdownR * riskPerTrade;
+  const stillOpen = result.trades.length - overall.closed;
 
   return (
-    <div className="form-grid" style={{ gap: 18 }}>
-      {result.warnings.length > 0 && (
-        <ul className="msg-list" role="status">
-          {result.warnings.map((w) => (
-            <li key={w} className="warn">{w}</li>
-          ))}
-        </ul>
-      )}
-
-      <section className="stat-row" aria-label="Backtest statistics">
-        <MetricCard
-          label="Net profit"
-          value={formatMoney(stats.netProfit)}
-          hint={`${formatPct(stats.returnPct)} on ${formatMoney(stats.startingBalance)}`}
-          accent={stats.netProfit > 0}
-        />
-        <MetricCard label="Trades" value={stats.closed} hint={skippedTotal > 0 ? `${skippedTotal} touches not traded` : 'all touches traded'} />
-        <MetricCard
-          label="Win rate"
-          // Also unsigned: a 50% win rate is not "+50%".
-          value={stats.winRatePct === null ? '—' : `${formatNumber(stats.winRatePct, 1)}%`}
-          hint={`${stats.wins}W / ${stats.losses}L`}
-        />
-        <MetricCard
-          label="Profit factor"
-          value={stats.profitFactor === null ? '—' : formatNumber(stats.profitFactor, 2)}
-          hint={`${formatMoney(stats.grossProfit)} won / ${formatMoney(stats.grossLoss)} lost`}
-        />
-        <MetricCard
-          label="Max drawdown"
-          // A drawdown is a magnitude, so it carries no sign — formatPct
-          // would render a fall as "+2.0%".
-          value={`${formatNumber(stats.maxDrawdownPct, 1)}%`}
-          hint={`${formatMoney(stats.maxDrawdown)} peak to trough`}
-        />
-        <MetricCard
-          label="Average R"
-          value={stats.averageR === null ? '—' : formatNumber(stats.averageR, 2)}
-          hint={stats.expectancy === null ? 'per trade' : `${formatMoney(stats.expectancy)} per trade`}
-        />
-      </section>
-
-      {skippedTotal > 0 && (
-        <p className="panel-sub" style={{ margin: 0 }}>
-          Touches not traded: {skipped.positionOpen} while a position was already open
-          {skipped.notConfluent > 0 && `, ${skipped.notConfluent} not Ichimoku-confluent`}
-          {skipped.unsizable > 0 && `, ${skipped.unsizable} not sizable (no USD rate for this cross)`}.
-        </p>
-      )}
-
-      <section className="panel">
-        <div className="panel-head">
-          <h2 className="panel-title">Equity</h2>
-          <span className="panel-sub">
-            {formatMoney(stats.startingBalance)} → {formatMoney(stats.endingBalance)}, stepped at each trade close
-          </span>
+    <>
+      {/* ── The answer, in one sentence ───────────────────────────────── */}
+      <div className={`verdict ${netMoney > 0 ? 'pos' : netMoney < 0 ? 'neg' : ''}`}>
+        <div className="verdict-line">
+          <strong>{overall.closed}</strong> trades finished. <strong>{overall.wins}</strong> won,{' '}
+          <strong>{overall.losses}</strong> lost
+          {overall.breakeven > 0 && <>, {overall.breakeven} broke even</>}.
         </div>
-        <div className="panel-body">
-          {equity.length > 1 ? (
-            <EquityChart points={equity} startingBalance={stats.startingBalance} />
-          ) : (
-            <div className="chart-empty"><span>No closed trades to plot</span></div>
-          )}
+        <div className="verdict-money">{money(netMoney)}</div>
+        <div className="verdict-sub">
+          on a ${startingBalance.toLocaleString()} account risking {riskPct}% (${Math.round(riskPerTrade)}) per trade
+          {' — '}
+          <strong>
+            {returnPct > 0 ? '+' : ''}
+            {returnPct.toFixed(1)}%
+          </strong>
+          . Balance would have ended at ${Math.round(endBalance).toLocaleString()}.
         </div>
-      </section>
-
-      <section className="panel">
-        <div className="panel-head">
-          <h2 className="panel-title">Trades</h2>
-          <span className="panel-sub">{trades.length} taken on {result.symbol} {result.timeframe}</span>
-        </div>
-        {trades.length === 0 ? (
-          <EmptyState icon="table" title="No trades" compact>
-            The strategy found no tradable EMA50 touch in this range.
-          </EmptyState>
-        ) : (
-          <div className="table-wrap">
-            <table className="table">
-              <caption className="sr-only">Backtested trades, oldest first.</caption>
-              <thead>
-                <tr>
-                  <th scope="col">ENTRY</th>
-                  <th scope="col">SIDE</th>
-                  <th scope="col">PRICE</th>
-                  <th scope="col">STOP</th>
-                  <th scope="col">TARGET</th>
-                  <th scope="col">EXIT</th>
-                  <th scope="col"><abbr title="Why the trade closed">WHY</abbr></th>
-                  <th scope="col">LOTS</th>
-                  <th scope="col">PIPS</th>
-                  <th scope="col"><abbr title="Result in multiples of the amount risked">R</abbr></th>
-                  <th scope="col">P/L</th>
-                  <th scope="col"><abbr title="Ichimoku agreement at the touch">☁</abbr></th>
-                </tr>
-              </thead>
-              <tbody>
-                {trades.map((t) => (
-                  <tr key={t.id}>
-                    <td className="num muted">{stamp(t.entryTime)}</td>
-                    <td><span className={`direction ${t.direction === 'LONG' ? 'long' : 'short'}`}>{t.direction}</span></td>
-                    <td className="num">{price(t.entryPrice)}</td>
-                    <td className="num muted">{price(t.stop)}</td>
-                    <td className="num muted">{price(t.target)}</td>
-                    <td className="num muted">{stamp(t.exitTime)}</td>
-                    <td>
-                      <span className={`tag${t.exitReason === 'target' ? ' pos' : t.exitReason === 'stop' ? ' neg' : ''}`}>
-                        {t.exitReason.toUpperCase()}
-                      </span>
-                    </td>
-                    <td className="num">{formatNumber(t.lots, 2)}</td>
-                    <td className={`num ${t.pips !== null && t.pips < 0 ? 'neg' : ''}`}>{t.pips === null ? '—' : formatNumber(t.pips, 1)}</td>
-                    <td className={`num ${t.rMultiple !== null && t.rMultiple < 0 ? 'neg' : 'pos'}`}>
-                      {t.rMultiple === null ? '—' : formatNumber(t.rMultiple, 2)}
-                    </td>
-                    <td className={`num ${t.pnl !== null && t.pnl < 0 ? 'neg' : 'pos'}`}>{t.pnl === null ? '—' : formatMoney(t.pnl)}</td>
-                    <td className="num muted">{t.ichimokuScore === null ? '—' : `${t.ichimokuScore}/5`}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+        {stillOpen > 0 && (
+          <div className="verdict-note">
+            {stillOpen} more trade{stillOpen === 1 ? ' was' : 's were'} still open at the end of the range and
+            {stillOpen === 1 ? ' is' : ' are'} not counted.
           </div>
         )}
+      </div>
+
+      {/* ── The shape of it ───────────────────────────────────────────── */}
+      {curve.length > 1 && (
+        <section className="chart-block">
+          <h3 className="panel-title">Account balance, trade by trade</h3>
+          <EquityCurve points={curve} startingBalance={startingBalance} />
+        </section>
+      )}
+
+      {/* ── The numbers, with plain labels ────────────────────────────── */}
+      <section className="stat-row">
+        <MetricCard
+          label="Won"
+          value={pct(overall.winRatePct)}
+          hint={`${overall.wins} of ${overall.wins + overall.losses} trades that had a winner or loser`}
+          accent={(overall.winRatePct ?? 0) > 50}
+        />
+        <MetricCard
+          label="Average trade"
+          value={money((overall.averageR ?? 0) * riskPerTrade)}
+          hint={`${r(overall.averageR)} — what a typical trade made or lost`}
+          accent={(overall.averageR ?? 0) > 0}
+        />
+        <MetricCard
+          label="Worst dip"
+          value={money(-drawdownMoney)}
+          hint="how far below the peak the account fell before recovering"
+        />
+        <MetricCard
+          label="Won vs lost"
+          value={pf(overall.profitFactor)}
+          hint={
+            overall.profitFactor === Infinity
+              ? 'nothing was lost over this range'
+              : 'money made ÷ money lost. Above 1 means the winners paid for the losers'
+          }
+          accent={(overall.profitFactor ?? 0) > 1}
+        />
       </section>
-    </div>
+
+      {!overall.reliable && (
+        <div className="banner" role="note">
+          <div className="banner-body">
+            <strong>Too few trades to draw a conclusion.</strong>
+            {overall.closed} finished trade{overall.closed === 1 ? '' : 's'} is below the {MIN_RELIABLE_TRADES} this
+            page treats as a minimum, and it is one pair over one date range. Treat this as a sanity check, not
+            evidence.
+          </div>
+        </div>
+      )}
+
+      {/* ── Every trade, readable ─────────────────────────────────────── */}
+      <section className="chart-block">
+        <h3 className="panel-title">Every trade</h3>
+        <div className="table-wrap">
+          <table className="table table-compact">
+            <thead>
+              <tr>
+                <th>Opened</th>
+                <th>Direction</th>
+                <th className="num">Entry</th>
+                <th className="num">Stop</th>
+                <th>How it ended</th>
+                <th className="num">Held</th>
+                <th className="num">Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              {result.trades
+                .slice()
+                .sort((a, b) => a.entryTime - b.entryTime)
+                .map((t) => {
+                  const pnl = t.rMultiple === null ? null : t.rMultiple * riskPerTrade;
+                  return (
+                    <tr key={t.id}>
+                      <td className="mono">{day(t.entryTime)}</td>
+                      <td>
+                        <span className={`tag ${t.direction === 'long' ? 'tag-long' : 'tag-short'}`}>
+                          {t.direction === 'long' ? '▲ Buy' : '▼ Sell'}
+                        </span>
+                      </td>
+                      <td className="num mono">{priceOf(t.entry)}</td>
+                      <td className="num mono">{priceOf(t.initialStop)}</td>
+                      <td>
+                        <span
+                          className={`badge badge-${
+                            t.exit === 'sl' ? 'danger' : t.exit === 'open' ? 'muted' : t.exit === 'be' ? 'neutral' : 'ok'
+                          }`}
+                        >
+                          {EXIT_LABEL[t.exit]}
+                        </span>
+                      </td>
+                      <td className="num mono muted">{t.exit === 'open' ? '—' : `${t.barsHeld} bars`}</td>
+                      <td className={`num mono ${(pnl ?? 0) > 0 ? 'pos' : (pnl ?? 0) < 0 ? 'neg' : ''}`}>
+                        {pnl === null ? '—' : money(pnl)}
+                      </td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {/* ── Everything else, out of the way ───────────────────────────── */}
+      <details className="advanced">
+        <summary>Detailed breakdown</summary>
+        <p className="panel-sub" style={{ marginTop: 10 }}>
+          Results split by the conditions that were in force. <strong>R</strong> is the amount risked on one trade, so
+          +2R means the trade made twice what it risked.
+        </p>
+        <Breakdown
+          title="By market conditions"
+          note="The strategy assumes pullbacks pay in a trend and not in chop. If these rows look the same, that assumption is not doing any work."
+          groups={result.report.byRegimeFamily}
+          riskPerTrade={riskPerTrade}
+        />
+        <Breakdown
+          title="By signal grade"
+          note="Strong means every condition lined up. It should beat Standard."
+          groups={result.report.bySignalStrength}
+          riskPerTrade={riskPerTrade}
+        />
+        <Breakdown
+          title="Buys vs sells"
+          note="A wide gap usually says more about the period tested than about the strategy."
+          groups={result.report.byDirection}
+          riskPerTrade={riskPerTrade}
+        />
+        {result.skippedWhileInTrade > 0 && (
+          <p className="panel-sub">
+            {result.skippedWhileInTrade} further setup{result.skippedWhileInTrade === 1 ? '' : 's'} appeared while a
+            trade was already open and {result.skippedWhileInTrade === 1 ? 'was' : 'were'} skipped — one position per
+            pair, exactly as the live scanner behaves.
+          </p>
+        )}
+      </details>
+    </>
+  );
+}
+
+function Breakdown({
+  title,
+  note,
+  groups,
+  riskPerTrade,
+}: {
+  title: string;
+  note: string;
+  groups: Group[];
+  riskPerTrade: number;
+}) {
+  const measurable = groups.filter((g) => g.closed > 0);
+  if (measurable.length === 0) return null;
+
+  return (
+    <>
+      <h4 className="breakdown-title">{title}</h4>
+      <p className="panel-sub">{note}</p>
+      <div className="table-wrap">
+        <table className="table table-compact">
+          <thead>
+            <tr>
+              <th>{title.replace('By ', '')}</th>
+              <th className="num">Trades</th>
+              <th className="num">Won</th>
+              <th className="num">Net</th>
+              <th className="num">Avg</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {measurable.map((g) => (
+              <tr key={g.key} className={g.reliable ? '' : 'row-dim'}>
+                <td className="strong">{g.key}</td>
+                <td className="num mono">{g.closed}</td>
+                <td className="num mono">{pct(g.winRatePct)}</td>
+                <td className={`num mono ${g.totalR > 0 ? 'pos' : g.totalR < 0 ? 'neg' : ''}`}>
+                  {money(g.totalR * riskPerTrade)}
+                </td>
+                <td className="num mono muted">{r(g.averageR)}</td>
+                <td>{!g.reliable && <span className="badge badge-muted">few trades</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }

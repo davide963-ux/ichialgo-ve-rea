@@ -10,8 +10,7 @@
  * row's own levels) belong in SQL where two concurrent scanners cannot race
  * around them. See supabase/migrations/.
  */
-import type { ConfluenceAnalysis } from '../src/services/strategy/confluence';
-import type { TrackedSetup } from '../src/services/strategy/confluence';
+import type { StrategyAnalysis, TrackedSetup } from '../src/services/strategy';
 
 export interface SignalsDbConfig {
   url: string;
@@ -83,7 +82,7 @@ export interface SignalRow {
   market_condition: string;
   setup_status: string;
   price: number;
-  atr: number;
+  atr: number | null;
   entry: number | null;
   stop_loss: number | null;
   take_profit1: number | null;
@@ -103,7 +102,7 @@ export interface SignalRow {
  * makes record_signals idempotent. A cron that fires twice over the same bar
  * produces the same id and the second insert does nothing.
  */
-export function toSignalRow(analysis: ConfluenceAnalysis, strategy: string, detectedAtMs: number): SignalRow | null {
+export function toSignalRow(analysis: StrategyAnalysis, strategy: string, detectedAtMs: number): SignalRow | null {
   if (analysis.direction === 'none') return null;
   const targets = analysis.risk.targets;
   return {
@@ -117,16 +116,16 @@ export function toSignalRow(analysis: ConfluenceAnalysis, strategy: string, dete
     signal: analysis.signal,
     confidence: analysis.confidence,
     market_condition: analysis.marketCondition,
-    setup_status: analysis.setup.status,
+    setup_status: analysis.status,
     price: analysis.price,
-    atr: analysis.atr,
+    atr: numberFromDetail(analysis, 'atr'),
     entry: analysis.risk.entry,
-    stop_loss: analysis.risk.entry === null ? null : stopFrom(analysis),
+    stop_loss: analysis.risk.stop,
     take_profit1: targets[0] ?? null,
     take_profit2: targets[1] ?? null,
     take_profit3: targets[2] ?? null,
     stop_pips: analysis.risk.stopPips,
-    stop_distance_atr: analysis.risk.stopDistanceAtr,
+    stop_distance_atr: numberFromDetail(analysis, 'stopDistanceAtr'),
     analysis,
     reasons: analysis.reasons,
     warnings: analysis.warnings,
@@ -134,19 +133,17 @@ export function toSignalRow(analysis: ConfluenceAnalysis, strategy: string, dete
 }
 
 /**
- * Recover the stop price from entry and the recorded stop distance.
+ * Pull an optional number out of a strategy's `detail` payload.
  *
- * The analysis reports the stop as a distance (pips and ATRs) rather than a
- * price, because the distance is what the risk model computed; deriving the
- * price here keeps the two consistent by construction instead of carrying two
- * numbers that could disagree.
+ * `atr` and `stop_distance_atr` are columns the first strategy needed and a
+ * later one may not. Rather than forcing every strategy to report them — or
+ * dropping columns that are genuinely the best way to compare stop distances
+ * across pairs — they are filled when the strategy volunteers them and left
+ * null when it does not. Nothing here interprets `detail` beyond this.
  */
-function stopFrom(analysis: ConfluenceAnalysis): number | null {
-  const { entry, stopPips } = analysis.risk;
-  if (entry === null || stopPips === null) return null;
-  const pip = analysis.symbol.toUpperCase().endsWith('/JPY') ? 0.01 : 0.0001;
-  const distance = stopPips * pip;
-  return analysis.direction === 'long' ? entry - distance : entry + distance;
+function numberFromDetail(analysis: StrategyAnalysis, key: string): number | null {
+  const value = analysis.detail[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 class DbError extends Error {
@@ -190,7 +187,7 @@ export function createSignalsDb(cfg: SignalsDbConfig, fetchImpl: FetchLike = fet
         status: r.status as TrackedSetup['status'],
         firstBarTime: r.first_bar_time ? Math.floor(Date.parse(String(r.first_bar_time)) / 1000) : 0,
         lastBarTime: r.last_bar_time ? Math.floor(Date.parse(String(r.last_bar_time)) / 1000) : 0,
-        impulseOrigin: r.impulse_origin === null || r.impulse_origin === undefined ? null : Number(r.impulse_origin),
+        anchor: r.anchor === null || r.anchor === undefined ? null : Number(r.anchor),
         emittedConfidence:
           r.emitted_confidence === null || r.emitted_confidence === undefined ? null : Number(r.emitted_confidence),
         emittedAt: r.emitted_at ? Date.parse(String(r.emitted_at)) : null,
@@ -207,7 +204,7 @@ export function createSignalsDb(cfg: SignalsDbConfig, fetchImpl: FetchLike = fet
         status: s.status,
         first_bar_time: new Date(s.firstBarTime * 1000).toISOString(),
         last_bar_time: new Date(s.lastBarTime * 1000).toISOString(),
-        impulse_origin: s.impulseOrigin,
+        anchor: s.anchor,
         emitted_confidence: s.emittedConfidence,
         emitted_at: s.emittedAt === null ? null : new Date(s.emittedAt).toISOString(),
       }));

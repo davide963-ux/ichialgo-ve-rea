@@ -13,8 +13,9 @@
  * Overlays (optional props, all index-aligned with `candles`):
  *   ema      — the EMA50 line. Nulls before the average is defined are
  *              dropped, so the line simply starts later; never drawn at 0.
- *   signals  — one marker per EMA touch, above or below the bar depending on
- *              which side price approached from.
+ *   markers  — arrows on individual bars. Deliberately a plain {time, side}
+ *              shape rather than a strategy's signal type: the chart draws
+ *              what it is handed and knows nothing about why.
  *   ichimoku — Tenkan, Kijun, Chikou and the Kumo. The cloud is drawn 26 bars
  *              into the future, past the last candle: the span line series
  *              carry those points, which is what extends the time scale, and
@@ -38,22 +39,37 @@ import {
   type UTCTimestamp,
 } from 'lightweight-charts';
 import { getPair } from '../config/pairs';
-import { EMA50_TOUCH } from '../config/strategy';
 import { TIMEFRAME_SECONDS, type Timeframe } from '../config/timeframes';
 import { futureCloud, type IchimokuSeries } from '../lib/indicators';
 import type { Candle } from '../services/marketData';
-import type { TouchSignal } from '../services/strategy';
 import { APP_LOCALE } from '../lib/locale';
 import { KumoPrimitive, type KumoPoint } from './chart/kumoPrimitive';
+
+/**
+ * One arrow on one bar.
+ *
+ * `side` is which way the arrow points, NOT which side of the bar it sits on:
+ * an up arrow is drawn below the bar so it points at the candle rather than
+ * away from it.
+ */
+export interface ChartMarker {
+  /** Bar open time, UNIX seconds. */
+  time: number;
+  side: 'up' | 'down';
+  /** Overrides the default colour, for a marker that needs to read as weaker. */
+  color?: string;
+}
 
 interface Props {
   symbol: string;
   timeframe: Timeframe;
   candles: Candle[];
-  /** EMA50 values, index-aligned with `candles`. */
+  /** Moving-average values, index-aligned with `candles`. */
   ema?: (number | null)[];
-  /** Touches to mark on the bars. */
-  signals?: TouchSignal[];
+  /** Legend name for the `ema` line. */
+  emaLabel?: string;
+  /** Arrows to draw on individual bars. */
+  markers?: ChartMarker[];
   /** Ichimoku overlay; omit (or pass showIchimoku=false) to hide it. */
   ichimoku?: IchimokuSeries;
   showIchimoku?: boolean;
@@ -61,6 +77,8 @@ interface Props {
 
 const VISIBLE_BARS = 120;
 const EMA_COLOR = '#E9B949';
+const MARKER_UP = '#67E3AE';
+const MARKER_DOWN = '#F0616D';
 const ICHIMOKU = {
   tenkan: '#5BC8F5',
   kijun: '#C58AF9',
@@ -79,7 +97,16 @@ const toBar = (c: Candle): CandlestickData<UTCTimestamp> => ({
   close: c.close,
 });
 
-export function CandlestickChart({ symbol, timeframe, candles, ema, signals, ichimoku, showIchimoku = true }: Props) {
+export function CandlestickChart({
+  symbol,
+  timeframe,
+  candles,
+  ema,
+  emaLabel = 'EMA',
+  markers: barMarkers,
+  ichimoku,
+  showIchimoku = true,
+}: Props) {
   const el = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const series = useRef<ISeriesApi<'Candlestick'> | null>(null);
@@ -133,7 +160,7 @@ export function CandlestickChart({ symbol, timeframe, candles, ema, signals, ich
       priceLineVisible: false,
       lastValueVisible: true,
       crosshairMarkerVisible: false,
-      title: `EMA${EMA50_TOUCH.period}`,
+      title: emaLabel,
     });
     // Ichimoku, added before the markers so the cloud sits underneath.
     const thin = { lineWidth: 1 as const, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false };
@@ -287,25 +314,24 @@ export function CandlestickChart({ symbol, timeframe, candles, ema, signals, ich
     o.kumo.setData(kumo);
   }, [ichimoku, showIchimoku, candles, timeframe]);
 
-  // Touch markers: below the bar for a pullback from above, above it for a
-  // rally from below — the marker sits on the side price came from.
+  // An up arrow sits BELOW its bar and a down arrow above it, so each points
+  // at the candle it belongs to instead of away from it.
   useEffect(() => {
     const plugin = markers.current;
     if (!plugin) return;
-    const list: SeriesMarker<Time>[] = (signals ?? [])
-      .filter((s) => s.symbol === symbol && s.timeframe === timeframe)
-      .sort((a, b) => a.barTime - b.barTime)
-      .map((s) => ({
-        time: s.barTime as UTCTimestamp,
-        position: s.approach === 'above' ? 'belowBar' : 'aboveBar',
-        shape: s.approach === 'above' ? 'arrowUp' : 'arrowDown',
-        color: s.counterTrend ? '#7F9189' : s.bias === 'short' ? '#F0616D' : EMA_COLOR,
-        // No label: touches cluster, and the arrow plus the named EMA line
-        // already say what the marker is.
+    const list: SeriesMarker<Time>[] = (barMarkers ?? [])
+      .slice()
+      .sort((a, b) => a.time - b.time)
+      .map((m) => ({
+        time: m.time as UTCTimestamp,
+        position: m.side === 'up' ? 'belowBar' : 'aboveBar',
+        shape: m.side === 'up' ? 'arrowUp' : 'arrowDown',
+        color: m.color ?? (m.side === 'up' ? MARKER_UP : MARKER_DOWN),
+        // No label: markers cluster, and the arrow already says the direction.
         size: 1,
       }));
     plugin.setMarkers(list);
-  }, [signals, symbol, timeframe]);
+  }, [barMarkers]);
 
   return <div ref={el} className="chart-canvas" aria-label={`${symbol} ${timeframe} candlestick chart`} role="img" />;
 }

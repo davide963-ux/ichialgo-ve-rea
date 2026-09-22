@@ -1,7 +1,11 @@
 # Ichialgo — Forex terminal
 
-**Live Forex market data, the EMA50 touch strategy with Ichimoku confluence, ATR-sized trade
-plans, and a backtest engine that runs the same detector over history.**
+**Live Forex market data, a 24/7 server-side signal scanner, a backtest that replays the same
+code the scanner runs, and an R-multiple results page.**
+
+> **No strategy is currently installed.** Prices, charts, the scanner, the database and the
+> backtest all run; nothing is being scored. See [§4](#4-strategy) for the one file that
+> changes.
 
 | Stack | |
 |---|---|
@@ -9,8 +13,8 @@ plans, and a backtest engine that runs the same detector over history.**
 | Charts | TradingView Lightweight Charts v5 (open-source charting library) |
 | Build | Vite 8 |
 | Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`), with Twelve Data multi-key failover |
-| Strategy | EMA50 touch + Ichimoku confluence + ATR trade plans + backtest (`src/services/strategy/`) |
-| Tests | Vitest (indicators, strategy, proxy, calculator math) |
+| Strategy | **none installed** — one seam at `src/services/strategy/analyse.ts` |
+| Tests | Vitest — 234 across indicators, lifecycle, backtest, scanner, proxy, calculator |
 | Data | Twelve Data, behind a provider interface |
 
 ---
@@ -132,26 +136,23 @@ src/
     providers/               TwelveDataProvider, creditBudget, factory
     index.ts                 singleton + public exports
   services/strategy/
-    ema50Touch.ts            the detector: candles in, touches out (pure, tested)
-    StrategyEngine.ts        scans every pair; live touches from the quote stream
-    tradePlan.ts             ATR stop, R target, lot size (pure, tested)
-    ichimokuContext.ts       the five confluence checks (pure, tested)
-    backtest.ts              walk-forward engine over the same detector (pure, tested)
-    types.ts                 TouchSignal, WatchLevel
+    analyse.ts               THE SEAM — the strategy goes here (stub: always NO_TRADE)
+    contract.ts              StrategyAnalysis, the types every consumer reads
+    lifecycle.ts             SetupTracker: turns states into events (pure, tested)
+    backtest.ts              replays candles through analyse() (pure, tested)
+    performance.ts           R-multiple metrics, shared with live results (tested)
   state/marketStore.ts       immutable external store (useSyncExternalStore)
-  state/signalStore.ts       same pattern, for strategy signals
   state/accountStore.ts      balance + risk %, persisted; shared by plans and calculator
-  hooks/                     useMarketData, useCandles, useSignals, useBacktest, useNow
+  hooks/                     useMarketData, useCandles, useChartIndicators,
+                             useSignalStorage, useBacktest, useNow
   lib/indicators/            ema, atr, ichimoku (+tests)
   lib/                       positionSize (+tests), pips, format, time, locale
   components/                Navbar, MetricCard, ForexTable, ForexRow, MarketStatus,
                              PriceChange, PairDetails, CandlestickChart, TimeframeSelector,
-                             EmptyState, BacktestPanel, TradeTable, Calculator,
-                             ConnectionBanner, KumoMark, SignalTable, SignalBadge,
-                             TradePlanCard, IchimokuTag, IchimokuPanel,
-                             BacktestResults, EquityChart
+                             EmptyState, BacktestPanel, BacktestResults, EquityCurve,
+                             Calculator, ConnectionBanner, KumoMark, ScannerStatus
   components/chart/          kumoPrimitive (the Kumo fill)
-  pages/                     Dashboard, PairPage, EquityCurve, Backtest, CalculatorPage
+  pages/                     Dashboard, PairPage, Results, Backtest, CalculatorPage
 server/
   api.mjs                    read-only GET allowlist + Twelve Data key failover
   twelveDataKeyPool.mjs      multi-key credit pool (+ tests next to it)
@@ -239,283 +240,80 @@ tooltip says so. There is no bid/ask on the REST quote, so those columns show `�
 
 ---
 
-## 4. Strategy: EMA50 touch + Ichimoku
+## 4. Strategy
 
-Fires when a pair reaches its 50-period EMA on the scanner timeframe.
+**There is no strategy installed.** This is deliberate, and it is the current state of the
+repository, not an omission.
 
-### What counts as a touch
+Two engines used to live here — an EMA50-touch detector driving the dashboard, and an
+Ichimoku + EMA50 confluence engine driving the 24/7 scanner. They shared no decision code, so
+the dashboard advertised setups the scanner would never act on, and neither could be removed
+because every consumer had grown a dependency on one or the other. Both are gone.
 
-Price almost never prints the EMA to the last decimal, so a touch is *price entering a band
-around the EMA*. The band is **volatility-scaled** — `max(ATR14 × 0.15, 1.5 pips)` — so the
-same signal means the same thing in a dead session and a fast one.
+### The seam
+
+Everything a strategy needs is built, tested and waiting. One file has to change.
 
 ```
-        high ─┐
-              │        ema + tol  ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
-              ├─ bar              ━━━━━ EMA50 ━━━━━━━   band = max(ATR14 × 0.15, 1.5 pips)
-              │        ema − tol  ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
-         low ─┘
-        touch ⇔ low ≤ ema + tol  AND  high ≥ ema − tol
+candles ──▶ analyse() ──▶ StrategyAnalysis ──┬──▶ SetupTracker  is this news?
+               ▲                             ├──▶ scanner       record it
+               │                             ├──▶ backtest      replay it
+      src/services/strategy/analyse.ts       └──▶ UI            show it
 ```
 
-**One signal per approach, not per bar.** A market riding the EMA would otherwise fire on every
-single bar, so each pair is armed/disarmed:
-
-```mermaid
-stateDiagram-v2
-    [*] --> Armed
-    Armed --> Disarmed: touch → emit ONE signal
-    Disarmed --> Disarmed: still in the band → silent
-    Disarmed --> Armed: a close leaves the band by 1.5×
-    Armed --> Armed: price far from the EMA
-```
-
-### What each signal tells you
-
-| Field | Meaning |
+| File | Role |
 |---|---|
-| **EVENT** | `▲ from above` — price fell back to the EMA · `▼ from below` — price rallied up to it |
-| **BIAS** | `LONG` = pullback into a *rising* EMA · `SHORT` = rally into a *falling* EMA · `COUNTER` = the touch fights the EMA's own trend |
-| **RESULT** | `BOUNCE` closed back on the approach side (the EMA held) · `CROSS` closed through (it broke) · `INSIDE` closed in the band · `FORMING` bar still open |
-| **DIST** | pips between the contact price and the EMA — `0.0` is dead on the line |
+| `strategy/analyse.ts` | **the seam.** Returns `NO_TRADE` for everything. Replace this. |
+| `strategy/contract.ts` | the types every consumer reads. Strategy-neutral by design. |
+| `strategy/lifecycle.ts` | turns a stream of states into a stream of events. Plumbing. |
+| `strategy/backtest.ts` | replays candles through the same `analyse()` the scanner calls. |
+| `strategy/performance.ts` | R-multiple metrics, shared by the backtest and live results. |
+| `lib/indicators/` | Ichimoku, EMA, ATR, market structure. Pure, tested, no opinion. |
 
-Trend is the EMA's own slope over 10 bars (`> 0.15 pips/bar` = trending), not a second average.
+Nothing outside `src/services/strategy/` imports anything deeper than the barrel. That is what
+makes the strategy replaceable without touching the scanner, the backtest or the UI.
 
-### Two detection paths
+### The contract
 
-```mermaid
-flowchart LR
-    subgraph scan["every candleRefreshMs — 1 candle request per pair"]
-        C["marketDataService.getCandles()"] --> A["analyseEma50Touch()"]
-        A --> H["historical touches → signal log"]
-        A --> L["current level → live watch list"]
-    end
-    subgraph live["every quote tick — ZERO extra credits"]
-        Q["marketDataService.onQuotes()"] --> T["checkLiveTouch(level, price)"]
-        T --> S["fires the instant price reaches the band"]
-    end
-    L --> T
-    H & S --> ST[("signalStore")]
-    ST --> UI["Dashboard metrics · scanner badges · chart markers"]
+`analyse()` returns a `StrategyAnalysis` on **every** path, including refusals. Four rules:
+
+1. **Never throw.** The scanner runs unattended every fifteen minutes; a throw is an error in a
+   log nobody reads, while a `NO_TRADE` carrying a reason appears in the dry-run output and on
+   the dashboard.
+2. **Never report `CONFIRMED` on an unclosed bar.** The rejection you think you see can still be
+   erased before the candle closes.
+3. **Put strategy-specific values in `detail`.** It is stored verbatim as the `analysis` JSON
+   column and nothing outside the strategy reads it, so it costs nothing and makes every
+   decision auditable afterwards.
+4. **Set `anchor`** to whatever identifies *this* setup — usually the price the move started
+   from. The tracker uses it to tell a genuinely new opportunity from the same one still
+   developing. Get it wrong and you either re-signal every candle or go silent.
+
+### What the plumbing guarantees, whatever the rules are
+
+- **One position per pair.** An `ACTIVE` setup suppresses every signal for its pair until its
+  trade closes — and the tracker is released when it does, which is the difference between
+  working correctly and going permanently silent while looking healthy.
+- **A signal is an event, not a state.** Emitted on *entering* `CONFIRMED`, never while sitting
+  in it. A confidence wobble below `upgradeDelta` is not news.
+- **Cold-start safety.** Tracker state is persisted to `setup_state` and rehydrated, because a
+  serverless scanner starts with an empty Map every single run.
+- **Backtest and live cannot diverge.** Both call the same `analyse()`. There is no "backtest
+  version" of the rules.
+- **The backtest errs against you.** When one bar covers both the stop and a target, OHLC cannot
+  order them, so the stop is taken. R is always measured against the *original* stop, never one
+  moved to breakeven.
+
+### Verifying a strategy once installed
+
+```bash
+curl -sS -H 'x-scanner-token: TOKEN' \
+  'https://<your-app>/api/scanner?dry=EUR/USD&tf=4H'
 ```
 
-The live path is what makes the signal arrive **the moment** price reaches the level: a 50-period
-EMA barely moves inside one bar, so the level from the last scan is watched against the quote
-stream that the scanner is already running. No extra provider request, no extra credits.
+Writes nothing; returns the full analysis for one pair including `reasons` and `warnings` —
+which is how you find out *why* a pair is or is not signalling, rather than guessing.
 
-A signal's id is `(symbol, timeframe, bar)`, so re-scanning never duplicates one — and when the
-bar closes, the `candle` result **upgrades** the `live` signal fired earlier on that bar, because
-the closed bar is the one that knows whether it bounced or crossed.
-
-### Cost, and why the scan is throttled
-
-`/quote` costs **one credit per symbol**, so a 7-pair refresh spends 7 of the 8 credits a free
-Twelve Data key gets each minute. That leaves about 1 credit/min for candles — which charts *and*
-the strategy need. Three rules keep the two from fighting:
-
-| Rule | Why |
-|---|---|
-| Candle requests are marked `background`, and the credit meter **fails fast** on them (1.5s) instead of waiting up to 65s | a waiting scan used to hold credits a price update needed, so a quote poll could block for a whole minute |
-| A cycle scans only `symbolsPerScan` (2) pairs, round-robin | one cycle cannot drain the minute's budget; a full pass spreads over cycles |
-| A cycle never starts while the previous one runs, and the first waits for prices | a stalled scan used to pile up a new overlapping scan every interval |
-
-The poll interval is stretched **only** when quotes alone cannot fit (12 pairs on one key need
-90s), never past `VITE_TWELVEDATA_POLL_MS`. Prices win over the strategy: stale prices are worse
-than a strategy that warms up over a few minutes.
-
-On one free key, warm-up takes several minutes and the dashboard shows its progress
-("3 of 7 pairs analysed"). **Pooling keys is the real fix** and speeds it up automatically —
-measured against a mock of the real free plan, 7 pairs:
-
-| | 1 key (8/min) | 3 keys (24/min) |
-|---|---|---|
-| First price | ~1 s | ~1 s |
-| All 7 pairs analysed | several minutes | **46 s** |
-| Touches found in 2.5 min | 14 | 30 |
-
-A scan reuses `MarketDataService`'s candle cache, so a pair chart you already have open is not
-fetched twice.
-
-### From touch to order ticket
-
-Every signal carries the ATR at the touch, so it can be turned into a sized trade:
-
-```
-                     ┌──── take profit   entry + 2R
-        LONG         │
-   (touch from       ●──── entry = the EMA50 itself
-    above, EMA       │
-    rising)          └──── stop   entry − 1.5 × ATR   (floor: 8 pips)
-```
-
-The stop is ATR-based for the same reason the touch band is: the wick that tagged the EMA is
-itself roughly one ATR long, so a fixed stop gets taken out by ordinary noise in a fast market
-and is needlessly wide in a quiet one.
-
-```mermaid
-flowchart LR
-    T["touch signal<br/>(ema, atr, approach)"] --> D["direction<br/>from above → LONG<br/>from below → SHORT"]
-    D --> S["stop = entry ∓ 1.5×ATR<br/>target = entry ± 2R"]
-    S --> R["round to the pair's own<br/>precision (5 / 3 digits)"]
-    R --> P["calculatePosition()<br/>lib/positionSize.ts"]
-    ACC[("accountStore<br/>balance · risk %")] --> P
-    Q[("live quotes<br/>USD conversion for crosses")] --> P
-    P --> O["lots · units · risk $ · reward $"]
-```
-
-Prices are rounded **before** sizing — you cannot place an order at 1.1015183, and sizing off the
-raw float would make the plan disagree with the calculator it prefills.
-
-Sizing is the same `lib/positionSize.ts` the calculator uses, so a plan and a hand-typed
-calculation agree to the cent. Balance and risk % live in `accountStore` (persisted to
-localStorage), set on the **Calculator** page; the `SIZE` column in the signal table and the
-**Trade plan** card on the pair page both read them. "Open in calculator" prefills the form
-via `?symbol=&entry=&sl=&tp=` so a signal can be adjusted before it is taken.
-
-A counter-trend touch still gets a plan — it is a worse trade, not an impossible one — with the
-reason listed in the card's warnings.
-
-### Ichimoku confluence
-
-The touch says **where**. Ichimoku says whether the rest of the picture agrees. Five checks, each
-read in the direction the touch implies — the same bar scores differently for a long and a short:
-
-| # | Check | Passes for a LONG when |
-|---|---|---|
-| 1 | **Kumo side** | price is above the cloud (below it for a short) |
-| 2 | **Cloud colour** | Senkou A is above Senkou B (bullish cloud) |
-| 3 | **Tenkan / Kijun** | the conversion line is above the base line |
-| 4 | **Chikou free** | the lagging line is clear of the candles 26 bars back |
-| 5 | **Kijun overlap** | the EMA50 is within 5 pips of Kijun-sen |
-
-Check 5 is the one worth waiting for: two independent methods marking the *same* level.
-It shows as a `K` badge on the score tag.
-
-```
-                 ╱▔▔▔╲            price above a rising bullish cloud,
-         ────────       ╲___      EMA50 sitting on Kijun
-     ━━━━━ EMA50 ≈ Kijun ━━━━━    → a long touch with 5/5 agreement
-     ░░░░░░░░ Kumo ░░░░░░░░░░░
-```
-
-Signals are **annotated, never hidden** — a 0/5 touch is still logged and flagged, and the
-dashboard has an "Ichimoku confluent only" filter (off by default) so a weak setup can be
-judged rather than silently dropped. `agrees` means `score ≥ 3`, set by
-`ICHIMOKU_CONFLUENCE.agreeThreshold`.
-
-#### Displacement, which is the easy thing to get wrong
-
-```
-   Tenkan-sen  (9)   = (highest high + lowest low) / 2
-   Kijun-sen  (26)   = same over 26
-   Senkou A          = (Tenkan + Kijun) / 2   plotted 26 bars AHEAD
-   Senkou B   (52)   = same over 52           plotted 26 bars AHEAD
-   Chikou     (26)   = close                  plotted 26 bars BEHIND
-```
-
-The cloud above bar `i` was computed 26 bars *earlier*; the cloud computed at bar `i` is drawn
-26 bars into the future, past the last candle. `lib/indicators/ichimoku.ts` therefore returns
-both, and names them apart so a caller cannot mix them up:
-
-```
-   bars:      … 24  25  26  27 …          n-1 │ future (no candles yet)
-   senkouARaw:     A25 A26 A27            An-1│              ← computed at bar i
-   senkouA:         …  A0  A1             An-27              ← in effect at bar i
-   futureCloud():                             │ An-26 … An-1 ← the leading cloud
-```
-
-Analysis uses `senkouA` / `senkouB` (in effect). The chart plots those over the candles and
-appends `futureCloud()` beyond them.
-
-#### Drawing the cloud
-
-Lightweight Charts has no band series, so the two spans are ordinary line series and
-`components/chart/kumoPrimitive.ts` — an `ISeriesPrimitive` — fills between them at
-`zOrder: 'bottom'`, behind the candles:
-
-```mermaid
-flowchart LR
-    S["senkouA / senkouB<br/>line series (incl. 26 future bars)"] --> TS["their data is what extends<br/>the time scale into the future"]
-    TS --> P["KumoPrimitive.resolve()<br/>timeToCoordinate + priceToCoordinate"]
-    P --> F["one quad per bar gap,<br/>green if A ≥ B else red"]
-```
-
-`timeToCoordinate` only resolves times the time scale knows about, which is why the spans must
-be real series — without their future points the leading cloud cannot be drawn at all. The fill
-is built per bar gap and coloured by the sign of A − B on that gap, so a crossing costs at most
-one bar of colour imprecision and needs no intersection maths.
-
-The overlay (Tenkan, Kijun, both spans, Chikou, the fill) toggles off from the chart header.
-
-### Backtest
-
-The **Backtest** page runs the strategy over historical candles through the *same* detector the
-live scanner uses — that is why `analyseEma50Touch` and `planFromTouch` are pure.
-
-```mermaid
-flowchart TD
-    R["range + timeframe"] --> C["getCandles(bars = range ÷ tf + warm-up)<br/>one request, marked background"]
-    C --> A["analyseEma50Touch()"]
-    A --> F{"tradable?"}
-    F -- "outside the date range" --> X1[skip]
-    F -- "a position is already open" --> X2["skip (counted)"]
-    F -- "not Ichimoku-confluent<br/>(when the filter is on)" --> X3["skip (counted)"]
-    F -- yes --> P["planFromTouch(running balance)"]
-    P --> W["walk bars forward from entry+1"]
-    W --> E{"first bar to reach…"}
-    E -- "stop" --> L["−1R"]
-    E -- "target" --> G["+2R"]
-    E -- "data ended" --> O["open: listed, excluded from stats"]
-    L & G --> EQ[("equity curve · stats")]
-```
-
-**No lookahead.** Every indicator is causal: EMA, ATR, Tenkan/Kijun and the *displaced* Senkou
-spans read bars at or before `i`, and the Chikou check compares the current close to candles 26
-bars **back**. Nothing reads a future bar.
-
-**The entry bar is not an exit bar.** Exits are searched from the bar *after* the entry. On a
-pullback bar most of the range happened *before* price reached the EMA — the high sits where the
-move started — so counting it would book a target the trade never had a chance to reach. OHLC
-cannot say what price did after the fill inside that bar, so the bar is not used for exits at all.
-This was a real bug, caught by a test that expected a loss and got a win.
-
-**Same-bar ambiguity → the stop wins.** When one later bar covers both stop and target, intrabar
-order is unknowable from OHLC, so the pessimistic outcome is taken. It under-reports rather than
-inventing wins.
-
-Other honesty rules:
-
-- **One position at a time**, as a trader would hold it. Touches arriving while a trade is open
-  are skipped and *counted*, so a "7 touches, 2 trades" gap is visible rather than mysterious.
-- **Compounding**: each trade is sized off the running balance, not the opening one.
-- A trade still open when the data ends is listed with no P&L and left out of the statistics.
-- Providers return the most recent *n* bars, not a date range, so an old range may simply not be
-  available — the result reports how many candles it got versus what the range needed.
-- A cross (EUR/GBP) cannot be sized without a USD rate; those touches are skipped and counted,
-  never guessed.
-
-The **"Only trade Ichimoku-confluent touches"** toggle is the direct way to ask whether the
-confluence filter earns its keep on your pairs.
-
-### Tuning
-
-Everything lives in `src/config/strategy.ts`:
-
-| Setting | Default | Effect |
-|---|---|---|
-| `period` | 50 | the average being touched |
-| `atrMultiple` / `minTolerancePips` | 0.15 / 1.5 | how wide the touch band is |
-| `rearmBands` | 1.5 | how far price must leave before the pair can signal again |
-| `slopeLookback` / `trendSlopePips` | 10 / 0.15 | when the EMA counts as trending |
-| `stopAtrMultiple` / `rewardMultiple` | 1.5 / 2 | where the trade plan's stop and target sit |
-| `minStopPips` | 8 | floor on the stop when ATR collapses |
-| `kijunConfluencePips` | 5 | how close EMA50 and Kijun must be to count as one level |
-| `agreeThreshold` | 3 | Ichimoku checks needed before a touch counts as confluent |
-| `symbolsPerScan` | 2 | pairs scanned per cycle, to stay inside the credit budget |
-| `firstScanDelayMs` | 4000 | how long the strategy waits for prices before spending credits |
-
-The detector (`services/strategy/ema50Touch.ts`) is pure — candles in, signals out — so it is
-directly reusable by a backtest engine later.
 
 ## 5. Position-size calculator
 
@@ -543,18 +341,22 @@ Worked example (unit test): USD/JPY at 150.00, stop 150.50, $10,000, 1% risk
 
 ## 6. Signal history (database)
 
-Every touch the strategy finds is written to Postgres, so the record survives a page reload, a
-redeploy and a browser change. The **History** page reads it back.
+Every signal the scanner produces is written to Postgres, so the record survives a page reload,
+a redeploy and a browser change. The **Results** page reads it back.
+
+The browser never writes. Signals come from the server-side scanner alone — an earlier version
+also computed them in the browser and posted them, which gave the app two sources of truth that
+could disagree.
 
 ### The shape of it
 
 ```mermaid
 flowchart LR
-    SE[StrategyEngine.scan] --> SS[(signalStore)]
-    SS --> UP["useSignalPersistence()<br/>batches, dedupes by version,<br/>retries failures"]
-    UP -- "POST /api/signals<br/>x-ingest-token" --> API["server/signals.mjs"]
-    API -- "rpc/upsert_signals<br/>service key" --> PG[("Supabase Postgres<br/>public.signals")]
-    HP[History page] -- "GET /api/signals?symbol=&timeframe=&outcome=" --> API
+    CRON["cron every 15 min<br/>x-scanner-token"] --> SC["/api/scanner<br/>server/scannerCore.ts"]
+    SC --> AN["analyse()"] --> TR[SetupTracker]
+    TR -- "rpc/record_signals<br/>service key" --> PG[("Supabase Postgres<br/>public.signals")]
+    SC -- "rpc/close_signal<br/>TP/SL checks" --> PG
+    RP[Results page] -- "GET /api/signals?symbol=&timeframe=&result=" --> API["server/signals.mjs<br/>read-only"]
     API -- "select, newest first" --> PG
 ```
 
@@ -585,23 +387,25 @@ Three environment variables, server-side only:
 ```
 SUPABASE_URL=https://<project-ref>.supabase.co
 SUPABASE_SERVICE_KEY=<service_role key from Project Settings → API>
-INGEST_TOKEN=<any long random string you invent>
+SCANNER_TOKEN=<any long random string you invent>
 ```
 
 `SUPABASE_SERVICE_KEY` is the **service_role** key, not the anon/publishable one. It bypasses RLS,
 so it belongs only in the server environment — never in `VITE_*`, never in the bundle.
 
-`INGEST_TOKEN` is what stops anyone who finds the URL from writing rows. Writes require it; reads
-don't. Paste the same value into the app once (Dashboard → *Signal storage*); it is kept in
-`localStorage` and sent as `x-ingest-token`. Rotating it is a matter of changing the variable and
-re-pasting.
+`SCANNER_TOKEN` is what stops anyone who finds the URL from triggering a scan. The cron service
+sends it as the **`x-scanner-token`** header; `/api/signals` is read-only and needs no token.
+
+Vercel binds environment variables to a **deployment**, so changing this in the dashboard does
+not affect the deployment already running — redeploy, or the function keeps comparing against
+the old value. A `401` from `/api/scanner` reports `headerPresent` and `lengthMatch` so you can
+tell "no header sent" from "trailing newline" from "genuinely a different secret".
 
 Apply `supabase/migrations/` to the project (Supabase SQL editor, or `supabase db push`) to create
 the table and the RPC.
 
 **Without these variables the app still works.** `/api/signals` answers `503` with
-`{"configured": false}`, the dashboard says storage is off, and the History page explains what is
-missing instead of erroring.
+`{"configured": false}` and the Results page explains what is missing instead of erroring.
 
 ### Table
 
@@ -644,24 +448,23 @@ the query string cannot be used to construct an arbitrary PostgREST request.
 
 
 
-**Add a strategy:** the EMA50 touch detector is the template. Write a pure
-`analyse(candles, symbol, timeframe) → signals` function, call it from `StrategyEngine.scan()`,
-and give its signals a `strategy` id. The store, table, badges and chart markers are generic.
-
-**What is wired, and what is not:**
+**Add a strategy:** replace the body of `src/services/strategy/analyse.ts`, honouring the four
+rules in [§4](#4-strategy), and set `STRATEGY_ID` in `server/scannerCore.ts`. Nothing else
+changes — the tracker, scanner, database, backtest and Results page are all strategy-agnostic,
+and `analyse.test.ts` asserts the contract they depend on.
 
 ```mermaid
 flowchart LR
-    MDS[MarketDataService] -->|"onQuotes(cb)<br/>getCandles()"| SE[StrategyEngine]
-    SE --> SS[(signalStore)] --> DB[Dashboard metrics<br/>scanner badges · chart markers]
-    SS -.not yet.-> EQ[Equity Curve · TradeTable]
-    BT[BacktestPanel onRun] --> BE["runBacktest()"] --> BR[Stats · equity curve · trades]
+    MDS[MarketDataService] -->|"getCandles()"| BT["useBacktest"] --> BE["runBacktest()"]
+    BE --> AN["analyse()"]
+    CRON[cron] --> SC["/api/scanner"] --> AN
+    AN --> TR[SetupTracker] --> PG[("signals")]
+    PG --> RP[Results page]
+    BE --> BR[Verdict · equity curve · trades]
 ```
 
-- `marketDataService.onQuotes(cb)` emits every live batch — the engine uses it.
-- `BacktestPanel` emits a validated `BacktestRequest`; `useBacktest` consumes it.
-- The **Equity curve** page still shows empty states: it is meant for *live* tracked trades, and
-  the strategy publishes signals, not positions. The backtest page has its own equity curve.
+Both paths into `analyse()` are the point: the backtest and the live scanner cannot diverge,
+because there is only one implementation to diverge from.
 
 ---
 
