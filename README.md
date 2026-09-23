@@ -75,6 +75,19 @@ key's state, with the keys masked to their last 4 characters.
 > **Restart `npm run dev` after editing `.env`.** The keys have no `VITE_` prefix, so they stay in
 > the Node proxy and are never bundled into browser code.
 
+#### Background tabs do not spend credits
+
+Polling suspends while the tab is hidden and takes one fresh reading when it comes back.
+
+This matters more than it sounds. Seven pairs at the default 60-second interval spend ~420
+credits an hour, so a single forgotten background tab exhausts a 4,000-credit daily budget in
+under ten hours — and then the charts, the backtest and the scanner all fail on an exhausted
+key. The failure has no error of its own; it surfaces days later as "the data stopped working".
+
+Streaming is deliberately left running: a websocket the provider is already pushing to costs
+nothing per message, and tearing it down on every tab switch would trade a real reconnect for
+an imaginary saving.
+
 ### Security: the proxy is read-only
 `server/api.mjs` forwards only an allowlist of **GET** endpoints (`quote`, `time_series`, and the
 local `_status` report). Everything else gets `403`/`405`, and any non-GET method gets `405`.

@@ -52,6 +52,9 @@ export class MarketDataService {
   private failures = 0;
   private streamFailures = 0;
   private rateLimitUntil = 0;
+  /** True while the tab is in the background and polling is suspended. */
+  private suspended = false;
+  private detachVisibility: (() => void) | null = null;
 
   private candleCache = new Map<string, { candles: Candle[]; fetchedAt: number }>();
   private candleInflight = new Map<string, Promise<Candle[]>>();
@@ -95,6 +98,7 @@ export class MarketDataService {
 
     clearInterval(this.staleTimer);
     this.staleTimer = setInterval(() => this.checkFreshness(), 1000);
+    this.watchVisibility();
 
     try {
       await this.provider.assertConfigured(this.ctrl.signal);
@@ -122,9 +126,64 @@ export class MarketDataService {
     clearTimeout(this.pollTimer);
     clearTimeout(this.streamRetryTimer);
     clearInterval(this.staleTimer);
+    this.detachVisibility?.();
+    this.detachVisibility = null;
+    this.suspended = false;
     this.stream?.close();
     this.stream = null;
     this.mode = null;
+  }
+
+  // ─────────────────── background-tab suspension ───────────────────
+  //
+  // A backgrounded tab polls exactly as hard as a focused one, and nobody is
+  // reading it. On a credit-metered provider that is not merely wasteful, it
+  // is the single largest consumer: seven pairs at the default sixty-second
+  // interval spend ~420 credits an hour, so one forgotten tab exhausts a
+  // 4,000-credit daily budget in under ten hours and every other part of the
+  // app — charts, the backtest, the scanner — then fails on an exhausted key.
+  //
+  // So polling suspends while the tab is hidden and takes ONE fresh reading
+  // when it comes back. The returning reading matters: without it the first
+  // thing a returning user sees is a stale price with no indication it is
+  // stale, which is worse than the cost it saves.
+  //
+  // Streaming is deliberately left alone. A websocket the provider is already
+  // pushing to costs nothing per message, and tearing it down on every tab
+  // switch would trade a real reconnect for an imaginary saving.
+
+  private watchVisibility(): void {
+    this.detachVisibility?.();
+    if (typeof document === 'undefined') return;
+
+    const onChange = () => {
+      if (document.visibilityState === 'hidden') this.suspend();
+      else this.resume();
+    };
+
+    document.addEventListener('visibilitychange', onChange);
+    this.detachVisibility = () => document.removeEventListener('visibilitychange', onChange);
+  }
+
+  private suspend(): void {
+    if (this.suspended || this.isStreaming()) return;
+    this.suspended = true;
+    clearTimeout(this.pollTimer);
+  }
+
+  private resume(): void {
+    if (!this.suspended) return;
+    this.suspended = false;
+    if (this.halted || this.isStreaming()) return;
+
+    // Read immediately rather than waiting out the remaining interval: the
+    // price on screen is however old the tab was hidden for.
+    const session = this.session;
+    void (async () => {
+      const ok = await this.pollOnce(session);
+      if (session !== this.session || this.halted || this.isStreaming()) return;
+      this.schedulePoll(session, ok ? this.provider.capabilities.pollIntervalMs : this.nextDelay());
+    })();
   }
 
   /** Manual reconnect (UI "Retry" button). Clears per-symbol errors too. */
@@ -184,6 +243,8 @@ export class MarketDataService {
   private schedulePoll(session: number, delay: number): void {
     clearTimeout(this.pollTimer);
     if (this.halted || session !== this.session) return;
+    // Nothing is scheduled while hidden; `resume()` restarts the loop.
+    if (this.suspended) return;
     this.mode = this.mode ?? 'poll';
     if (this.mode === 'poll') marketStore.set({ mode: 'poll' });
     marketStore.set({ nextRetryAt: this.failures > 0 || this.rateLimitUntil > Date.now() ? Date.now() + delay : null });
