@@ -14,16 +14,16 @@ const trade = (over: Partial<MeasuredTrade> = {}): MeasuredTrade => ({
   timeframe: '1H',
   marketCondition: 'TRENDING_BULLISH',
   signal: 'LONG',
-  outcome: 'tp2',
+  outcome: 'tp',
   rMultiple: 2.5,
   confidence: 70,
   symbol: 'EUR/USD',
   ...over,
 });
 
-const win = (r = 2) => trade({ outcome: 'tp2', rMultiple: r });
+const win = (r = 2) => trade({ outcome: 'tp', rMultiple: r });
 const loss = () => trade({ outcome: 'sl', rMultiple: -1 });
-const scratch = () => trade({ outcome: 'be', rMultiple: 0 });
+const scratch = () => trade({ outcome: 'tp', rMultiple: 0 });
 const open = () => trade({ outcome: 'pending', rMultiple: null });
 
 describe('computeMetrics — the basics', () => {
@@ -125,9 +125,9 @@ describe('grouping', () => {
   it('splits by key and measures each side', () => {
     const groups = groupBy(
       [
-        trade({ symbol: 'EUR/USD', outcome: 'tp2', rMultiple: 2 }),
+        trade({ symbol: 'EUR/USD', outcome: 'tp', rMultiple: 2 }),
         trade({ symbol: 'EUR/USD', outcome: 'sl', rMultiple: -1 }),
-        trade({ symbol: 'GBP/USD', outcome: 'tp3', rMultiple: 3 }),
+        trade({ symbol: 'GBP/USD', outcome: 'tp', rMultiple: 3 }),
       ],
       (t) => t.symbol,
     );
@@ -178,8 +178,8 @@ describe('signalStrength', () => {
 
 describe('buildReport', () => {
   const trades: MeasuredTrade[] = [
-    trade({ marketCondition: 'TRENDING_BULLISH', signal: 'STRONG_LONG', outcome: 'tp3', rMultiple: 3.5, timeframe: '4H' }),
-    trade({ marketCondition: 'TRENDING_BULLISH', signal: 'LONG', outcome: 'tp1', rMultiple: 1.5, timeframe: '1H' }),
+    trade({ marketCondition: 'TRENDING_BULLISH', signal: 'STRONG_LONG', outcome: 'tp', rMultiple: 3.5, timeframe: '4H' }),
+    trade({ marketCondition: 'TRENDING_BULLISH', signal: 'LONG', outcome: 'tp', rMultiple: 1.5, timeframe: '1H' }),
     trade({ marketCondition: 'RANGING', signal: 'LONG', outcome: 'sl', rMultiple: -1, timeframe: '1H' }),
     trade({ marketCondition: 'RANGING', signal: 'SHORT', outcome: 'sl', rMultiple: -1, direction: 'short', timeframe: '1H' }),
   ];

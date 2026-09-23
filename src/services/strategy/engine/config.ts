@@ -1,11 +1,11 @@
 /**
  * Every tunable the engine has, in one file.
  *
- * WHY ATR-NORMALISED
+ * WHY typical range-NORMALISED
  * ──────────────────
- * Almost every threshold here is expressed in ATR multiples rather than pips
+ * Almost every threshold here is expressed in typical range multiples rather than pips
  * or percentages. A 15-pip zone is loose on GBP/JPY and absurdly tight on
- * EUR/CHF; the same number in ATR means the same thing on both, and on 15M as
+ * EUR/CHF; the same number in typical range means the same thing on both, and on 15M as
  * well as 4H. Hard-coded pip thresholds are why scanners work on the pair they
  * were tuned on and nowhere else.
  *
@@ -23,7 +23,8 @@ export interface EngineConfig {
   /** Bars of history required before the engine will say anything. */
   minBars: number;
   emaPeriod: number;
-  atrPeriod: number;
+  /** Bars averaged to get the typical candle range every threshold is scaled by. */
+  rangeLookback: number;
 
   structure: {
     /** Bars either side of a pivot for it to count as a swing. */
@@ -32,23 +33,23 @@ export interface EngineConfig {
     swingLookback: number;
     /** How far back to look for swings at all. */
     maxBars: number;
-    /** A swing must stand this far clear of its neighbours, in ATR. */
-    minSwingAtr: number;
-    /** A break must clear the level by this much of ATR to count. */
-    breakBufferAtr: number;
+    /** A swing must stand this far clear of its neighbours, in typical range. */
+    minSwingRange: number;
+    /** A break must clear the level by this much of typical range to count. */
+    breakBufferRange: number;
     /** A BOS/CHoCH older than this is history, not a live event. */
     freshnessBars: number;
   };
 
   levels: {
-    /** Touches within this ATR distance are treated as the same level. */
-    clusterAtr: number;
+    /** Touches within this typical range distance are treated as the same level. */
+    clusterRange: number;
     /** A level needs at least this many touches to be a zone. */
     minTouches: number;
     /** How far back to gather levels. */
     lookback: number;
-    /** Price is "at" a level within this ATR distance. */
-    proximityAtr: number;
+    /** Price is "at" a level within this typical range distance. */
+    proximityRange: number;
     /** Bars after a break in which a retest still counts as a retest. */
     retestWindow: number;
   };
@@ -69,27 +70,62 @@ export interface EngineConfig {
   patterns: {
     /** Bars to search for chart patterns. */
     lookback: number;
-    /** Two swings are "equal" within this ATR distance. */
-    equalityAtr: number;
-    /** Minimum height of a pattern, in ATR, to be worth trading. */
-    minHeightAtr: number;
+    /** Two swings are "equal" within this typical range distance. */
+    equalityRange: number;
+    /** Minimum height of a pattern, in typical range, to be worth trading. */
+    minHeightRange: number;
     /** A pattern completing more than this many bars ago is stale. */
     freshnessBars: number;
+  };
+
+  /**
+   * Refusing to trade a market that is going nowhere.
+   *
+   * The strategy is trend-following: it earns in trends and bleeds in ranges.
+   * Measured across generated markets it returned +0.23R a trade in trending
+   * conditions and −0.30R in mean-reverting ones, which is exactly why a live
+   * backtest over an arbitrary window came back negative on every pair —
+   * real intraday forex spends most of its time ranging.
+   *
+   * Swing structure alone cannot see this, so efficiency gates it.
+   */
+  chop: {
+    /** Bars over which directional efficiency is measured. */
+    lookback: number;
+    /**
+     * Below this, no signal may be actionable however good it looks.
+     *
+     * Swept rather than guessed. Blended expectancy across trending,
+     * mean-reverting and random-walk markets, in R per trade:
+     *
+     *   0.00 (off) −0.061    0.18  +0.103
+     *   0.10       +0.003    0.22  +0.154
+     *   0.15       +0.073    0.28  +0.206  ← here
+     *                        0.35  +0.204
+     *
+     * It improves monotonically to 0.28 and then flattens, so this is a knee
+     * rather than a fitted peak. The cost is roughly a third of the trades;
+     * the benefit is that the system stops paying to be in markets that were
+     * never going to move.
+     */
+    minEfficiency: number;
+    /** Below this, efficiency is additionally penalised in the score. */
+    weakEfficiency: number;
   };
 
   trend: {
     /** EMA slope over this lookback. */
     slopeLookback: number;
-    /** Slope beyond this many ATR counts as a real trend, not drift. */
-    slopeAtr: number;
-    /** Price within this ATR of the EMA counts as a retest. */
-    emaProximityAtr: number;
+    /** Slope beyond this many typical range counts as a real trend, not drift. */
+    slopeRatio: number;
+    /** Price within this typical range of the EMA counts as a retest. */
+    emaProximityRange: number;
     /** Bars to look back for an EMA reclaim or breakdown. */
     reclaimWindow: number;
-    /** Cloud thinner than this in ATR is weak support/resistance. */
-    thinCloudAtr: number;
-    /** Price beyond this ATR from the EMA is overextended. */
-    overextendedAtr: number;
+    /** Cloud thinner than this in typical range is weak support/resistance. */
+    thinCloudRange: number;
+    /** Price beyond this typical range from the EMA is overextended. */
+    overextendedRange: number;
   };
 
   /**
@@ -111,14 +147,25 @@ export interface EngineConfig {
   };
 
   risk: {
-    /** Stop placed this far beyond the structural level, in ATR. */
-    stopBufferAtr: number;
-    /** Never risk less than this, in ATR — a stop inside noise is not a stop. */
-    minStopAtr: number;
-    /** Nor more than this: a huge stop makes any RR arithmetic meaningless. */
-    maxStopAtr: number;
-    /** Fallback targets when no structural level is available, in R. */
-    fallbackTargetR: number[];
+    /**
+     * Wick allowance beyond the structural level, in typical candle ranges.
+     *
+     * A stop sitting exactly on an obvious swing low is the most reliably
+     * hunted price in the market. This is the only place volatility enters
+     * the stop at all — it moves the stop a little further out, and never
+     * closer.
+     */
+    stopBufferRange: number;
+    /** Fallback target when no structural level is available, in R. */
+    fallbackTargetR: number;
+    /**
+     * Fraction of the way to the obstacle the target is placed.
+     *
+     * The obstacle is where the opposing orders are, so price often turns a
+     * few pips short of it. Aiming at the level exactly turns moves that went
+     * the right way into full losses.
+     */
+    targetHaircut: number;
     /**
      * Reject a signal whose first target pays less than this.
      *
@@ -127,6 +174,21 @@ export interface EngineConfig {
      * penalty, because no amount of confluence makes a 0.4R trade worth taking.
      */
     minRewardRisk: number;
+    /**
+     * Reward/risk above which the STOP is treated as wrong, not the trade.
+     *
+     * A ticket showing 8R is not a wonderful opportunity; it is a stop so
+     * close to entry that it is inside ordinary movement. Price is already
+     * standing on the level, so the level is not "where the idea is wrong" —
+     * it is where the idea is happening.
+     *
+     * Measured: with no ceiling, the 3R-and-above bucket won 10% of the time
+     * where geometry demands roughly 25%, and returned −0.49R a trade on a
+     * random walk that must return zero. Rather than impose a volatility
+     * minimum — which is what created the problem in the first place — the
+     * risk module steps OUT to the next structural level and re-checks.
+     */
+    maxRewardRisk: number;
   };
 
   /** Points added or removed by cross-timeframe agreement. */
@@ -147,22 +209,22 @@ export const ENGINE: EngineConfig = {
   // so a shorter series has no cloud in effect and no room for structure.
   minBars: 200,
   emaPeriod: 50,
-  atrPeriod: 14,
+  rangeLookback: 14,
 
   structure: {
     fractalWings: 2,
     swingLookback: 6,
     maxBars: 150,
-    minSwingAtr: 0.4,
-    breakBufferAtr: 0.12,
+    minSwingRange: 0.4,
+    breakBufferRange: 0.12,
     freshnessBars: 12,
   },
 
   levels: {
-    clusterAtr: 0.45,
+    clusterRange: 0.45,
     minTouches: 2,
     lookback: 150,
-    proximityAtr: 0.6,
+    proximityRange: 0.6,
     retestWindow: 15,
   },
 
@@ -176,18 +238,24 @@ export const ENGINE: EngineConfig = {
 
   patterns: {
     lookback: 120,
-    equalityAtr: 0.5,
-    minHeightAtr: 1.2,
+    equalityRange: 0.5,
+    minHeightRange: 1.2,
     freshnessBars: 15,
+  },
+
+  chop: {
+    lookback: 30,
+    minEfficiency: 0.28,
+    weakEfficiency: 0.35,
   },
 
   trend: {
     slopeLookback: 10,
-    slopeAtr: 0.2,
-    emaProximityAtr: 0.5,
+    slopeRatio: 0.2,
+    emaProximityRange: 0.5,
     reclaimWindow: 10,
-    thinCloudAtr: 0.4,
-    overextendedAtr: 3.0,
+    thinCloudRange: 0.4,
+    overextendedRange: 3.0,
   },
 
   weights: {
@@ -202,11 +270,11 @@ export const ENGINE: EngineConfig = {
   },
 
   risk: {
-    stopBufferAtr: 0.35,
-    minStopAtr: 0.8,
-    maxStopAtr: 4.0,
-    fallbackTargetR: [1.5, 2.5, 3.5],
+    stopBufferRange: 0.35,
+    fallbackTargetR: 2.0,
+    targetHaircut: 0.9,
     minRewardRisk: 1.2,
+    maxRewardRisk: 5,
   },
 
   mtf: {

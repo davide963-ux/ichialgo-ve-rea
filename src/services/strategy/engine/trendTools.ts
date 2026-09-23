@@ -27,12 +27,12 @@ import type { EngineConfig } from './config';
 
 export interface EmaRead {
   value: number;
-  /** Change over the slope lookback, divided by ATR. */
-  slopeAtr: number;
+  /** Change over the slope lookback, divided by typical range. */
+  slopeRatio: number;
   direction: 'rising' | 'falling' | 'flat';
   side: 'above' | 'below' | 'at';
-  /** |close − EMA| / ATR. Large means extended, not strong. */
-  distanceAtr: number;
+  /** |close − EMA| / typical range. Large means extended, not strong. */
+  distanceRatio: number;
   /** Price is close enough to the EMA to call it a test. */
   atLevel: boolean;
   /** Price crossed from below to above inside the reclaim window. */
@@ -53,8 +53,8 @@ export interface IchimokuRead {
   futureCloudBullish: boolean | null;
   /** Chikou clear of the price range it is drawn over. Null near the edge. */
   chikouFree: 'bullish' | 'bearish' | null;
-  /** Cloud thickness in ATR. Thin clouds are weak support/resistance. */
-  thicknessAtr: number | null;
+  /** Cloud thickness in typical range. Thin clouds are weak support/resistance. */
+  thicknessRatio: number | null;
   /** Price broke out of the cloud within the reclaim window. */
   brokeAbove: boolean;
   brokeBelow: boolean;
@@ -64,17 +64,17 @@ export function readEma(
   candles: readonly Candle[],
   ema: readonly (number | null)[],
   end: number,
-  atr: number,
+  scale: number,
   config: EngineConfig,
 ): EmaRead | null {
   const value = ema[end];
-  if (value === null || value === undefined || atr <= 0) return null;
+  if (value === null || value === undefined || scale <= 0) return null;
 
   const close = candles[end]!.close;
   const slope = slopePerBar(ema, end, config.trend.slopeLookback);
-  const slopeAtr = slope === null ? 0 : (slope * config.trend.slopeLookback) / atr;
+  const slopeRatio = slope === null ? 0 : (slope * config.trend.slopeLookback) / scale;
   const distance = close - value;
-  const distanceAtr = Math.abs(distance) / atr;
+  const distanceRatio = Math.abs(distance) / scale;
 
   // A cross inside the window, measured on closes: an intrabar poke through
   // the EMA is not a reclaim.
@@ -92,14 +92,14 @@ export function readEma(
 
   return {
     value,
-    slopeAtr,
-    direction: slopeAtr > config.trend.slopeAtr ? 'rising' : slopeAtr < -config.trend.slopeAtr ? 'falling' : 'flat',
-    side: distanceAtr <= 0.05 ? 'at' : distance > 0 ? 'above' : 'below',
-    distanceAtr,
-    atLevel: distanceAtr <= config.trend.emaProximityAtr,
+    slopeRatio,
+    direction: slopeRatio > config.trend.slopeRatio ? 'rising' : slopeRatio < -config.trend.slopeRatio ? 'falling' : 'flat',
+    side: distanceRatio <= 0.05 ? 'at' : distance > 0 ? 'above' : 'below',
+    distanceRatio,
+    atLevel: distanceRatio <= config.trend.emaProximityRange,
     reclaimed,
     brokeDown,
-    overextended: distanceAtr >= config.trend.overextendedAtr,
+    overextended: distanceRatio >= config.trend.overextendedRange,
   };
 }
 
@@ -107,7 +107,7 @@ export function readIchimoku(
   candles: readonly Candle[],
   series: IchimokuSeries,
   end: number,
-  atr: number,
+  scale: number,
   config: EngineConfig,
 ): IchimokuRead | null {
   const close = candles[end]!.close;
@@ -149,7 +149,7 @@ export function readIchimoku(
     tenkanAboveKijun: tenkan === null || kijun === null ? null : tenkan > kijun,
     futureCloudBullish,
     chikouFree,
-    thicknessAtr: thickness === null || atr <= 0 ? null : thickness / atr,
+    thicknessRatio: thickness === null || scale <= 0 ? null : thickness / scale,
     brokeAbove,
     brokeBelow,
   };
@@ -163,8 +163,8 @@ export function readIchimoku(
  * upward" from "price is being bought", which is the difference between a
  * breakout that runs and one that fades.
  */
-export function readMomentum(candles: readonly Candle[], end: number, atr: number, lookback = 10): number {
-  if (atr <= 0) return 0;
+export function readMomentum(candles: readonly Candle[], end: number, scale: number, lookback = 10): number {
+  if (scale <= 0) return 0;
   const from = Math.max(1, end - lookback + 1);
   let directional = 0;
   let total = 0;

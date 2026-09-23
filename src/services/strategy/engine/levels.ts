@@ -56,9 +56,9 @@ export interface LevelRead {
   /** True when price is sitting in a zone right now. */
   atSupport: boolean;
   atResistance: boolean;
-  /** Distance to the nearest zone in each direction, in ATR. */
-  supportDistanceAtr: number | null;
-  resistanceDistanceAtr: number | null;
+  /** Distance to the nearest zone in each direction, in typical range. */
+  supportDistanceRatio: number | null;
+  resistanceDistanceRatio: number | null;
   /** Most recent breakout of a zone, with its retest state. */
   breakout: Breakout | null;
   /** Extreme of the whole lookback — the levels everyone can see. */
@@ -67,8 +67,8 @@ export interface LevelRead {
 }
 
 /** Merge nearby swings into zones, strongest (most touched) first. */
-function cluster(swings: readonly Swing[], candles: readonly Candle[], end: number, atr: number, config: EngineConfig): Zone[] {
-  const tolerance = atr * config.levels.clusterAtr;
+function cluster(swings: readonly Swing[], candles: readonly Candle[], end: number, scale: number, config: EngineConfig): Zone[] {
+  const tolerance = scale * config.levels.clusterRange;
   const groups: { prices: number[]; lastIndex: number }[] = [];
 
   for (const s of swings) {
@@ -110,10 +110,10 @@ function findBreakout(
   zones: readonly Zone[],
   candles: readonly Candle[],
   end: number,
-  atr: number,
+  scale: number,
   config: EngineConfig,
 ): Breakout | null {
-  const buffer = atr * config.structure.breakBufferAtr;
+  const buffer = scale * config.structure.breakBufferRange;
   const window = Math.min(config.levels.retestWindow * 3, end);
   const from = Math.max(1, end - window);
   let best: Breakout | null = null;
@@ -188,19 +188,19 @@ export function readLevels(
   candles: readonly Candle[],
   end: number,
   swings: readonly Swing[],
-  atr: number,
+  scale: number,
   config: EngineConfig,
 ): LevelRead {
   const price = candles[end]!.close;
-  const zones = cluster(swings, candles, end, atr, config);
+  const zones = cluster(swings, candles, end, scale, config);
 
   const below = zones.filter((z) => z.price < price).sort((a, b) => b.price - a.price);
   const above = zones.filter((z) => z.price > price).sort((a, b) => a.price - b.price);
   const support = below[0] ?? null;
   const resistance = above[0] ?? null;
 
-  const supportDistanceAtr = support === null ? null : (price - support.price) / atr;
-  const resistanceDistanceAtr = resistance === null ? null : (resistance.price - price) / atr;
+  const supportDistanceRatio = support === null ? null : (price - support.price) / scale;
+  const resistanceDistanceRatio = resistance === null ? null : (resistance.price - price) / scale;
 
   const from = Math.max(0, end - config.levels.lookback);
   let previousHigh = -Infinity;
@@ -215,11 +215,11 @@ export function readLevels(
     zones,
     support,
     resistance,
-    atSupport: supportDistanceAtr !== null && supportDistanceAtr <= config.levels.proximityAtr,
-    atResistance: resistanceDistanceAtr !== null && resistanceDistanceAtr <= config.levels.proximityAtr,
-    supportDistanceAtr,
-    resistanceDistanceAtr,
-    breakout: findBreakout(zones, candles, end, atr, config),
+    atSupport: supportDistanceRatio !== null && supportDistanceRatio <= config.levels.proximityRange,
+    atResistance: resistanceDistanceRatio !== null && resistanceDistanceRatio <= config.levels.proximityRange,
+    supportDistanceRatio,
+    resistanceDistanceRatio,
+    breakout: findBreakout(zones, candles, end, scale, config),
     previousHigh: Number.isFinite(previousHigh) ? previousHigh : null,
     previousLow: Number.isFinite(previousLow) ? previousLow : null,
   };

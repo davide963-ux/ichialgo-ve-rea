@@ -21,16 +21,11 @@ export interface StoredSignal {
   marketCondition: string;
   setupStatus: string;
   price: number;
-  /** ATR at the signal bar, when the strategy reports one. */
-  atr: number | null;
   entry: number | null;
   stopLoss: number | null;
-  takeProfit1: number | null;
-  takeProfit2: number | null;
-  takeProfit3: number | null;
+  takeProfit: number | null;
   stopPips: number | null;
-  result: 'pending' | 'tp1' | 'tp2' | 'tp3' | 'sl' | 'be' | 'expired' | 'invalidated';
-  tp1Hit: boolean;
+  result: 'pending' | 'tp' | 'sl' | 'expired' | 'invalidated';
   closedPrice: number | null;
   closedAt: number | null;
   /** Result in multiples of risk. Null while open. */
@@ -96,11 +91,8 @@ export const isClosed = (s: StoredSignal): boolean => s.result !== 'pending' && 
 /** Human label for a result code. */
 export const RESULT_LABEL: Record<StoredSignal['result'], string> = {
   pending: 'Open',
-  tp1: 'TP1',
-  tp2: 'TP2',
-  tp3: 'TP3',
+  tp: 'Target hit',
   sl: 'Stopped',
-  be: 'Breakeven',
   expired: 'Expired',
   invalidated: 'Invalidated',
 };

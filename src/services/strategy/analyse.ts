@@ -4,7 +4,7 @@
  *
  * HOW A SIGNAL IS MADE
  * ────────────────────
- *   candles ─▶ indicators (EMA50, ATR, Ichimoku)
+ *   candles ─▶ indicators (EMA50, Ichimoku, typical range)
  *           ─▶ structure   (swings, trend, BOS, CHoCH)
  *           ─▶ levels      (S/R zones, breakout, retest)
  *           ─▶ patterns    (chart + candlestick)
@@ -34,8 +34,8 @@
  * emitting it. The reason is recorded, because "the setup is right but the
  * price is wrong" is genuinely useful and usually means wait for a pullback.
  */
-import { atr as atrSeries } from '../../lib/indicators/atr';
 import { emaOfCloses } from '../../lib/indicators/ema';
+import { efficiency, typicalRange } from './engine/scale';
 import { ichimoku } from '../../lib/indicators/ichimoku';
 import { pipSize } from '../../lib/pips';
 import type { Candle } from '../marketData/types';
@@ -74,7 +74,7 @@ function refusal(options: AnalyseOptions, candles: readonly Candle[], i: number,
     marketCondition: 'INSUFFICIENT_DATA',
     status: 'FORMING',
     price: last?.close ?? 0,
-    risk: { entry: null, stop: null, targets: [], stopPips: null, invalidation: null },
+    risk: { entry: null, stop: null, target: null, stopPips: null, invalidation: null },
     anchor: null,
     reasons: [],
     warnings: [why],
@@ -97,23 +97,25 @@ export function analyse(candles: readonly Candle[], options: AnalyseConfigOption
   const view = candles.slice(0, i + 1);
   const end = view.length - 1;
 
-  const atrs = atrSeries(view, config.atrPeriod);
-  const atr = atrs[end];
-  if (atr === null || atr === undefined || atr <= 0) {
-    return refusal(options, candles, i, 'ATR not yet defined.');
+  // The scale every threshold is measured against: what a normal candle looks
+  // like on this pair and timeframe. Not ATR — see engine/scale.ts.
+  const scale = typicalRange(view, end, config.rangeLookback);
+  if (scale <= 0) {
+    return refusal(options, candles, i, 'Candles have no range to measure.');
   }
 
   const ema = emaOfCloses(view, config.emaPeriod);
   const kumo = ichimoku(view);
 
-  const structure = readStructure(view, end, config, atr);
-  const swings = swingsOf(view, end, config, atr);
-  const levels = readLevels(view, end, swings, atr, config);
-  const chartPatterns = readChartPatterns(view, end, swings, atr, config);
+  const structure = readStructure(view, end, config, scale);
+  const swings = swingsOf(view, end, config, scale);
+  const levels = readLevels(view, end, swings, scale, config);
+  const chartPatterns = readChartPatterns(view, end, swings, scale, config);
   const candlePatterns = readCandles(view, end, config);
-  const emaRead = readEma(view, ema, end, atr, config);
-  const ichiRead = readIchimoku(view, kumo, end, atr, config);
-  const momentum = readMomentum(view, end, atr);
+  const emaRead = readEma(view, ema, end, scale, config);
+  const ichiRead = readIchimoku(view, kumo, end, scale, config);
+  const momentum = readMomentum(view, end, scale);
+  const travelEfficiency = efficiency(view, end, config.chop.lookback);
   const neutral = neutralPattern(chartPatterns);
 
   const higherTrend = options.higherTimeframeBias ?? 'none';
@@ -130,6 +132,7 @@ export function analyse(candles: readonly Candle[], options: AnalyseConfigOption
       ema: emaRead,
       ichimoku: ichiRead,
       momentum,
+      efficiency: travelEfficiency,
       higherTrend,
       entryConfirmation,
       config,
@@ -158,7 +161,23 @@ export function analyse(candles: readonly Candle[], options: AnalyseConfigOption
 
   // ── The ticket ─────────────────────────────────────────────────────────
   const pattern = bestPatternFor(chartPatterns, side);
-  const { ticket, reject } = buildTicket({ side, price: bar.close, atr, structure, levels, pattern, config });
+  const { ticket, reject } = buildTicket({ side, price: bar.close, scale, structure, levels, pattern, config });
+
+  // ── The chop gate ──────────────────────────────────────────────────────
+  // A trend-following strategy in a range does not underperform, it bleeds:
+  // measured on mean-reverting data the engine returned −0.30R a trade while
+  // returning +0.23R in trends. No amount of confluence fixes that, because
+  // the confluence is real — the market just will not go anywhere. So a
+  // market travelling this inefficiently can be WATCHED but never traded.
+  if (travelEfficiency < config.chop.minEfficiency && tier !== 'NEUTRAL') {
+    const demoted = direction === 'long' ? 'WATCH_LONG' : 'WATCH_SHORT';
+    if (tier !== demoted) {
+      tier = demoted;
+      warnings.push(
+        `Market is ranging (${(travelEfficiency * 100).toFixed(0)}% directional travel) — watching only, not trading.`,
+      );
+    }
+  }
 
   const actionable = tier === 'LONG' || tier === 'SHORT' || tier === 'STRONG_LONG' || tier === 'STRONG_SHORT';
   if (actionable && ticket === null) {
@@ -175,7 +194,7 @@ export function analyse(candles: readonly Candle[], options: AnalyseConfigOption
     .slice(0, 8)
     .map((r) => `${r.label} (+${r.points})`);
 
-  if (ticket) reasons.push(`Stop ${ticket.stopBasis}; first target at ${ticket.targetBasis} (${ticket.rewardRisk.toFixed(1)}R).`);
+  if (ticket) reasons.push(`Stop ${ticket.stopBasis}; target at ${ticket.targetBasis} (${ticket.rewardRisk.toFixed(1)}R).`);
 
   return {
     symbol: options.symbol,
@@ -192,11 +211,11 @@ export function analyse(candles: readonly Candle[], options: AnalyseConfigOption
       ? {
           entry: ticket.entry,
           stop: ticket.stop,
-          targets: ticket.targets,
+          target: ticket.target,
           stopPips: ticket.stopDistance / pip,
           invalidation: `Close beyond ${ticket.stop.toFixed(5)} — ${ticket.stopBasis}.`,
         }
-      : { entry: null, stop: null, targets: [], stopPips: null, invalidation: null },
+      : { entry: null, stop: null, target: null, stopPips: null, invalidation: null },
     // The setup's identity: the swing the move is working from. A different
     // origin is a different opportunity, not an update to this one.
     anchor: (side === 'bullish' ? structure.lastSwingLow?.price : structure.lastSwingHigh?.price) ?? null,
@@ -213,10 +232,11 @@ export function analyse(candles: readonly Candle[], options: AnalyseConfigOption
       emaRead,
       ichiRead,
       momentum,
+      efficiency: travelEfficiency,
       higherTrend,
       entryConfirmation,
       ticket,
-      atr,
+      scale,
       breakdown: best.reasons,
     }),
   };
@@ -242,7 +262,7 @@ function deriveStatus(tier: SignalTier, barClosed: boolean): StrategyAnalysis['s
  * STRUCTURE FIRST, NOT EXTENSION
  * ──────────────────────────────
  * An earlier version returned OVEREXTENDED ahead of everything else, so any
- * bar more than 3 ATR from the EMA50 was filed under that regardless of what
+ * bar far enough from the EMA50 was filed under that regardless of what
  * the market was doing. In a trending sample that swallowed most bars and left
  * the regime breakdown unable to answer the one question it exists for —
  * does this strategy do better in a trend than in chop?
@@ -279,14 +299,15 @@ function buildDetail(x: {
   emaRead: ReturnType<typeof readEma>;
   ichiRead: ReturnType<typeof readIchimoku>;
   momentum: number;
+  efficiency: number;
   higherTrend: Direction;
   entryConfirmation: Direction;
   ticket: ReturnType<typeof buildTicket>['ticket'];
-  atr: number;
+  scale: number;
   breakdown: { family: string; label: string; points: number }[];
 }): Record<string, unknown> {
   return {
-    atr: x.atr,
+    scale: x.scale,
     scores: { bullish: x.bullish, bearish: x.bearish, margin: x.margin },
     higherTimeframeTrend: x.higherTrend,
     entryTimeframeConfirmation: x.entryConfirmation,
@@ -321,6 +342,7 @@ function buildDetail(x: {
     ema50: x.emaRead,
     ichimoku: x.ichiRead,
     momentum: x.momentum,
+    efficiency: x.efficiency,
     ticket: x.ticket,
     scoreBreakdown: x.breakdown,
   };

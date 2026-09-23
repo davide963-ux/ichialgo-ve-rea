@@ -134,7 +134,8 @@ src/
   services/strategy/
     analyse.ts               the orchestrator: scores both sides, picks the better
     contract.ts              StrategyAnalysis + tiers, the types every consumer reads
-    engine/config.ts         every threshold, ATR-normalised
+    engine/config.ts         every threshold, scaled to typical candle range
+    engine/scale.ts          typical range + directional efficiency (no ATR)
     engine/structure.ts      swings, trend, BOS vs CHoCH (pure, tested)
     engine/levels.ts         S/R zones, breakout episodes, retests (pure, tested)
     engine/chartPatterns.ts  reversal / continuation / bilateral (pure, tested)
@@ -333,37 +334,103 @@ in the scan's ranked `opportunities` list but never entered — recording a setu
 the strategy itself called unconfirmed would book the outcome of a trade nobody
 should have taken.
 
-### Entry, stop and target
+### One entry, one stop, one target
 
-Stops are anchored to **structure** — the swing the setup was built on, the
-zone it rejected, or the pattern's invalidation — plus an ATR buffer, because a
-stop sitting exactly on an obvious swing low is the most reliably hunted price
-in the market. Targets are the next real obstacle.
+No TP1/TP2/TP3 ladder. Reaching the target is a win worth its reward/risk;
+reaching the stop is −1R. There is no third outcome.
 
-A first target that does not pay `minRewardRisk` **rejects the ticket**, and an
-actionable tier with no ticket is demoted to EARLY rather than emitted. A level
-too close to pay for the stop is not noise to be ignored; it is the reason not
-to take the trade.
+> The ladder was structurally losing and is worth recording. Its first rung sat
+> at the nearest opposing level — the likeliest place for price to turn — and
+> reaching it banked **nothing**, it only pulled the stop to breakeven. So the
+> commonest winner paid 0R while every loser paid −1R, and the system profited
+> only when price broke clean *through* the level it was aimed at. On a pure
+> random walk it lost 0.14R a trade, where the arithmetic says it must return
+> zero.
+
+Stops are anchored to **structure only** — the swing the setup was built on,
+the zone it rejected, or the pattern's invalidation — plus a small wick
+allowance, because a stop sitting exactly on an obvious swing low is the most
+reliably hunted price in the market. There is no volatility floor or cap: an
+earlier ATR minimum manufactured very tight stops paired with very distant
+targets, which showed a flattering reward/risk and were taken out by ordinary
+noise far more often than their geometry implied.
+
+If a level sits so close that price is already standing on it, the stop steps
+**out** to the next structural level rather than being padded to a constant.
+
+The target is the next real obstacle, placed just short of it — the level is
+where the opposing orders are, so price routinely turns a few pips before
+reaching it. A target that does not pay `minRewardRisk` **rejects the ticket**,
+and an actionable tier with no ticket is demoted to EARLY rather than emitted.
+
+### Refusing to trade a range
+
+The strategy is trend-following, so it earns in trends and bleeds in ranges —
+and real intraday forex spends most of its time ranging. That is why an early
+version came back negative on *every* pair over *every* period.
+
+Swing structure cannot see the difference: a range prints a higher low on every
+bounce. So a separate, purely structural measure gates it — **directional
+efficiency**, net displacement over total path length:
+
+```
+|close[end] − close[start]|  ÷  Σ |close[i] − close[i−1]|
+```
+
+A market travelling below the threshold can be WATCHED but never TRADED,
+whatever its confluence score. Swept, not guessed:
+
+| min efficiency | trades | blended R/trade |
+|--:|--:|--:|
+| 0.00 (off) | 624 | **−0.061** |
+| 0.15 | 373 | +0.073 |
+| 0.22 | 277 | +0.154 |
+| **0.28** | 232 | **+0.206** |
+| 0.35 | 204 | +0.204 |
+
+It improves monotonically to 0.28 then flattens — a knee, not a fitted peak.
 
 ### What is measured, not assumed
 
-Over 12 generated markets (regime-switching, 12k bars):
+Expectancy across three deliberately different generated markets, 14 seeds
+each, in R per trade:
 
-- **~5 trades per day** across 7 pairs on 1H — several opportunities every day
-- **~10%** of bars carry an actionable signal; EARLY and WATCHLIST are commoner
+| Market | Result |
+|---|--:|
+| Trending | **+0.39R** |
+| Pure random walk | **+0.03R** (≈0, as it must be) |
+| Mean-reverting | −0.37R, on 25 trades instead of 548 |
+
+The random-walk column is the honest check: on a driftless walk expectancy is
+mathematically **zero** for any reward/risk, so anything far from zero is a bug
+rather than an edge. It reads −0.12R with the chop filter off.
+
+The mean-reverting column never becomes positive — a trend strategy in a range
+should lose. What changed is that it now takes 25 trades there instead of 548,
+so the damage is −9R rather than −166R.
+
+- **~1–2%** of bars carry a tradeable signal; **~64%** carry an EARLY or
+  WATCHLIST reading, so the scan list is never empty
 - **causality verified**: replacing every bar after the analysed one with
-  garbage does not change the answer
+  garbage does not change the answer, at any of 120 sample points
 
-> The expectancy on that generated data says nothing about real markets — the
-> generator injects trends 45% of the time, so a trend-following strategy
-> should profit on it by construction. What the numbers establish is
-> **frequency, causality and ticket coherence**, not edge.
+> None of this is evidence of a live edge. Generated data cannot provide that.
+> What these numbers establish is that the engine is **causal**, that its
+> tickets are **coherent**, and that it is **not systematically losing** — which
+> is the bar a strategy has to clear before real-money questions are worth
+> asking.
 
 ### Tuning
 
-Every threshold lives in `src/services/strategy/engine/config.ts`, ATR-
-normalised so one number means the same thing on EUR/CHF and GBP/JPY, and on
+Every threshold lives in `src/services/strategy/engine/config.ts`, expressed
+as a multiple of the **typical candle range** on the pair and timeframe being
+analysed, so one number means the same thing on EUR/CHF and GBP/JPY, and on
 15M as on 4H.
+
+That scale is a plain mean of recent high-to-low ranges — deliberately *not*
+ATR: no true-range gap handling, no Wilder smoothing. It answers one question
+("is this distance large relative to normal movement?") and is never used to
+place a stop.
 
 ### Seeing why a pair is or is not signalling
 
@@ -478,7 +545,7 @@ the table and the RPC.
 | `outcome` | `pending` · `bounce` · `cross` · `inside` |
 | `approach`, `trend`, `bias` | direction of the touch and the EMA50 slope |
 | `ichimoku` (jsonb), `ichimoku_score` | the five checks, and how many passed |
-| `plan` (jsonb) | entry, ATR stop, 2R target, lot size |
+| `plan` (jsonb) | entry, structural stop, target, lot size |
 
 `toRow()` in `server/signals.mjs` validates every field against the same CHECK constraints the
 table enforces and **drops** a bad row rather than failing the batch — one malformed signal

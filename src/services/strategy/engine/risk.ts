@@ -1,16 +1,31 @@
 /**
- * Entry, stop, targets and reward/risk.
+ * Entry, stop, target and reward/risk.
  *
- * STOPS COME FROM STRUCTURE, NOT FROM A FIXED ATR MULTIPLE
- * ────────────────────────────────────────────────────────
+ * STOPS COME FROM STRUCTURE, AND ONLY FROM STRUCTURE
+ * ──────────────────────────────────────────────────
  * A stop exists to say "the idea was wrong". The idea is wrong when price
  * takes out the swing the setup was built on, or reclaims the level it
- * rejected — not when it has moved 1.5 ATR. So the stop is anchored to the
- * nearest structural level BEYOND entry, with an ATR buffer so a wick through
- * the exact level does not close the trade.
+ * rejected — not when it has moved some multiple of a volatility average. So
+ * the stop is anchored to the nearest structural level beyond entry, plus a
+ * small wick allowance, and nothing else touches it.
  *
- * The buffer matters more than it looks: stops sitting exactly on an obvious
- * swing low are the most reliably hunted price in the market.
+ * The allowance matters more than it looks: a stop sitting exactly on an
+ * obvious swing low is the most reliably hunted price in the market.
+ *
+ * WHY THERE IS NO MINIMUM OR MAXIMUM STOP DISTANCE
+ * ────────────────────────────────────────────────
+ * There used to be both, expressed in ATR. The floor was the more damaging:
+ * where structure gave a tight stop it was widened to a volatility minimum,
+ * which manufactured trades with a very tight stop and a very distant target.
+ * Those showed a flattering reward/risk and were taken out by ordinary noise
+ * far more often than their geometry implied — on a random walk the 3R-and-up
+ * bucket returned −0.42R a trade where the arithmetic says it must return
+ * zero.
+ *
+ * If structure puts the stop close, the stop is close and the reward/risk is
+ * large. If structure puts it far, the reward/risk is small and the gate at
+ * the bottom of this file refuses the trade. Either way the level comes from
+ * the chart, not from a volatility constant.
  *
  * TARGETS COME FROM WHERE PRICE ACTUALLY STOPS
  * ────────────────────────────────────────────
@@ -34,9 +49,9 @@ import type { StructureRead } from './structure';
 export interface RiskTicketDraft {
   entry: number;
   stop: number;
-  targets: number[];
+  target: number;
   stopDistance: number;
-  /** Reward/risk of the FIRST target — the one that must clear the gate. */
+  /** Reward/risk of the target. Must clear the configured floor. */
   rewardRisk: number;
   /** What the stop was anchored to, for the explanation. */
   stopBasis: string;
@@ -47,7 +62,7 @@ export interface RiskTicketDraft {
 export interface RiskInput {
   side: 'bullish' | 'bearish';
   price: number;
-  atr: number;
+  scale: number;
   structure: StructureRead;
   levels: LevelRead;
   pattern: ChartPattern | null;
@@ -60,12 +75,33 @@ export interface RiskInput {
  * Returns null when the geometry does not work — an unreachable target, a stop
  * that would have to be absurdly wide, or a reward/risk below the floor.
  */
+/**
+ * Distance to the nearest thing that could serve as a target.
+ *
+ * Computed before the stop is chosen, because the stop choice depends on what
+ * reward is actually available — a level is only "too close" relative to how
+ * far the trade could run.
+ */
+function nearestObstacleDistance(input: RiskInput, price: number, long: boolean): number | null {
+  let best: number | null = null;
+  const consider = (p: number | null | undefined) => {
+    if (p === null || p === undefined) return;
+    if (long ? p <= price : p >= price) return;
+    const d = Math.abs(p - price);
+    if (best === null || d < best) best = d;
+  };
+  for (const z of input.levels.zones) consider(z.price);
+  consider(long ? input.levels.previousHigh : input.levels.previousLow);
+  consider(input.pattern?.target);
+  return best;
+}
+
 export function buildTicket(input: RiskInput): { ticket: RiskTicketDraft | null; reject: string | null } {
-  const { side, price, atr, config } = input;
-  if (atr <= 0) return { ticket: null, reject: 'No ATR available.' };
+  const { side, price, scale, config } = input;
+  if (scale <= 0) return { ticket: null, reject: 'Not enough price history to measure a typical candle range.' };
 
   const long = side === 'bullish';
-  const buffer = atr * config.risk.stopBufferAtr;
+  const buffer = scale * config.risk.stopBufferRange;
 
   // ── Stop: nearest structural level beyond entry ────────────────────────
   const candidates: { price: number; basis: string }[] = [];
@@ -83,35 +119,41 @@ export function buildTicket(input: RiskInput): { ticket: RiskTicketDraft | null;
   // Only levels on the correct side of entry can serve as a stop.
   const valid = candidates.filter((c) => (long ? c.price < price : c.price > price));
 
-  // Nearest valid level keeps the risk smallest; a further one only widens the
-  // stop without making the idea any more wrong.
-  const anchor = valid.length === 0
-    ? null
-    : valid.reduce((a, b) => (Math.abs(price - b.price) < Math.abs(price - a.price) ? b : a));
+  // Nearest first — the smallest risk that still has a level behind it.
+  const ordered = [...valid].sort((a, b) => Math.abs(price - a.price) - Math.abs(price - b.price));
+
+  // …but skip levels so close that price is already standing on them.
+  //
+  // Such a stop is not an invalidation: it sits inside ordinary movement, and
+  // pairing it with a distant target produces a ticket showing 6R or 8R that
+  // gets taken out by noise. Stepping OUT to the next structural level keeps
+  // the answer on the chart, where a volatility floor would not.
+  const anchor =
+    ordered.find((c) => {
+      const distance = Math.abs(price - c.price) + scale * config.risk.stopBufferRange;
+      const room = nearestObstacleDistance(input, price, long);
+      return room === null || room / distance <= config.risk.maxRewardRisk;
+    }) ?? ordered[ordered.length - 1] ?? null;
 
   let stop: number;
   let stopBasis: string;
   if (anchor === null) {
-    stop = long ? price - atr * 1.5 : price + atr * 1.5;
-    stopBasis = 'ATR-based (no structure in range)';
+    // Nothing structural to hang a stop on. Rather than invent a distance,
+    // refuse: a stop that no level chose is not an invalidation, it is a
+    // guess, and the whole point of the ticket is that being wrong is defined.
+    return { ticket: null, reject: 'No swing, zone or pattern level below entry to anchor a stop to.' };
   } else {
     stop = long ? anchor.price - buffer : anchor.price + buffer;
     stopBasis = anchor.basis;
   }
 
-  let stopDistance = Math.abs(price - stop);
+  const stopDistance = Math.abs(price - stop);
 
-  // Too tight is noise, too wide makes the arithmetic meaningless. Clamp
-  // rather than reject: the level is right, the distance just needs sanity.
-  const minStop = atr * config.risk.minStopAtr;
-  const maxStop = atr * config.risk.maxStopAtr;
-  if (stopDistance < minStop) {
-    stopDistance = minStop;
-    stop = long ? price - minStop : price + minStop;
-    stopBasis += ' (widened to ATR floor)';
-  }
-  if (stopDistance > maxStop) {
-    return { ticket: null, reject: `Structural stop is ${(stopDistance / atr).toFixed(1)} ATR away — too wide to size.` };
+  // The only thing that can make a structural stop unusable is having no
+  // distance at all — entry sitting exactly on the level. Everything else is
+  // a matter of reward against risk, which the gate below decides.
+  if (stopDistance <= 0) {
+    return { ticket: null, reject: 'Entry sits on its own stop level — no risk to measure.' };
   }
 
   // ── Targets: the next real obstacles ───────────────────────────────────
@@ -136,14 +178,14 @@ export function buildTicket(input: RiskInput): { ticket: RiskTicketDraft | null;
 
   obstacles.sort((a, b) => (long ? a.price - b.price : b.price - a.price));
 
-  let targets: number[];
+  let target: number;
   let targetBasis: string;
 
   if (obstacles.length === 0) {
-    // Genuinely clear air ahead. R multiples are the only honest answer, and
-    // the basis records that no level chose them.
-    targets = config.risk.fallbackTargetR.map((r) => (long ? price + stopDistance * r : price - stopDistance * r));
-    targetBasis = 'R multiples (no structural target in range)';
+    // Genuinely clear air ahead. An R multiple is the only honest answer, and
+    // the basis records that no level chose it.
+    target = long ? price + stopDistance * config.risk.fallbackTargetR : price - stopDistance * config.risk.fallbackTargetR;
+    targetBasis = 'R multiple (no structural target in range)';
   } else {
     // The nearest obstacle decides whether there is a trade here at all.
     //
@@ -154,28 +196,32 @@ export function buildTicket(input: RiskInput): { ticket: RiskTicketDraft | null;
     // fire. A level too close to pay for the stop is not noise to be ignored;
     // it is the reason not to take the trade.
     const nearest = obstacles[0]!;
-    const available = Math.abs(nearest.price - price) / stopDistance;
+
+    // Just SHORT of the level, not on it.
+    //
+    // The obstacle is where the opposing orders sit, so price routinely turns
+    // a few pips before reaching it. Targeting the level exactly converts a
+    // move that went the right way into a full loss often enough to matter.
+    //
+    // The haircut is applied BEFORE the gate, not after: gating on the
+    // obstacle and then shaving the target lets a ticket pass at 1.2R and
+    // ship at 1.19R, which is precisely the ticket the gate exists to refuse.
+    target = price + (nearest.price - price) * config.risk.targetHaircut;
+    targetBasis = nearest.basis;
+
+    const available = Math.abs(target - price) / stopDistance;
     if (available < config.risk.minRewardRisk) {
       return {
         ticket: null,
-        reject: `Only ${available.toFixed(2)}R to the ${nearest.basis} against a ${(stopDistance / atr).toFixed(1)} ATR stop — below the ${config.risk.minRewardRisk}R floor.`,
+        reject: `Only ${available.toFixed(2)}R to the ${nearest.basis} — below the ${config.risk.minRewardRisk}R floor.`,
       };
-    }
-
-    targets = obstacles.slice(0, 3).map((o) => o.price);
-    targetBasis = nearest.basis;
-    // Always offer three: a runner beyond the last known obstacle is still a
-    // plan, whereas exiting everything at the first zone caps every winner.
-    while (targets.length < 3) {
-      const last = targets[targets.length - 1]!;
-      targets.push(long ? last + stopDistance : last - stopDistance);
     }
   }
 
-  const rewardRisk = Math.abs(targets[0]! - price) / stopDistance;
+  const rewardRisk = Math.abs(target - price) / stopDistance;
 
   return {
-    ticket: { entry: price, stop, targets, stopDistance, rewardRisk, stopBasis, targetBasis },
+    ticket: { entry: price, stop, target, stopDistance, rewardRisk, stopBasis, targetBasis },
     reject: null,
   };
 }

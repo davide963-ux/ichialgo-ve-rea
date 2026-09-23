@@ -22,7 +22,7 @@ const analysis = (over: Partial<StrategyAnalysis> = {}): StrategyAnalysis => ({
   marketCondition: 'TRENDING_BULLISH',
   status: 'CONFIRMED',
   price: 1.1,
-  risk: { entry: 1.1, stop: 1.098, targets: [1.103], stopPips: 20, invalidation: null },
+  risk: { entry: 1.1, stop: 1.098, target: 1.103, stopPips: 20, invalidation: null },
   anchor: 1,
   reasons: [],
   warnings: [],
