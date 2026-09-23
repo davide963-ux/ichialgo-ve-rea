@@ -1,7 +1,10 @@
 # Ichialgo — Forex terminal
 
-**Live Forex market data, a 24/7 multi-timeframe confluence scanner, a backtest that replays the
-same code the scanner runs, and an R-multiple results page.**
+**Live Forex market data, charts and a position-size calculator.**
+
+> **No trading strategy.** One was built and removed — measured against real market data it had
+> no edge. [§4](#4-strategy) records what happened and why, because the mistake is worth not
+> repeating.
 
 | Stack | |
 |---|---|
@@ -9,8 +12,8 @@ same code the scanner runs, and an R-multiple results page.**
 | Charts | TradingView Lightweight Charts v5 (open-source charting library) |
 | Build | Vite 8 |
 | Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`), with Twelve Data multi-key failover |
-| Strategy | Multi-timeframe confluence: structure, BOS/CHoCH, S/R, patterns, EMA50, Ichimoku |
-| Tests | Vitest — 336 across the engine, indicators, lifecycle, backtest, scanner, proxy |
+| Strategy | **none** — see [§4](#4-strategy) |
+| Tests | Vitest — 115 across indicators, the proxy, the key pool, the response cache and the calculator |
 | Data | Twelve Data, behind a provider interface |
 
 ---
@@ -48,8 +51,7 @@ One key per Twelve Data account; the numbering is the **failover order**. `TWELV
 #### The budget, and what more keys buy you
 
 Free Basic is **8 credits/min and 800 credits/day PER KEY**, and `/quote` costs **1 credit per
-symbol** — so a 7-pair refresh spends 7 credits. Candles (charts + the strategy) come out of the
-same budget.
+symbol** — so a 7-pair refresh spends 7 credits. Chart candles come out of the same budget.
 
 | Keys | Credits/min | Credits/day | Warm-up | Runtime/day at 60s polling |
 |---|---|---|---|---|
@@ -81,12 +83,53 @@ Polling suspends while the tab is hidden and takes one fresh reading when it com
 
 This matters more than it sounds. Seven pairs at the default 60-second interval spend ~420
 credits an hour, so a single forgotten background tab exhausts a 4,000-credit daily budget in
-under ten hours — and then the charts, the backtest and the scanner all fail on an exhausted
-key. The failure has no error of its own; it surfaces days later as "the data stopped working".
+under ten hours — and then every chart in the app fails on an exhausted key. The failure has no error of its own; it surfaces days later as "the data stopped working".
 
 Streaming is deliberately left running: a websocket the provider is already pushing to costs
 nothing per message, and tearing it down on every tab switch would trade a real reconnect for
 an imaginary saving.
+
+#### Repeat requests do not spend credits either
+
+The proxy keeps successful responses in memory and serves repeats from there
+(`server/responseCache.mjs`). A second tab, a reload, or two users on the same deployment asking
+for the same quote in the same minute cost **one** credit between them, not one each.
+
+| Shape | Default TTL | Env var | Why |
+|---|---|---|---|
+| `/quote` | 60 s | `TWELVEDATA_QUOTE_CACHE_MS` | prices move constantly |
+| `/time_series` | 15 min | `TWELVEDATA_SERIES_CACHE_MS` | a 1h/4h bar only changes when it closes |
+
+Set either to `0` to disable that half — useful for ten minutes of debugging, expensive to leave
+off. Every response carries `X-TD-Cache: HIT|MISS`, so a credit question can be answered by
+looking in devtools rather than guessing, and `/api/td-rest/_status` reports `cache.hits`,
+`cache.misses` and `cache.entries`.
+
+Two callers arriving together are the case a TTL alone does **not** cover: aligned pollers all
+miss an empty cache in the same millisecond, so a plain TTL would let N tabs each start their own
+upstream request. The cache therefore also does **single-flight** — the second caller joins the
+request already in the air instead of starting a new one.
+
+```mermaid
+flowchart TD
+    Req["GET /api/td-rest/quote?symbol=EUR/USD"] --> Guard{"validateTdRequest<br/>currency pair? ≤12 symbols?<br/>known interval? outputsize ≤5000?"}
+    Guard -- no --> R400["400 — zero credits spent"]
+    Guard -- yes --> Fresh{"cached and still<br/>inside its TTL?"}
+    Fresh -- yes --> HIT["X-TD-Cache: HIT<br/>0 credits"]
+    Fresh -- no --> Flight{"same key already<br/>in the air?"}
+    Flight -- yes --> Join["await that promise<br/>0 credits"]
+    Flight -- no --> Pool["key pool → fetch upstream<br/>N credits"]
+    Pool --> Ok{"HTTP ok AND<br/>body not an error?"}
+    Ok -- yes --> Store["store for the TTL"] --> MISS["X-TD-Cache: MISS"]
+    Ok -- no --> MISS
+```
+
+Errors are deliberately **not** cached. Caching one would turn a single bad minute into a whole
+TTL of bad minutes, and an error is exactly what a caller should be free to retry.
+
+Note the cache lives in the process, so on Vercel it is per warm instance and dies on a cold
+start. That makes it weaker there than it is under `npm start`, not broken: the polling loop the
+cache exists for hits the same warm instance repeatedly.
 
 ### Security: the proxy is read-only
 `server/api.mjs` forwards only an allowlist of **GET** endpoints (`quote`, `time_series`, and the
@@ -94,6 +137,20 @@ local `_status` report). Everything else gets `403`/`405`, and any non-GET metho
 Keeping it read-only and explicit means a bug here cannot turn the proxy into a general-purpose
 relay, and your API keys never leave the server.
 `npm start` binds to `127.0.0.1`. Don't expose it publicly without authentication in front.
+
+Before any credit is committed, `server/tdValidate.mjs` also checks that the request is one we are
+willing to **pay** for:
+
+- the symbol is a currency pair — two ISO-4217 codes separated by `/` (a shape check, not a
+  hard-coded list, so adding a pair to `src/config/pairs.ts` cannot silently break the proxy);
+- at most 12 symbols per batch, because `/quote` charges per symbol;
+- the interval is one Twelve Data actually supports;
+- `outputsize` is a number and at most 5000.
+
+A request that fails any of these gets `400` and costs **nothing**. Without this, anyone who found
+the deployment could use it as their own free Twelve Data key — on your daily budget. The path
+forwarded upstream is rebuilt from the validated parameters rather than patched, so nothing
+unreviewed rides along.
 
 ### Why not TradingView for data?
 TradingView does not offer a public market-data API for this. We use their **open-source chart library**
@@ -137,42 +194,28 @@ Rules enforced by the structure:
 
 ```
 src/
-  config/        pairs.ts (add pairs here), timeframes.ts, app.ts, strategy.ts
+  config/        pairs.ts (add pairs here), timeframes.ts, app.ts
   services/marketData/
     types.ts                 provider contract, Quote, Candle, ProviderError
     http.ts                  fetch + timeout + HTTP→error mapping
     MarketDataService.ts     orchestration (the heart of the data layer)
     providers/               TwelveDataProvider, creditBudget, factory
     index.ts                 singleton + public exports
-  services/strategy/
-    analyse.ts               the orchestrator: scores both sides, picks the better
-    contract.ts              StrategyAnalysis + tiers, the types every consumer reads
-    engine/config.ts         every threshold, scaled to typical candle range
-    engine/scale.ts          typical range + directional efficiency (no ATR)
-    engine/structure.ts      swings, trend, BOS vs CHoCH (pure, tested)
-    engine/levels.ts         S/R zones, breakout episodes, retests (pure, tested)
-    engine/chartPatterns.ts  reversal / continuation / bilateral (pure, tested)
-    engine/candles.ts        21 candlestick patterns (pure, tested)
-    engine/trendTools.ts     EMA50, Ichimoku, momentum readers
-    engine/scoring.ts        weighted confluence, contextual + capped (tested)
-    engine/risk.ts           structural stop, structural targets, RR gate (tested)
-    lifecycle.ts             SetupTracker: turns states into events (pure, tested)
-    backtest.ts              replays candles through analyse() (pure, tested)
-    performance.ts           R-multiple metrics, shared with live results (tested)
   state/marketStore.ts       immutable external store (useSyncExternalStore)
   state/accountStore.ts      balance + risk %, persisted; shared by plans and calculator
-  hooks/                     useMarketData, useCandles, useChartIndicators,
-                             useSignalStorage, useBacktest, useNow
+  hooks/                     useMarketData, useCandles, useChartIndicators, useNow
   lib/indicators/            ema, atr, ichimoku (+tests)
   lib/                       positionSize (+tests), pips, format, time, locale
   components/                Navbar, MetricCard, ForexTable, ForexRow, MarketStatus,
                              PriceChange, PairDetails, CandlestickChart, TimeframeSelector,
-                             EmptyState, BacktestPanel, BacktestResults, EquityCurve,
-                             Calculator, ConnectionBanner, KumoMark, ScannerStatus
+                             EmptyState, Calculator, ConnectionBanner, KumoMark
   components/chart/          kumoPrimitive (the Kumo fill)
-  pages/                     Dashboard, PairPage, Results, Backtest, CalculatorPage
+  pages/                     Dashboard, PairPage, CalculatorPage
+fixtures/market/             real OANDA candles, for validating any future strategy
 server/
   api.mjs                    read-only GET allowlist + Twelve Data key failover
+  tdValidate.mjs             request guard: currency pairs only, batch + outputsize caps
+  responseCache.mjs          TTL cache + single-flight, so repeats cost no credits
   twelveDataKeyPool.mjs      multi-key credit pool (+ tests next to it)
   index.mjs                  production server (dist/ + the same proxy)
 api/                         Vercel entry points wrapping server/api.mjs
@@ -258,202 +301,57 @@ tooltip says so. There is no bid/ask on the REST quote, so those columns show `�
 
 ---
 
-## 4. Strategy: multi-timeframe confluence
+## 4. Strategy
 
-Weighted confluence over market structure, support/resistance, chart and
-candlestick patterns, EMA50 and Ichimoku — scored across three timeframes.
+**There is none.** The signal engine, the 24/7 scanner and everything that
+stored or displayed their output were removed.
 
-### The hierarchy
+### Why, and what it cost
 
-```
-4H  ──▶ directional context      (endorses or objects; never vetoes)
-1H  ──▶ where setups are found   (the working timeframe)
-15M ──▶ entry timing             (confirmation bonus)
-```
+Two strategies were built here. Both were validated against a synthetic market
+generator written alongside them — and that generator injected trends 45% of
+the time, which flatters a trend-following strategy by construction. It
+reported healthy numbers throughout: +0.39R a trade in "trending" conditions,
+clean parameter sweeps, a tidy knee in the tuning curve. All of it measured
+against a fiction.
 
-They are deliberately **not** required to agree. The 4H supplies context, the
-1H finds the setup, the 15M times the entry. Demanding all three look identical
-is the over-filtering that makes a scanner silent for days.
-
-### What is measured
-
-| Family | Weight | What it reads |
-|---|--:|---|
-| Market structure | 20 | HH/HL/LH/LL, swing highs and lows, trend, ranging |
-| BOS / CHoCH | 15 | break of structure vs change of character |
-| Support / resistance | 15 | multi-touch zones, role flips, headroom |
-| Chart pattern | 10 | reversal, continuation, bilateral |
-| Candlestick | 10 | 21 patterns, weighted by **location** |
-| EMA50 | 10 | side, slope, retest, reclaim, breakdown, extension |
-| Ichimoku | 10 | cloud side, Tenkan/Kijun, future cloud, Chikou |
-| Breakout / momentum | 10 | breakout, retest-and-hold, directional drive |
-| Multi-timeframe | 10 | 4H agreement, 15M confirmation |
-
-### BOS vs CHoCH
-
-The same price action is one or the other depending on the trend **in force
-when it happened**:
+When real OANDA data arrived (`fixtures/market/`, 6 pairs, 30,000 hourly
+candles) the same engine returned:
 
 ```
-uptrend   + break of last swing HIGH → BOS   (continuation)
-uptrend   + break of last swing LOW  → CHoCH (character change)
-downtrend + break of last swing LOW  → BOS   (continuation)
-downtrend + break of last swing HIGH → CHoCH (character change)
+172 trades      −0.097R per trade
+win rate 30.8%  (34.1% needed at the observed 1.93:1 payoff)
+95% CI          −0.308R to +0.113R      ← spans zero
 ```
 
-Neither requires the other. A CHoCH followed by a BOS **in the new direction**
-is the strongest reversal evidence available and is reported as such. The trend
-is rebuilt bar by bar rather than read from the end of the series — classifying
-an old break with today's trend is hindsight, and it relabels the CHoCH that
-*started* the current trend as a BOS.
+No edge. Not catastrophically broken either — indistinguishable from a coin
+flip, which is its own kind of answer.
 
-### Scoring is contextual, not additive
+### The lesson worth keeping
 
-- A bullish **CHoCH in a downtrend** is a reversal warning — near-full points.
-  The same CHoCH in an uptrend is a swing break; a quarter of that.
-- A bullish **BOS in an uptrend** is continuation — full points. In a downtrend
-  it is a counter-trend poke, worth far less.
-- A **candlestick's location is a multiplier**: mid-range it earns 30% of its
-  weight, at support/EMA/a retested breakout it earns all of it.
-- **Bilateral patterns get no direction.** A symmetrical triangle damps the
-  score and warns; it never picks a side before the breakout.
-- **Correlated evidence is capped.** Price above cloud + bullish cloud +
-  Tenkan over Kijun is one trending fact seen three ways, so the family is
-  capped at its weight.
+A generated market can establish that an engine is **causal** (it does not
+read future bars), that its **tickets are coherent** (stop the right side of
+entry, reward/risk as claimed), and that it **does not throw**. Those are real
+and worth testing.
 
-### The score is normalised against available evidence
+It cannot establish that a rule works. Using it for that produced three rounds
+of tuning against noise, and every number reported along the way was wrong in
+the same direction.
 
-This is the mechanism that stops over-filtering. A family that had data but
-found nothing counts at **half weight** in the denominator; a family with no
-data at all is excluded. The spec's own wording is the model: *"No recent BOS,
-therefore confidence is reduced slightly"* — slightly, not by fifteen points.
+The fixtures are checked in so the next attempt can be measured properly from
+its first line, and so that this mistake needs making only once.
 
-Without it, a clean trend reaction at support with a good candle and full
-indicator agreement could not reach the tradeable band, because three unrelated
-families happened to be silent.
+### What survived
 
-### Tiers
+Everything under the strategy, because none of it depended on the rules being
+good:
 
-| Score | Tier |
-|--:|---|
-| 85–100 | STRONG BUY / STRONG SELL |
-| 72–84 | BUY / SELL |
-| 62–71 | EARLY BUY / EARLY SELL |
-| 52–61 | WATCHLIST |
-| < 52 | NEUTRAL |
-
-Only **BUY and above are recorded as trades**. EARLY and WATCHLIST are visible
-in the scan's ranked `opportunities` list but never entered — recording a setup
-the strategy itself called unconfirmed would book the outcome of a trade nobody
-should have taken.
-
-### One entry, one stop, one target
-
-No TP1/TP2/TP3 ladder. Reaching the target is a win worth its reward/risk;
-reaching the stop is −1R. There is no third outcome.
-
-> The ladder was structurally losing and is worth recording. Its first rung sat
-> at the nearest opposing level — the likeliest place for price to turn — and
-> reaching it banked **nothing**, it only pulled the stop to breakeven. So the
-> commonest winner paid 0R while every loser paid −1R, and the system profited
-> only when price broke clean *through* the level it was aimed at. On a pure
-> random walk it lost 0.14R a trade, where the arithmetic says it must return
-> zero.
-
-Stops are anchored to **structure only** — the swing the setup was built on,
-the zone it rejected, or the pattern's invalidation — plus a small wick
-allowance, because a stop sitting exactly on an obvious swing low is the most
-reliably hunted price in the market. There is no volatility floor or cap: an
-earlier ATR minimum manufactured very tight stops paired with very distant
-targets, which showed a flattering reward/risk and were taken out by ordinary
-noise far more often than their geometry implied.
-
-If a level sits so close that price is already standing on it, the stop steps
-**out** to the next structural level rather than being padded to a constant.
-
-The target is the next real obstacle, placed just short of it — the level is
-where the opposing orders are, so price routinely turns a few pips before
-reaching it. A target that does not pay `minRewardRisk` **rejects the ticket**,
-and an actionable tier with no ticket is demoted to EARLY rather than emitted.
-
-### Refusing to trade a range
-
-The strategy is trend-following, so it earns in trends and bleeds in ranges —
-and real intraday forex spends most of its time ranging. That is why an early
-version came back negative on *every* pair over *every* period.
-
-Swing structure cannot see the difference: a range prints a higher low on every
-bounce. So a separate, purely structural measure gates it — **directional
-efficiency**, net displacement over total path length:
-
-```
-|close[end] − close[start]|  ÷  Σ |close[i] − close[i−1]|
-```
-
-A market travelling below the threshold can be WATCHED but never TRADED,
-whatever its confluence score. Swept, not guessed:
-
-| min efficiency | trades | blended R/trade |
-|--:|--:|--:|
-| 0.00 (off) | 624 | **−0.061** |
-| 0.15 | 373 | +0.073 |
-| 0.22 | 277 | +0.154 |
-| **0.28** | 232 | **+0.206** |
-| 0.35 | 204 | +0.204 |
-
-It improves monotonically to 0.28 then flattens — a knee, not a fitted peak.
-
-### What is measured, not assumed
-
-Expectancy across three deliberately different generated markets, 14 seeds
-each, in R per trade:
-
-| Market | Result |
-|---|--:|
-| Trending | **+0.39R** |
-| Pure random walk | **+0.03R** (≈0, as it must be) |
-| Mean-reverting | −0.37R, on 25 trades instead of 548 |
-
-The random-walk column is the honest check: on a driftless walk expectancy is
-mathematically **zero** for any reward/risk, so anything far from zero is a bug
-rather than an edge. It reads −0.12R with the chop filter off.
-
-The mean-reverting column never becomes positive — a trend strategy in a range
-should lose. What changed is that it now takes 25 trades there instead of 548,
-so the damage is −9R rather than −166R.
-
-- **~1–2%** of bars carry a tradeable signal; **~64%** carry an EARLY or
-  WATCHLIST reading, so the scan list is never empty
-- **causality verified**: replacing every bar after the analysed one with
-  garbage does not change the answer, at any of 120 sample points
-
-> None of this is evidence of a live edge. Generated data cannot provide that.
-> What these numbers establish is that the engine is **causal**, that its
-> tickets are **coherent**, and that it is **not systematically losing** — which
-> is the bar a strategy has to clear before real-money questions are worth
-> asking.
-
-### Tuning
-
-Every threshold lives in `src/services/strategy/engine/config.ts`, expressed
-as a multiple of the **typical candle range** on the pair and timeframe being
-analysed, so one number means the same thing on EUR/CHF and GBP/JPY, and on
-15M as on 4H.
-
-That scale is a plain mean of recent high-to-low ranges — deliberately *not*
-ATR: no true-range gap handling, no Wilder smoothing. It answers one question
-("is this distance large relative to normal movement?") and is never used to
-place a stop.
-
-### Seeing why a pair is or is not signalling
-
-```bash
-curl -sS -H 'x-scanner-token: TOKEN' \
-  'https://<your-app>/api/scanner?dry=EUR/USD&tf=1H'
-```
-
-Writes nothing; returns the full analysis including `reasons`, `warnings` and
-the complete score breakdown.
+| Kept | Why |
+|---|---|
+| `lib/indicators/` | Ichimoku, EMA, market structure — pure maths, drawn on the chart |
+| Market data layer | providers, service, store, key-pool proxy |
+| UI | dashboard, pair charts, calculator |
+| `fixtures/market/` | real candles to validate against |
 
 
 ## 5. Position-size calculator
@@ -480,98 +378,22 @@ Worked example (unit test): USD/JPY at 150.00, stop 150.50, $10,000, 1% risk
 
 ---
 
-## 6. Signal history (database)
+## 6. Signal history (removed)
 
-Every signal the scanner produces is written to Postgres, so the record survives a page reload,
-a redeploy and a browser change. The **Results** page reads it back.
+The app no longer reads or writes signals, so `/api/signals`, the scanner and
+the Supabase client are gone from the codebase.
 
-The browser never writes. Signals come from the server-side scanner alone — an earlier version
-also computed them in the browser and posted them, which gave the app two sources of truth that
-could disagree.
+The Postgres tables and their RPCs still exist in the project and are empty;
+the migrations that created them remain in `supabase/migrations/` as history.
+Nothing in the app touches them. Drop them, or leave them for whatever comes
+next — they cost nothing idle.
 
-### The shape of it
-
-```mermaid
-flowchart LR
-    CRON["cron every 15 min<br/>x-scanner-token"] --> SC["/api/scanner<br/>server/scannerCore.ts"]
-    SC --> AN["analyse()"] --> TR[SetupTracker]
-    TR -- "rpc/record_signals<br/>service key" --> PG[("Supabase Postgres<br/>public.signals")]
-    SC -- "rpc/close_signal<br/>TP/SL checks" --> PG
-    RP[Results page] -- "GET /api/signals?symbol=&timeframe=&result=" --> API["server/signals.mjs<br/>read-only"]
-    API -- "select, newest first" --> PG
-```
-
-The browser never talks to Supabase. It posts to our own proxy, which holds the **service key**
-server-side — the same rule as the market-data keys. The table has RLS enabled with **no
-policies**, so the anon key cannot read or write it even if it leaks; only the service role gets
-through.
-
-### Why an upsert, and why signals change
-
-A touch is first seen while its bar is still forming (`outcome: 'pending'`, `source: 'live'`) and
-is re-examined once the bar closes, when it becomes a bounce, a cross or inside. So the same
-signal is sent more than once with better information. `upsert_signals` merges on the signal id:
-
-```sql
-where s.source = 'live' or s.outcome = 'pending'   -- only overwrite a provisional row
-detected_at = least(s.detected_at, excluded.detected_at)  -- keep the first sighting
-```
-
-A confirmed row is never downgraded by a later live one, and the timestamp stays the moment the
-touch was first seen. Client-side, `signalVersion = id|source|outcome` decides what to re-send:
-a signal whose outcome changed gets a new version, so it goes up again; an unchanged one doesn't.
-
-### Setup
-
-Three environment variables, server-side only:
-
-```
-SUPABASE_URL=https://<project-ref>.supabase.co
-SUPABASE_SERVICE_KEY=<service_role key from Project Settings → API>
-SCANNER_TOKEN=<any long random string you invent>
-```
-
-`SUPABASE_SERVICE_KEY` is the **service_role** key, not the anon/publishable one. It bypasses RLS,
-so it belongs only in the server environment — never in `VITE_*`, never in the bundle.
-
-`SCANNER_TOKEN` is what stops anyone who finds the URL from triggering a scan. The cron service
-sends it as the **`x-scanner-token`** header; `/api/signals` is read-only and needs no token.
-
-Vercel binds environment variables to a **deployment**, so changing this in the dashboard does
-not affect the deployment already running — redeploy, or the function keeps comparing against
-the old value. A `401` from `/api/scanner` reports `headerPresent` and `lengthMatch` so you can
-tell "no header sent" from "trailing newline" from "genuinely a different secret".
-
-Apply `supabase/migrations/` to the project (Supabase SQL editor, or `supabase db push`) to create
-the table and the RPC.
-
-**Without these variables the app still works.** `/api/signals` answers `503` with
-`{"configured": false}` and the Results page explains what is missing instead of erroring.
-
-### Table
-
-| column | notes |
-|---|---|
-| `id` | the app's own signal id — `strategy\|symbol\|timeframe\|barTime`, which is what makes the upsert idempotent |
-| `symbol`, `timeframe`, `bar_time`, `detected_at` | when and what |
-| `source` | `candle` (a closed bar) or `live` (a forming one) |
-| `outcome` | `pending` · `bounce` · `cross` · `inside` |
-| `approach`, `trend`, `bias` | direction of the touch and the EMA50 slope |
-| `ichimoku` (jsonb), `ichimoku_score` | the five checks, and how many passed |
-| `plan` (jsonb) | entry, structural stop, target, lot size |
-
-`toRow()` in `server/signals.mjs` validates every field against the same CHECK constraints the
-table enforces and **drops** a bad row rather than failing the batch — one malformed signal
-cannot block the rest. `historyQuery()` whitelists the filter columns and caps `limit` at 1000, so
-the query string cannot be used to construct an arbitrary PostgREST request.
-
----
 
 ## 7. Extending
 
 **Add a pair:** append to `EXTRA_SYMBOLS` in `src/config/pairs.ts`. Nothing else changes.
 
-**Add a provider:** the interface is still there, so the UI, strategy and backtest need no changes.
+**Add a provider:** the interface is still there, so the UI needs no changes.
 1. Implement `MarketDataProvider` in `providers/MyProvider.ts` (map symbols, map errors to `ProviderError`).
 2. Register it in `providers/index.ts` and add `'myprovider'` to `ProviderId`.
 3. Add a read-only route for it in `server/api.mjs` (`routes` array).
@@ -589,23 +411,9 @@ the query string cannot be used to construct an arbitrary PostgREST request.
 
 
 
-**Tune the strategy:** everything is in `src/services/strategy/engine/config.ts`. **Replace** it:
-rewrite `analyse.ts` against the same `StrategyAnalysis` contract and bump `STRATEGY_ID` in
-`server/scannerCore.ts`. Nothing else changes — the tracker, scanner, database, backtest and
-Results page are all strategy-agnostic, and `analyse.test.ts` asserts the contract they depend on.
-
-```mermaid
-flowchart LR
-    MDS[MarketDataService] -->|"getCandles()"| BT["useBacktest"] --> BE["runBacktest()"]
-    BE --> AN["analyse()"]
-    CRON[cron] --> SC["/api/scanner"] --> AN
-    AN --> TR[SetupTracker] --> PG[("signals")]
-    PG --> RP[Results page]
-    BE --> BR[Verdict · equity curve · trades]
-```
-
-Both paths into `analyse()` are the point: the backtest and the live scanner cannot diverge,
-because there is only one implementation to diverge from.
+**Add a strategy:** there is no strategy layer any more, so this is a green field. Whatever goes
+in, measure it against `fixtures/market/` before tuning a single threshold — [§4](#4-strategy)
+records what happens otherwise.
 
 ---
 

@@ -2,9 +2,8 @@
  * Shared Vercel serverless handler factory for the market-data proxy.
  *
  * Files starting with an underscore are never turned into their own Function
- * by Vercel, so this module is safe to import from the three route entry
- * points (api/oanda-rest, api/oanda-stream, api/td-rest) without becoming a
- * fourth, unwanted route itself.
+ * by Vercel, so the route entry points under api/ can import this module
+ * without it becoming an extra, unwanted route itself.
  */
 import { createMarketDataApi } from '../../server/api.mjs';
 

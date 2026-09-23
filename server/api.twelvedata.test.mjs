@@ -7,7 +7,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createMarketDataApi } from './api.mjs';
 
-const ENV = { TWELVEDATA_API_KEYS: 'aaaa1111,bbbb2222,cccc3333' };
+/**
+ * Caching is OFF for these tests.
+ *
+ * They are about the key pool — rotation, penalties, what reaches upstream —
+ * and a cache hit means nothing reaches upstream at all. Leaving it on would
+ * make them pass or fail on request ORDER rather than on pool behaviour. The
+ * cache has its own tests in responseCache.test.mjs.
+ */
+const ENV = {
+  TWELVEDATA_API_KEYS: 'aaaa1111,bbbb2222,cccc3333',
+  TWELVEDATA_QUOTE_CACHE_MS: '0',
+  TWELVEDATA_SERIES_CACHE_MS: '0',
+};
 
 /** Minimal ServerResponse stand-in. */
 function fakeRes() {
@@ -118,15 +130,29 @@ describe('GET /api/td-rest/quote with a key pool', () => {
   });
 
   it('forwards a symbol error untouched instead of burning the pool', async () => {
+    // A well-formed pair the provider happens not to carry. It gets past the
+    // request guard, so the pool behaviour is what is under test: one attempt,
+    // not one per key, because the next key would fail identically.
     const used = stubUpstream(() => ({
       status: 404,
       body: { status: 'error', code: 404, message: '**symbol** not found' },
     }));
     const api = createMarketDataApi(ENV);
-    const res = await call(api, '/api/td-rest/quote?symbol=XXX/YYY');
+    const res = await call(api, '/api/td-rest/quote?symbol=EUR/NOK');
 
     expect(used).toEqual(['aaaa1111']); // tried once, not three times
     expect(res.statusCode).toBe(404);
+  });
+
+  it('refuses a symbol that is not a currency pair without spending anything', async () => {
+    // The proxy holds the keys, so an unsupported symbol must cost zero —
+    // not one credit and an upstream round trip.
+    const used = stubUpstream(() => ({ body: {} }));
+    const api = createMarketDataApi(ENV);
+    const res = await call(api, '/api/td-rest/quote?symbol=AAPL');
+
+    expect(used).toEqual([]);
+    expect(res.statusCode).toBe(400);
   });
 
   it('charges one credit per symbol so a 7-pair batch fits one key', async () => {

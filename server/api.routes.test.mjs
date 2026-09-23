@@ -14,7 +14,7 @@
  */
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -54,18 +54,17 @@ export const serves = (deployed, { prefix, hasSubPath }) =>
   deployed.some((d) => d.prefix === prefix && (hasSubPath ? d.kind === 'catchall' || d.kind === 'static' : d.kind === 'static'));
 
 /** Functions that are not market-data proxy routes and never will be. */
-const STANDALONE = new Set(['scanner']);
+const STANDALONE = new Set();
 
 describe('proxy routes vs Vercel functions', () => {
   it('finds the route table (so this cannot pass by reading nothing)', () => {
     const routes = proxyRoutes();
-    expect(routes.length).toBeGreaterThanOrEqual(3);
-    // Both shapes are live, so both halves of the rule are exercised for real:
+    expect(routes.length).toBeGreaterThanOrEqual(1);
     // Twelve Data's routes carry a sub-path (/quote, /time_series, /_status),
-    // which a [...path] catch-all serves…
+    // which a [...path] catch-all serves. It is the only live shape now that
+    // /api/signals is gone; the bare-path half of the rule is checked
+    // directly in the test below, which exists for exactly this case.
     expect(routes.some((r) => r.prefix === 'td-rest' && r.hasSubPath)).toBe(true);
-    // …while /api/signals is bare, which needs a STATIC file.
-    expect(routes.some((r) => r.prefix === 'signals' && !r.hasSubPath)).toBe(true);
   });
 
   /**
@@ -111,46 +110,19 @@ describe('proxy routes vs Vercel functions', () => {
       expect(readFileSync(path, 'utf8')).toMatch(/_lib\/handler\.mjs'/);
     }
   });
-});
 
-/**
- * The scanner is its own function, and the rules it has to obey are different
- * from the proxy's — but they are the ones that actually broke production, so
- * they are checked just as hard.
- */
-describe('the scanner function', () => {
-  const source = () => readFileSync(join(apiDir, 'scanner.js'), 'utf8');
+  /**
+   * The check above proves the entry points NAME the shared handler. It does
+   * not prove the handler is there — and it wasn't, once: a cleanout removed
+   * api/_lib/ while every route still re-exported from it. Vitest never
+   * noticed, because nothing in the test suite imports the api/ entry points;
+   * Vercel would have noticed on the first request in production.
+   */
+  it('actually ships the shared handler the entry points import', async () => {
+    const handler = join(apiDir, '_lib', 'handler.mjs');
+    expect(existsSync(handler), 'api/_lib/handler.mjs is missing but every api/ route re-exports it').toBe(true);
 
-  it('is a STATIC file, because /api/scanner is a bare path', () => {
-    expect(existsSync(join(apiDir, 'scanner.js'))).toBe(true);
-    expect(existsSync(join(apiDir, 'scanner', '[...path].js'))).toBe(false);
-  });
-
-  it('is .js, not .ts', () => {
-    // A .ts entry point importing the app's extensionless graph died with
-    // ERR_MODULE_NOT_FOUND under pure Node ESM, surfacing only as
-    // FUNCTION_INVOCATION_FAILED with no message in the response.
-    expect(existsSync(join(apiDir, 'scanner.ts'))).toBe(false);
-  });
-
-  it('imports the pre-built bundle rather than reaching into src/', () => {
-    const text = source();
-    expect(text).toMatch(/_lib\/scanner\.bundle\.mjs/);
-    // Any path out of api/ would drag the extensionless graph back in.
-    expect(text).not.toMatch(/from '\.\.\//);
-  });
-
-  it('reports a boot failure instead of dying silently', () => {
-    const text = source();
-    // The import must be INSIDE the handler: a static one that fails to
-    // resolve kills the function before any of this code can run.
-    expect(text).toMatch(/await import\(/);
-    expect(text).toMatch(/catch/);
-    expect(text).toMatch(/SCANNER_BOOT_FAILED/);
-  });
-
-  it('is built by the build command, so the bundle exists before deploy', () => {
-    const pkg = JSON.parse(readFileSync(join(apiDir, '..', 'package.json'), 'utf8'));
-    expect(pkg.scripts.build).toMatch(/buildScanner/);
+    const mod = await import(pathToFileURL(handler).href);
+    expect(typeof mod.default, 'the handler must default-export a request handler').toBe('function');
   });
 });
