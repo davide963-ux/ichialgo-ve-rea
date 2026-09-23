@@ -13,7 +13,7 @@
 | Build | Vite 8 |
 | Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`), with Twelve Data multi-key failover |
 | Strategy | **none** — see [§4](#4-strategy) |
-| Tests | Vitest — 102 across indicators, the proxy, the key pool and the calculator |
+| Tests | Vitest — 115 across indicators, the proxy, the key pool, the response cache and the calculator |
 | Data | Twelve Data, behind a provider interface |
 
 ---
@@ -89,12 +89,68 @@ Streaming is deliberately left running: a websocket the provider is already push
 nothing per message, and tearing it down on every tab switch would trade a real reconnect for
 an imaginary saving.
 
+#### Repeat requests do not spend credits either
+
+The proxy keeps successful responses in memory and serves repeats from there
+(`server/responseCache.mjs`). A second tab, a reload, or two users on the same deployment asking
+for the same quote in the same minute cost **one** credit between them, not one each.
+
+| Shape | Default TTL | Env var | Why |
+|---|---|---|---|
+| `/quote` | 60 s | `TWELVEDATA_QUOTE_CACHE_MS` | prices move constantly |
+| `/time_series` | 15 min | `TWELVEDATA_SERIES_CACHE_MS` | a 1h/4h bar only changes when it closes |
+
+Set either to `0` to disable that half — useful for ten minutes of debugging, expensive to leave
+off. Every response carries `X-TD-Cache: HIT|MISS`, so a credit question can be answered by
+looking in devtools rather than guessing, and `/api/td-rest/_status` reports `cache.hits`,
+`cache.misses` and `cache.entries`.
+
+Two callers arriving together are the case a TTL alone does **not** cover: aligned pollers all
+miss an empty cache in the same millisecond, so a plain TTL would let N tabs each start their own
+upstream request. The cache therefore also does **single-flight** — the second caller joins the
+request already in the air instead of starting a new one.
+
+```mermaid
+flowchart TD
+    Req["GET /api/td-rest/quote?symbol=EUR/USD"] --> Guard{"validateTdRequest<br/>currency pair? ≤12 symbols?<br/>known interval? outputsize ≤5000?"}
+    Guard -- no --> R400["400 — zero credits spent"]
+    Guard -- yes --> Fresh{"cached and still<br/>inside its TTL?"}
+    Fresh -- yes --> HIT["X-TD-Cache: HIT<br/>0 credits"]
+    Fresh -- no --> Flight{"same key already<br/>in the air?"}
+    Flight -- yes --> Join["await that promise<br/>0 credits"]
+    Flight -- no --> Pool["key pool → fetch upstream<br/>N credits"]
+    Pool --> Ok{"HTTP ok AND<br/>body not an error?"}
+    Ok -- yes --> Store["store for the TTL"] --> MISS["X-TD-Cache: MISS"]
+    Ok -- no --> MISS
+```
+
+Errors are deliberately **not** cached. Caching one would turn a single bad minute into a whole
+TTL of bad minutes, and an error is exactly what a caller should be free to retry.
+
+Note the cache lives in the process, so on Vercel it is per warm instance and dies on a cold
+start. That makes it weaker there than it is under `npm start`, not broken: the polling loop the
+cache exists for hits the same warm instance repeatedly.
+
 ### Security: the proxy is read-only
 `server/api.mjs` forwards only an allowlist of **GET** endpoints (`quote`, `time_series`, and the
 local `_status` report). Everything else gets `403`/`405`, and any non-GET method gets `405`.
 Keeping it read-only and explicit means a bug here cannot turn the proxy into a general-purpose
 relay, and your API keys never leave the server.
 `npm start` binds to `127.0.0.1`. Don't expose it publicly without authentication in front.
+
+Before any credit is committed, `server/tdValidate.mjs` also checks that the request is one we are
+willing to **pay** for:
+
+- the symbol is a currency pair — two ISO-4217 codes separated by `/` (a shape check, not a
+  hard-coded list, so adding a pair to `src/config/pairs.ts` cannot silently break the proxy);
+- at most 12 symbols per batch, because `/quote` charges per symbol;
+- the interval is one Twelve Data actually supports;
+- `outputsize` is a number and at most 5000.
+
+A request that fails any of these gets `400` and costs **nothing**. Without this, anyone who found
+the deployment could use it as their own free Twelve Data key — on your daily budget. The path
+forwarded upstream is rebuilt from the validated parameters rather than patched, so nothing
+unreviewed rides along.
 
 ### Why not TradingView for data?
 TradingView does not offer a public market-data API for this. We use their **open-source chart library**
@@ -158,6 +214,8 @@ src/
 fixtures/market/             real OANDA candles, for validating any future strategy
 server/
   api.mjs                    read-only GET allowlist + Twelve Data key failover
+  tdValidate.mjs             request guard: currency pairs only, batch + outputsize caps
+  responseCache.mjs          TTL cache + single-flight, so repeats cost no credits
   twelveDataKeyPool.mjs      multi-key credit pool (+ tests next to it)
   index.mjs                  production server (dist/ + the same proxy)
 api/                         Vercel entry points wrapping server/api.mjs
