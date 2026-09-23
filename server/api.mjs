@@ -14,7 +14,6 @@
  *   GET /api/td-rest/quote             →  https://api.twelvedata.com/quote
  *   GET /api/td-rest/time_series       →  https://api.twelvedata.com/time_series
  *   GET /api/td-rest/_status           →  local key-pool report (no upstream call)
- *   GET  /api/signals                  →  stored signal history (Supabase)
  *
  * Twelve Data requests are NOT proxied blindly: they go through a key pool
  * (server/twelveDataKeyPool.mjs) that fails over to the next API key when one
@@ -23,7 +22,6 @@
  * proxy cannot inspect — hence the explicit fetch below.
  */
 import { TwelveDataKeyPool, classifyResponse, readApiKeys } from './twelveDataKeyPool.mjs';
-import { createSignalsApi } from './signals.mjs';
 
 const TD_MISSING =
   'Set TWELVEDATA_API_KEY (or TWELVEDATA_API_KEYS with several comma-separated keys) in .env, then restart the server.';
@@ -78,7 +76,6 @@ export function readConfig(env) {
 
 export function createMarketDataApi(env = process.env) {
   const cfg = readConfig(env);
-  const signals = createSignalsApi(env);
 
   const tdPool = new TwelveDataKeyPool({
     keys: cfg.twelvedata.keys,
@@ -183,13 +180,6 @@ export function createMarketDataApi(env = process.env) {
       missing: TD_MISSING,
       to: (m) => `/_status${m[1] ?? ''}`,
       proxy: tdStatus,
-    },
-    {
-      re: /^\/api\/signals(\?.*)?$/,
-      ready: () => true,
-      missing: '',
-      to: (m) => `/signals${m[1] ?? ''}`,
-      proxy: signals.history,
     },
   ];
 

@@ -1,26 +1,19 @@
 /**
- * Market scanner — live prices, and an honest account of what the system is
- * doing with them.
+ * Market scanner — live prices for the pairs being watched.
  *
- * WHAT CHANGED AND WHY
- * ────────────────────
- * This page used to show "EMA50 touches" as trade ideas. Those came from a
- * retired engine that the 24/7 scanner never ran, so a pair could sit here
- * looking like a textbook setup while the scanner correctly ignored it — the
- * page advertised signals the system would never act on, with nothing saying
- * the two were different.
+ * Prices are facts, and this page shows facts. It does not compute or display
+ * trading signals: an earlier version rendered its own opinion in the browser
+ * while a server-side scanner recorded a different one, and the two could
+ * disagree with nothing saying which was right.
  *
- * So the rule now: this page shows PRICES, which are facts, and the SCANNER'S
- * OWN STATE, which is the truth about what is being recorded. It does not
- * render a second opinion from anywhere else. Signals are whatever the scanner
- * actually stored, never a parallel calculation done in the browser.
+ * There is no strategy in the app at all now — the engine it used was removed
+ * once real market data showed it had no measurable edge.
  */
-import { Link, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import { ConnectionBanner } from '../components/ConnectionBanner';
 import { ForexTable } from '../components/ForexTable';
 import { MarketStatus } from '../components/MarketStatus';
 import { MetricCard } from '../components/MetricCard';
-import { ScannerStatus } from '../components/ScannerStatus';
 import { TimeframeSelector } from '../components/TimeframeSelector';
 import { DEFAULT_TIMEFRAME, isTimeframe, type Timeframe } from '../config/timeframes';
 import { useNow } from '../hooks/useNow';
@@ -67,27 +60,6 @@ export function Dashboard() {
           hint={lastUpdate ? `Last updated: ${formatClock(lastUpdate)}` : 'Waiting for first price'}
           accent={lastUpdate !== null && now - lastUpdate < 10_000}
         />
-      </section>
-
-      {/* The one place that says whether signals are being produced at all.
-          Stated plainly here rather than left to be inferred from an empty
-          table, which is exactly how the old page misled. */}
-      <section className="panel">
-        <div className="panel-head">
-          <div>
-            <h2 className="panel-title">Signals</h2>
-            <span className="panel-sub">What the 24/7 scanner is recording.</span>
-          </div>
-          <ScannerStatus />
-        </div>
-        <div className="panel-body empty">
-          <strong>Signals are recorded by the 24/7 scanner, not by this page.</strong>
-          <p>
-            Every 15 minutes it reads 4H context, 1H structure and 15M entry timing across all pairs, scores the
-            confluence, and records the setups that confirm. See <Link to="/results">Results</Link> for what it has
-            produced.
-          </p>
-        </div>
       </section>
 
       <section className="panel">
