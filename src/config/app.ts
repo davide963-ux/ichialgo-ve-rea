@@ -10,4 +10,12 @@ export const APP_CONFIG = {
   twelveDataCreditsPerDay: Math.max(0, Number(import.meta.env.VITE_TWELVEDATA_CREDITS_PER_DAY ?? 800) || 0),
   /** Candles requested for the detail chart. */
   chartCandleCount: 300,
+  /**
+   * Take chart candles from Yahoo (free) before spending a Twelve Data
+   * credit. Set VITE_YAHOO_CANDLES=0 to go back to Twelve Data only — worth
+   * doing if Yahoo's unofficial endpoint starts refusing this deployment's
+   * IP outright, since every chart then pays one wasted round trip per
+   * cooldown window. See providers/YahooCandleRouter.ts.
+   */
+  yahooCandles: String(import.meta.env.VITE_YAHOO_CANDLES ?? '1') !== '0',
 } as const;

@@ -71,6 +71,16 @@ function extractMessage(body: unknown): string | undefined {
     const b = body as Record<string, unknown>;
     if (typeof b.errorMessage === 'string') return b.errorMessage; // our proxy
     if (typeof b.message === 'string') return b.message; // Twelve Data
+    // Yahoo nests it: { chart: { error: { code, description } } }. Without
+    // this, a genuine "symbol not found" reads as a 404 with no provider
+    // body — which the rule below takes as the proxy being unreachable, and
+    // reports a real data error as a deployment fault.
+    const chart = b.chart as { error?: { code?: unknown; description?: unknown } } | undefined;
+    const err = chart?.error;
+    if (err) {
+      if (typeof err.description === 'string') return err.description;
+      if (typeof err.code === 'string') return err.code;
+    }
   }
   return undefined;
 }

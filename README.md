@@ -13,7 +13,7 @@
 | Build | Vite 8 |
 | Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`), with Twelve Data multi-key failover |
 | Strategy | **none** — see [§4](#4-strategy) |
-| Tests | Vitest — 115 across indicators, the proxy, the key pool, the response cache and the calculator |
+| Tests | Vitest — 156 across indicators, the proxy, the key pool, the response cache, the Yahoo candle route and the calculator |
 | Data | Twelve Data, behind a provider interface |
 
 ---
@@ -131,6 +131,56 @@ Note the cache lives in the process, so on Vercel it is per warm instance and di
 start. That makes it weaker there than it is under `npm start`, not broken: the polling loop the
 cache exists for hits the same warm instance repeatedly.
 
+### Chart candles come from Yahoo, for free
+
+A `/time_series` call costs a Twelve Data credit. Yahoo's chart endpoint costs
+nothing and needs no account, so candles are taken from there first:
+
+```mermaid
+flowchart TD
+    Ask["getCandles(EUR/USD, 1H, 300)"] --> B{"breaker open?"}
+    B -- yes --> TD["Twelve Data /time_series<br/>1 credit"]
+    B -- no --> Y["/api/yahoo-chart<br/>0 credits"]
+    Y -- ok --> Done["candles"]
+    Y -- "refused / no data" --> Rec["record the failure"] --> TD
+    TD --> Done
+```
+
+**Quotes stay on Twelve Data.** Yahoo was removed from this project once
+already, for a real reason: the chart endpoint is unofficial and answers 429
+to datacenter IPs, which is what a Vercel function is. Seven pairs polled
+every 60 seconds forever from a serverless IP is exactly the traffic that
+earns that refusal. Candles are a different shape of request — one per pair
+per timeframe when a chart is opened, behind a 15-minute server cache — so
+Yahoo is used as a **saving with a fallback, never as a dependency**.
+
+The circuit breaker is what keeps a refusal cheap. Without it every chart
+would pay a doomed round trip before falling back:
+
+| What happened | What the breaker does |
+|---|---|
+| 429 (the datacenter-IP block) | park Yahoo for 30 min — it does not clear in a minute |
+| any other failure, 1st or 2nd | nothing; one bad response is just one bad response |
+| 3 failures in a row | park Yahoo for 5 min |
+| a success | reset the count |
+
+While parked, candles go straight to Twelve Data with no wasted request.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `VITE_YAHOO_CANDLES` | on | `0` goes back to Twelve Data for candles |
+| `YAHOO_CACHE_MS` | `900000` | how long the proxy may reuse a Yahoo response |
+
+Responses carry `X-Yahoo-Cache: HIT|MISS`, and `/api/td-rest/_status` reports
+`yahooCache`. To see which source actually drew a chart, watch the network
+tab: `/api/yahoo-chart` is free, `/api/td-rest/time_series` is a credit.
+
+4H is the one timeframe Yahoo has no interval for, so it is **resampled from
+1h bars** — exact, not approximate: four 1h bars tile a 4h bar perfectly.
+They are bucketed on absolute UTC time (00:00, 04:00, 08:00…), which is not
+necessarily where Twelve Data puts its own 4H bars, so a fallback refetches
+the whole series rather than splicing two sources together.
+
 ### Security: the proxy is read-only
 `server/api.mjs` forwards only an allowlist of **GET** endpoints (`quote`, `time_series`, and the
 local `_status` report). Everything else gets `403`/`405`, and any non-GET method gets `405`.
@@ -168,20 +218,25 @@ flowchart TD
       Store["Market Data State<br/>state/marketStore.ts"]
       Svc["MarketDataService<br/>streaming · polling · staleness · errors · candle cache"]
       IF{{"MarketDataProvider interface"}}
+      RT["YahooCandleRouter<br/>candles: Yahoo first, Twelve Data on refusal"]
       TD["TwelveDataProvider"]
     end
-    Proxy["server/api.mjs (read-only GET allowlist)<br/>injects the API key"]
+    Proxy["server/api.mjs (read-only GET allowlist)<br/>injects the API key · caches · validates"]
     Pool["twelveDataKeyPool.mjs<br/>failover across N API keys"]
-    TDAPI[("Twelve Data")]
+    TDAPI[("Twelve Data<br/>quotes + fallback candles")]
+    YAPI[("Yahoo Finance<br/>candles, 0 credits")]
 
     UI --> Hooks --> Store
     Svc -- "setState()" --> Store
     Hooks -- "getCandles()" --> Svc
     Svc --> IF
-    IF --> TD
+    IF --> RT
+    RT -- "quotes, and candles on fallback" --> TD
+    RT -- "/api/yahoo-chart" --> Proxy
     TD -- "/api/td-rest" --> Proxy
     Proxy --> Pool
     Proxy --> TDAPI
+    Proxy --> YAPI
 ```
 
 Rules enforced by the structure:
@@ -200,6 +255,8 @@ src/
     http.ts                  fetch + timeout + HTTP→error mapping
     MarketDataService.ts     orchestration (the heart of the data layer)
     providers/               TwelveDataProvider, creditBudget, factory
+    providers/yahooCandles   free candles: symbol/range mapping, 4H resampling
+    providers/YahooCandleRouter  Yahoo first, Twelve Data on refusal (+breaker)
     index.ts                 singleton + public exports
   state/marketStore.ts       immutable external store (useSyncExternalStore)
   state/accountStore.ts      balance + risk %, persisted; shared by plans and calculator
@@ -215,6 +272,7 @@ fixtures/market/             real OANDA candles, for validating any future strat
 server/
   api.mjs                    read-only GET allowlist + Twelve Data key failover
   tdValidate.mjs             request guard: currency pairs only, batch + outputsize caps
+  yahoo.mjs                  Yahoo chart allowlist (free candles, no account)
   responseCache.mjs          TTL cache + single-flight, so repeats cost no credits
   twelveDataKeyPool.mjs      multi-key credit pool (+ tests next to it)
   index.mjs                  production server (dist/ + the same proxy)
