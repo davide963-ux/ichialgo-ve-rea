@@ -14,7 +14,7 @@
  */
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -109,5 +109,20 @@ describe('proxy routes vs Vercel functions', () => {
       const path = existsSync(file) ? file : join(apiDir, d.prefix, 'index.js');
       expect(readFileSync(path, 'utf8')).toMatch(/_lib\/handler\.mjs'/);
     }
+  });
+
+  /**
+   * The check above proves the entry points NAME the shared handler. It does
+   * not prove the handler is there — and it wasn't, once: a cleanout removed
+   * api/_lib/ while every route still re-exported from it. Vitest never
+   * noticed, because nothing in the test suite imports the api/ entry points;
+   * Vercel would have noticed on the first request in production.
+   */
+  it('actually ships the shared handler the entry points import', async () => {
+    const handler = join(apiDir, '_lib', 'handler.mjs');
+    expect(existsSync(handler), 'api/_lib/handler.mjs is missing but every api/ route re-exports it').toBe(true);
+
+    const mod = await import(pathToFileURL(handler).href);
+    expect(typeof mod.default, 'the handler must default-export a request handler').toBe('function');
   });
 });
