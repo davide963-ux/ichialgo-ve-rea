@@ -23,7 +23,7 @@ export function readSignalsConfig(env) {
 }
 
 const TIMEFRAMES = new Set(['30M', '1H', '4H', '1D']);
-const RESULTS = new Set(['pending', 'tp1', 'tp2', 'tp3', 'sl', 'be', 'expired', 'invalidated']);
+const RESULTS = new Set(['pending', 'tp', 'sl', 'expired', 'invalidated']);
 const DIRECTIONS = new Set(['long', 'short']);
 
 /** Table row → the shape the UI renders. */
@@ -41,15 +41,11 @@ export function fromRow(row) {
     marketCondition: row.market_condition,
     setupStatus: row.setup_status,
     price: row.price,
-    atr: row.atr,
     entry: row.entry,
     stopLoss: row.stop_loss,
-    takeProfit1: row.take_profit1,
-    takeProfit2: row.take_profit2,
-    takeProfit3: row.take_profit3,
+    takeProfit: row.take_profit,
     stopPips: row.stop_pips,
     result: row.result,
-    tp1Hit: row.tp1_hit,
     closedPrice: row.closed_price,
     closedAt: row.closed_at ? new Date(row.closed_at).getTime() : null,
     rMultiple: row.r_multiple,

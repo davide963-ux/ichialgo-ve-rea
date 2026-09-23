@@ -83,8 +83,23 @@ export interface RiskTicket {
    * overwrites it leaves the division with a zero denominator.
    */
   stop: number | null;
-  /** Ordered, nearest first. Any length; the database stores the first three. */
-  targets: number[];
+  /**
+   * The single take-profit level.
+   *
+   * ONE TARGET, NOT A LADDER
+   * ────────────────────────
+   * An earlier version carried TP1/TP2/TP3 where the first rung only moved
+   * the stop to breakeven. That is structurally losing: the first rung sits
+   * at the nearest opposing level — the likeliest place for price to turn —
+   * so the common "win" paid 0R while every loss paid −1R, and the system
+   * profited only when price broke clean THROUGH the level it was aimed at.
+   * On a pure random walk it lost 0.14R a trade.
+   *
+   * One target removes the trap outright: reaching it is a win worth its
+   * reward/risk, missing it is −1R, and there is no third outcome that
+   * silently converts winners into scratches.
+   */
+  target: number | null;
   stopPips: number | null;
   /** Plain sentence describing what would prove the idea wrong. */
   invalidation: string | null;

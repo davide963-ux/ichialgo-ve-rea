@@ -80,7 +80,7 @@ describe('the engine answers rather than refusing', () => {
     if (isActionable(a.signal)) {
       expect(a.risk.entry).not.toBeNull();
       expect(a.risk.stop).not.toBeNull();
-      expect(a.risk.targets.length).toBeGreaterThan(0);
+      expect(a.risk.target).not.toBeNull();
     }
   });
 

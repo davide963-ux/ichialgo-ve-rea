@@ -9,7 +9,7 @@
  *   cron ──▶ /api/scanner ──▶ runScan()
  *                               │
  *                               ├─ 1. MANAGE OPEN TRADES   (always, even at night)
- *                               │     price per pair → TP/SL/breakeven/expiry
+ *                               │     price per pair → TP / SL / expiry
  *                               │
  *                               ├─ 2. GATE                 (session? weekend?)
  *                               │
@@ -231,22 +231,21 @@ export function isSessionActive(ms: number, [from, to]: [number, number]): boole
 export function resolveOutcome(
   signal: PendingSignal,
   price: number,
-): { outcome: Outcome | null; breakeven: boolean } {
-  const { direction, entry, stop_loss: stop, take_profit1: tp1, take_profit2: tp2, take_profit3: tp3 } = signal;
-  if (entry === null || stop === null) return { outcome: null, breakeven: false };
+): { outcome: Outcome | null } {
+  const { direction, entry, stop_loss: stop, take_profit: target } = signal;
+  if (entry === null || stop === null) return { outcome: null };
 
   const long = direction === 'long';
   const hitStop = long ? price <= stop : price >= stop;
-  if (hitStop) return { outcome: signal.tp1_hit ? 'be' : 'sl', breakeven: false };
 
-  const reached = (target: number | null) => target !== null && (long ? price >= target : price <= target);
-  if (reached(tp3)) return { outcome: 'tp3', breakeven: false };
-  if (reached(tp2)) return { outcome: 'tp2', breakeven: false };
-  // TP1 does not close the trade: it moves the stop to entry and lets the rest
-  // run. Worst case from here is zero rather than a loss.
-  if (!signal.tp1_hit && reached(tp1)) return { outcome: null, breakeven: true };
+  // The stop wins a tie, for the same reason it does in the backtest: a poll
+  // that sees both levels crossed cannot order them, and reading it the other
+  // way invents wins.
+  if (hitStop) return { outcome: 'sl' };
 
-  return { outcome: null, breakeven: false };
+  if (target !== null && (long ? price >= target : price <= target)) return { outcome: 'tp' };
+
+  return { outcome: null };
 }
 
 export async function runScan(options: RunScanOptions): Promise<ScanResult> {
@@ -313,11 +312,9 @@ export async function runScan(options: RunScanOptions): Promise<ScanResult> {
     }
 
     for (const signal of signals) {
-      const { outcome, breakeven } = resolveOutcome(signal, price);
+      const { outcome } = resolveOutcome(signal, price);
       try {
-        if (breakeven) {
-          await db.markBreakeven(signal.id);
-        } else if (outcome !== null) {
+        if (outcome !== null) {
           const affected = await db.closeSignal(signal.id, outcome, price);
           if (affected > 0) {
             result.closed++;
@@ -560,7 +557,7 @@ function toOpportunity(a: StrategyAnalysis): Opportunity {
   const why = a.reasons.slice(0, 3).join('; ');
   const caveat = a.warnings.length > 0 ? ` ${a.warnings[0]}` : '';
   const stop = a.risk.stop;
-  const target = a.risk.targets[0] ?? null;
+  const target = a.risk.target;
   const rewardRisk =
     a.risk.entry === null || stop === null || target === null || Math.abs(a.risk.entry - stop) === 0
       ? null

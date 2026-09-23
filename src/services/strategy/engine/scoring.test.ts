@@ -36,8 +36,8 @@ const levels = (over: Partial<LevelRead> = {}): LevelRead => ({
   resistance: { price: 1.13, touches: 2, barsSinceTouch: 20, role: 'resistance', halfWidth: 0.0005 },
   atSupport: false,
   atResistance: false,
-  supportDistanceAtr: 2,
-  resistanceDistanceAtr: 4,
+  supportDistanceRatio: 2,
+  resistanceDistanceRatio: 4,
   breakout: null,
   previousHigh: 1.14,
   previousLow: 1.08,
@@ -54,6 +54,7 @@ const input = (over: Partial<ScoreInput> = {}): ScoreInput => ({
   ema: null,
   ichimoku: null,
   momentum: 0,
+  efficiency: 0.6,
   higherTrend: 'none',
   entryConfirmation: 'none',
   config: ENGINE,
@@ -66,12 +67,12 @@ describe('the spec\'s worked example reaches a tradeable score', () => {
     // bullish engulfing + EMA50 confirmation + bullish Ichimoku position may
     // already create a valid BUY even if there is no fresh BOS."
     const r = scoreSetup(input({
-      levels: levels({ atSupport: true, supportDistanceAtr: 0.2 }),
+      levels: levels({ atSupport: true, supportDistanceRatio: 0.2 }),
       candle: { name: 'Bullish Engulfing', bias: 'bullish', index: 100, barsAgo: 0, weight: 0.8 },
-      ema: { value: 1.1, slopeAtr: 0.5, direction: 'rising', side: 'above', distanceAtr: 0.3,
+      ema: { value: 1.1, slopeRatio: 0.5, direction: 'rising', side: 'above', distanceRatio: 0.3,
              atLevel: true, reclaimed: false, brokeDown: false, overextended: false },
       ichimoku: { side: 'above', cloudBullish: true, tenkan: 1.1, kijun: 1.09, tenkanAboveKijun: true,
-                  futureCloudBullish: true, chikouFree: 'bullish', thicknessAtr: 1, brokeAbove: false, brokeBelow: false },
+                  futureCloudBullish: true, chikouFree: 'bullish', thicknessRatio: 1, brokeAbove: false, brokeBelow: false },
       higherTrend: 'long',
     }));
 
@@ -85,14 +86,14 @@ describe('the spec\'s worked example reaches a tradeable score', () => {
       structure: structure({
         trend: 'bearish',
         base: { ...structure().base, direction: 'down', strength: 0.7 },
-        choch: { kind: 'CHoCH', direction: 'bullish', index: 100, barsAgo: 2, level: 1.1, strengthAtr: 0.5 },
+        choch: { kind: 'CHoCH', direction: 'bullish', index: 100, barsAgo: 2, level: 1.1, strengthRatio: 0.5 },
       }),
-      levels: levels({ atSupport: true, supportDistanceAtr: 0.2 }),
+      levels: levels({ atSupport: true, supportDistanceRatio: 0.2 }),
       chartPattern: { name: 'Double Bottom', family: 'reversal', bias: 'bullish', index: 98, barsAgo: 4, quality: 0.9, target: 1.13, invalidation: 1.08 },
-      ema: { value: 1.1, slopeAtr: 0.05, direction: 'flat', side: 'above', distanceAtr: 0.2,
+      ema: { value: 1.1, slopeRatio: 0.05, direction: 'flat', side: 'above', distanceRatio: 0.2,
              atLevel: true, reclaimed: true, brokeDown: false, overextended: false },
       ichimoku: { side: 'inside', cloudBullish: false, tenkan: 1.1, kijun: 1.1, tenkanAboveKijun: true,
-                  futureCloudBullish: true, chikouFree: null, thicknessAtr: 1, brokeAbove: false, brokeBelow: false },
+                  futureCloudBullish: true, chikouFree: null, thicknessRatio: 1, brokeAbove: false, brokeBelow: false },
     }));
 
     expect(r.score).toBeGreaterThanOrEqual(62);
@@ -101,13 +102,13 @@ describe('the spec\'s worked example reaches a tradeable score', () => {
 
 describe('no single family can veto a signal', () => {
   const strong = () => input({
-    levels: levels({ atSupport: true, supportDistanceAtr: 0.2 }),
+    levels: levels({ atSupport: true, supportDistanceRatio: 0.2 }),
     candle: { name: 'Morning Star', bias: 'bullish', index: 100, barsAgo: 0, weight: 0.85 },
     chartPattern: { name: 'Double Bottom', family: 'reversal', bias: 'bullish', index: 98, barsAgo: 3, quality: 0.9, target: 1.13, invalidation: 1.08 },
-    ema: { value: 1.1, slopeAtr: 0.5, direction: 'rising', side: 'above', distanceAtr: 0.3,
+    ema: { value: 1.1, slopeRatio: 0.5, direction: 'rising', side: 'above', distanceRatio: 0.3,
            atLevel: false, reclaimed: false, brokeDown: false, overextended: false },
     ichimoku: { side: 'above', cloudBullish: true, tenkan: 1.1, kijun: 1.09, tenkanAboveKijun: true,
-                futureCloudBullish: true, chikouFree: 'bullish', thicknessAtr: 1, brokeAbove: false, brokeBelow: false },
+                futureCloudBullish: true, chikouFree: 'bullish', thicknessRatio: 1, brokeAbove: false, brokeBelow: false },
     higherTrend: 'long',
   });
 
@@ -127,7 +128,7 @@ describe('no single family can veto a signal', () => {
     const inside = scoreSetup({
       ...strong(),
       ichimoku: { side: 'inside', cloudBullish: null, tenkan: null, kijun: null, tenkanAboveKijun: null,
-                  futureCloudBullish: null, chikouFree: null, thicknessAtr: 0.8, brokeAbove: false, brokeBelow: false },
+                  futureCloudBullish: null, chikouFree: null, thicknessRatio: 0.8, brokeAbove: false, brokeBelow: false },
     });
     expect(inside.score).toBeLessThan(scoreSetup(strong()).score);
     expect(inside.score).toBeGreaterThan(0);
@@ -136,7 +137,7 @@ describe('no single family can veto a signal', () => {
 
 describe('context decides what a fact is worth', () => {
   it('pays a bullish CHoCH far more in a downtrend than in an uptrend', () => {
-    const choch = { kind: 'CHoCH' as const, direction: 'bullish' as const, index: 100, barsAgo: 1, level: 1.1, strengthAtr: 0.4 };
+    const choch = { kind: 'CHoCH' as const, direction: 'bullish' as const, index: 100, barsAgo: 1, level: 1.1, strengthRatio: 0.4 };
     const against = scoreSetup(input({
       structure: structure({ trend: 'bearish', base: { ...structure().base, direction: 'down' }, choch }),
     }));
@@ -147,7 +148,7 @@ describe('context decides what a fact is worth', () => {
   });
 
   it('pays a bullish BOS more in an uptrend than in a downtrend', () => {
-    const bos = { kind: 'BOS' as const, direction: 'bullish' as const, index: 100, barsAgo: 1, level: 1.1, strengthAtr: 0.4 };
+    const bos = { kind: 'BOS' as const, direction: 'bullish' as const, index: 100, barsAgo: 1, level: 1.1, strengthRatio: 0.4 };
     const withTrend = scoreSetup(input({ structure: structure({ bos }) }));
     const against = scoreSetup(input({
       structure: structure({ trend: 'bearish', base: { ...structure().base, direction: 'down' }, bos }),
@@ -160,7 +161,7 @@ describe('context decides what a fact is worth', () => {
     // "A random bullish candle in the middle of a range should receive very
     // little weight."
     const candle = { name: 'Bullish Engulfing', bias: 'bullish' as const, index: 100, barsAgo: 0, weight: 0.8 };
-    const atLevel = scoreSetup(input({ levels: levels({ atSupport: true, supportDistanceAtr: 0.2 }), candle }));
+    const atLevel = scoreSetup(input({ levels: levels({ atSupport: true, supportDistanceRatio: 0.2 }), candle }));
     const midRange = scoreSetup(input({ candle }));
 
     const pointsOf = (r: typeof atLevel) => r.reasons.filter((x) => x.family === 'candle').reduce((a, b) => a + b.points, 0);
@@ -183,7 +184,7 @@ describe('correlated evidence is capped', () => {
     // free are largely one trending fact seen five ways.
     const r = scoreSetup(input({
       ichimoku: { side: 'above', cloudBullish: true, tenkan: 1.1, kijun: 1.09, tenkanAboveKijun: true,
-                  futureCloudBullish: true, chikouFree: 'bullish', thicknessAtr: 2, brokeAbove: true, brokeBelow: false },
+                  futureCloudBullish: true, chikouFree: 'bullish', thicknessRatio: 2, brokeAbove: true, brokeBelow: false },
     }));
     const ichi = r.reasons.filter((x) => x.family === 'ichimoku').reduce((a, b) => a + b.points, 0);
     // The raw contributions exceed the weight; the cap is what stops them.
@@ -195,15 +196,15 @@ describe('correlated evidence is capped', () => {
   it('keeps every score inside 0–100 however much evidence piles up', () => {
     const everything = scoreSetup(input({
       structure: structure({
-        bos: { kind: 'BOS', direction: 'bullish', index: 100, barsAgo: 1, level: 1.1, strengthAtr: 1 },
-        choch: { kind: 'CHoCH', direction: 'bullish', index: 90, barsAgo: 11, level: 1.09, strengthAtr: 1 },
+        bos: { kind: 'BOS', direction: 'bullish', index: 100, barsAgo: 1, level: 1.1, strengthRatio: 1 },
+        choch: { kind: 'CHoCH', direction: 'bullish', index: 90, barsAgo: 11, level: 1.09, strengthRatio: 1 },
         reversalConfirmed: true,
       }),
-      levels: levels({ atSupport: true, supportDistanceAtr: 0.1, breakout: { direction: 'bullish', level: 1.1, barsAgo: 2, retested: true, retestBarsAgo: 1 } }),
+      levels: levels({ atSupport: true, supportDistanceRatio: 0.1, breakout: { direction: 'bullish', level: 1.1, barsAgo: 2, retested: true, retestBarsAgo: 1 } }),
       chartPattern: { name: 'Inverse Head and Shoulders', family: 'reversal', bias: 'bullish', index: 99, barsAgo: 2, quality: 1, target: 1.15, invalidation: 1.08 },
       candle: { name: 'Three White Soldiers', bias: 'bullish', index: 100, barsAgo: 0, weight: 0.9 },
-      ema: { value: 1.1, slopeAtr: 1, direction: 'rising', side: 'above', distanceAtr: 0.2, atLevel: true, reclaimed: true, brokeDown: false, overextended: false },
-      ichimoku: { side: 'above', cloudBullish: true, tenkan: 1.1, kijun: 1.09, tenkanAboveKijun: true, futureCloudBullish: true, chikouFree: 'bullish', thicknessAtr: 2, brokeAbove: true, brokeBelow: false },
+      ema: { value: 1.1, slopeRatio: 1, direction: 'rising', side: 'above', distanceRatio: 0.2, atLevel: true, reclaimed: true, brokeDown: false, overextended: false },
+      ichimoku: { side: 'above', cloudBullish: true, tenkan: 1.1, kijun: 1.09, tenkanAboveKijun: true, futureCloudBullish: true, chikouFree: 'bullish', thicknessRatio: 2, brokeAbove: true, brokeBelow: false },
       momentum: 1,
       higherTrend: 'long',
       entryConfirmation: 'long',
@@ -226,8 +227,8 @@ describe('the higher timeframe objects but does not forbid', () => {
     // that basis makes every reversal untradeable.
     const r = scoreSetup(input({
       structure: structure({ trend: 'bearish', base: { ...structure().base, direction: 'down' },
-        choch: { kind: 'CHoCH', direction: 'bullish', index: 100, barsAgo: 1, level: 1.1, strengthAtr: 1 } }),
-      levels: levels({ atSupport: true, supportDistanceAtr: 0.1 }),
+        choch: { kind: 'CHoCH', direction: 'bullish', index: 100, barsAgo: 1, level: 1.1, strengthRatio: 1 } }),
+      levels: levels({ atSupport: true, supportDistanceRatio: 0.1 }),
       candle: { name: 'Morning Star', bias: 'bullish', index: 100, barsAgo: 0, weight: 0.85 },
       chartPattern: { name: 'Double Bottom', family: 'reversal', bias: 'bullish', index: 98, barsAgo: 3, quality: 0.9, target: 1.13, invalidation: 1.08 },
       higherTrend: 'short',

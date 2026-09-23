@@ -70,7 +70,7 @@ const alwaysLong: Analyse = (candles, options) => {
     risk: {
       entry,
       stop: entry - 20 * PIP,
-      targets: [entry + 30 * PIP, entry + 50 * PIP, entry + 70 * PIP],
+      target: entry + 30 * PIP,
       stopPips: 20,
       invalidation: 'Close below the stop.',
     },
@@ -90,7 +90,7 @@ const neverSignals: Analyse = (candles, options) => ({
   signal: 'NO_TRADE',
   confidence: 0,
   status: 'FORMING',
-  risk: { entry: null, stop: null, targets: [], stopPips: null, invalidation: null },
+  risk: { entry: null, stop: null, target: null, stopPips: null, invalidation: null },
   reasons: [],
 });
 
@@ -102,7 +102,6 @@ class FakeDb implements SignalsDb {
   pending: PendingSignal[] = [];
   recorded: SignalRow[] = [];
   closes: { id: string; outcome: Outcome; price: number }[] = [];
-  breakevens: string[] = [];
   runs: number[] = [];
   lastRun: number | null = null;
   expired = 0;
@@ -142,15 +141,6 @@ class FakeDb implements SignalsDb {
     if (!row) return 0;
     this.pending = this.pending.filter((p) => p.id !== id);
     this.closes.push({ id, outcome, price });
-    return 1;
-  }
-  async markBreakeven(id: string) {
-    this.guard('markBreakeven');
-    const row = this.pending.find((p) => p.id === id);
-    if (!row || row.tp1_hit) return 0;
-    row.tp1_hit = true;
-    row.stop_loss = row.entry;
-    this.breakevens.push(id);
     return 1;
   }
   async lastRunStartedAt() {
@@ -240,10 +230,7 @@ const pendingSignal = (over: Partial<PendingSignal> = {}): PendingSignal => ({
   direction: 'long',
   entry: 1.1,
   stop_loss: 1.098,
-  take_profit1: 1.103,
-  take_profit2: 1.105,
-  take_profit3: 1.107,
-  tp1_hit: false,
+  take_profit: 1.103,
   bar_time: '2026-09-20T10:00:00Z',
   ...over,
 });
@@ -266,38 +253,40 @@ describe('isSessionActive', () => {
 
 describe('resolveOutcome', () => {
   it('closes a long at the stop', () => {
-    expect(resolveOutcome(pendingSignal(), 1.0979)).toEqual({ outcome: 'sl', breakeven: false });
+    expect(resolveOutcome(pendingSignal(), 1.0979)).toEqual({ outcome: 'sl' });
   });
 
   it('closes a short at the stop', () => {
-    const short = pendingSignal({ direction: 'short', entry: 1.1, stop_loss: 1.102, take_profit1: 1.097, take_profit2: 1.095, take_profit3: 1.093 });
-    expect(resolveOutcome(short, 1.1021)).toEqual({ outcome: 'sl', breakeven: false });
+    const short = pendingSignal({ direction: 'short', entry: 1.1, stop_loss: 1.102, take_profit: 1.097 });
+    expect(resolveOutcome(short, 1.1021)).toEqual({ outcome: 'sl' });
   });
 
-  it('moves to breakeven on TP1 rather than closing', () => {
-    expect(resolveOutcome(pendingSignal(), 1.1031)).toEqual({ outcome: null, breakeven: true });
+  it('closes a long at the target', () => {
+    expect(resolveOutcome(pendingSignal(), 1.1031)).toEqual({ outcome: 'tp' });
   });
 
-  it('closes at the furthest target reached', () => {
-    expect(resolveOutcome(pendingSignal({ tp1_hit: true }), 1.1071).outcome).toBe('tp3');
-    expect(resolveOutcome(pendingSignal({ tp1_hit: true }), 1.1051).outcome).toBe('tp2');
+  it('closes a short at the target', () => {
+    const short = pendingSignal({ direction: 'short', entry: 1.1, stop_loss: 1.102, take_profit: 1.097 });
+    expect(resolveOutcome(short, 1.0969)).toEqual({ outcome: 'tp' });
   });
 
-  it('reports a breakeven stop, not a loss, once TP1 has been hit', () => {
-    const moved = pendingSignal({ tp1_hit: true, stop_loss: 1.1 });
-    expect(resolveOutcome(moved, 1.0999)).toEqual({ outcome: 'be', breakeven: false });
+  it('has no breakeven outcome — the stop never moves', () => {
+    // The old ladder pulled the stop to entry at TP1, which turned the
+    // commonest winner into a 0R scratch while every loser still paid −1R.
+    const outcomes = [1.0979, 1.1031, 1.101].map((p) => resolveOutcome(pendingSignal(), p).outcome);
+    expect(outcomes).toEqual(['sl', 'tp', null]);
   });
 
   it('lets the stop win on a corrupted ticket whose levels cross', () => {
     // Well-formed levels cannot satisfy both tests at one price, so this only
     // arises if a ticket is wrong. The stop is still checked first, so the bad
     // row resolves as a loss rather than booking a phantom win.
-    const crossed = pendingSignal({ stop_loss: 1.106, take_profit3: 1.105 });
+    const crossed = pendingSignal({ stop_loss: 1.106, take_profit: 1.105 });
     expect(resolveOutcome(crossed, 1.1055).outcome).toBe('sl');
   });
 
   it('does nothing while price sits between the levels', () => {
-    expect(resolveOutcome(pendingSignal(), 1.101)).toEqual({ outcome: null, breakeven: false });
+    expect(resolveOutcome(pendingSignal(), 1.101)).toEqual({ outcome: null });
   });
 
   it('returns nothing when the ticket is incomplete', () => {
@@ -414,7 +403,7 @@ describe('runScan — emitting', () => {
     // not silently weaken the idempotency this id provides.
     expect(row.id).toMatch(new RegExp(`^${STRATEGY_ID}\\|EUR/USD\\|1H\\|\\d+$`));
     expect(row.entry).not.toBeNull();
-    expect(row.take_profit1).not.toBeNull();
+    expect(row.take_profit).not.toBeNull();
     expect(row.analysis).toBeTruthy();
   });
 
@@ -623,25 +612,79 @@ describe('runScan — a whole trade lifecycle', () => {
         direction: row.direction,
         entry: row.entry,
         stop_loss: row.stop_loss,
-        take_profit1: row.take_profit1,
-        take_profit2: row.take_profit2,
-        take_profit3: row.take_profit3,
+        take_profit: row.take_profit,
       }),
     ];
 
-    // 2. Price reaches TP1 → stop moves to entry, trade stays open.
+    // 2. Price between the levels → nothing happens, trade stays open.
     const feed2 = new FakeFeed(longSetupCandles);
-    feed2.prices.set('EUR/USD', row.take_profit1! + 0.0001);
-    const atTp1 = await runScan({ db, feed: feed2, config, now: () => MONDAY_NOON + 3_600_000, force: true });
-    expect(db.breakevens).toEqual([row.id]);
-    expect(atTp1.closed).toBe(0);
+    feed2.prices.set('EUR/USD', (row.entry! + row.take_profit!) / 2);
+    const midway = await runScan({ db, feed: feed2, config, now: () => MONDAY_NOON + 3_600_000, force: true });
+    expect(midway.closed).toBe(0);
 
-    // 3. Price reaches TP3 → closed as a win.
+    // 3. Price reaches the target → closed as a win, in one step.
+    //    No breakeven rung in between: reaching the target IS the win.
     const feed3 = new FakeFeed(longSetupCandles);
-    feed3.prices.set('EUR/USD', row.take_profit3! + 0.0001);
-    const atTp3 = await runScan({ db, feed: feed3, config, now: () => MONDAY_NOON + 7_200_000, force: true });
-    expect(atTp3.closed).toBe(1);
-    expect(db.closes.at(-1)).toMatchObject({ id: row.id, outcome: 'tp3' });
+    feed3.prices.set('EUR/USD', row.take_profit! + 0.0001);
+    const atTarget = await runScan({ db, feed: feed3, config, now: () => MONDAY_NOON + 7_200_000, force: true });
+    expect(atTarget.closed).toBe(1);
+    expect(db.closes.at(-1)).toMatchObject({ id: row.id, outcome: 'tp' });
+  });
+});
+
+describe('runScan — multi-timeframe', () => {
+  it('fetches context, setup and entry timeframes for each pair', async () => {
+    const db = new FakeDb();
+    const feed = new FakeFeed(longSetupCandles);
+
+    await runScan({
+      db,
+      feed,
+      analyse: alwaysLong,
+      config: smallConfig({ symbols: ['EUR/USD'], timeframes: ['1H'], biasTimeframe: '4H', entryTimeframe: '15min' }),
+      now: () => MONDAY_NOON,
+    });
+
+    expect(feed.candleCalls).toContain('EUR/USD|4H');
+    expect(feed.candleCalls).toContain('EUR/USD|1H');
+    expect(feed.candleCalls).toContain('EUR/USD|15min');
+  });
+
+  it('still scans when the entry timeframe fetch fails', async () => {
+    // Losing the 15M costs the confirmation bonus, not the setup. Skipping the
+    // pair would make a data hiccup on the fastest, flakiest series silently
+    // mute the whole strategy.
+    const db = new FakeDb();
+    const feed = new FakeFeed(longSetupCandles);
+    feed.failTimeframes.add('15min');
+
+    const result = await runScan({
+      db,
+      feed,
+      analyse: alwaysLong,
+      config: smallConfig({ symbols: ['EUR/USD'], timeframes: ['1H'], biasTimeframe: null, entryTimeframe: '15min' }),
+      now: () => MONDAY_NOON,
+    });
+
+    expect(result.scanned).toBeGreaterThan(0);
+    expect(result.errors.some((e) => e.includes('entry'))).toBe(true);
+  });
+
+  it('spends three credits per pair with all three timeframes on', async () => {
+    // 7 pairs x 3 = 21, against a 16-credit cap: the round-robin cursor is
+    // what stops the tail pairs from never being scanned at all.
+    const db = new FakeDb();
+    const feed = new FakeFeed(longSetupCandles);
+
+    await runScan({
+      db,
+      feed,
+      analyse: neverSignals,
+      config: smallConfig({ symbols: ['EUR/USD'], timeframes: ['1H'], biasTimeframe: '4H', entryTimeframe: '15min' }),
+      now: () => MONDAY_NOON,
+    });
+
+    expect(new Set(feed.candleCalls).size).toBe(3);
   });
 });
 

@@ -11,11 +11,11 @@ import { readChartPatterns, bestPatternFor, neutralPattern } from './chartPatter
 import { swingsOf } from './structure';
 import { ENGINE } from './config';
 import { fromCloses, leg, warmup, market } from './testFixtures';
-import { atr } from '../../../lib/indicators/atr';
+import { typicalRange } from './scale';
 
 function analyse(closes: number[]) {
   const c = fromCloses(closes);
-  const a = atr(c, ENGINE.atrPeriod)[c.length - 1] ?? 0;
+  const a = typicalRange(c, c.length - 1, ENGINE.rangeLookback) || 0;
   const swings = swingsOf(c, c.length - 1, ENGINE, a);
   return { patterns: readChartPatterns(c, c.length - 1, swings, a, ENGINE), swings, atr: a };
 }
@@ -113,7 +113,7 @@ describe('bilateral patterns get no direction', () => {
     // The spec: "Do not predict the direction of neutral patterns before
     // breakout confirmation."
     const c = market(500, 11);
-    const a = atr(c, ENGINE.atrPeriod)[c.length - 1] ?? 0;
+    const a = typicalRange(c, c.length - 1, ENGINE.rangeLookback) || 0;
     for (let i = 250; i < c.length; i += 9) {
       const swings = swingsOf(c, i, ENGINE, a);
       for (const p of readChartPatterns(c, i, swings, a, ENGINE)) {
@@ -127,7 +127,7 @@ describe('bilateral patterns get no direction', () => {
 
   it('excludes neutral patterns from the directional pick', () => {
     const c = market(400, 5);
-    const a = atr(c, ENGINE.atrPeriod)[c.length - 1] ?? 0;
+    const a = typicalRange(c, c.length - 1, ENGINE.rangeLookback) || 0;
     const swings = swingsOf(c, c.length - 1, ENGINE, a);
     const patterns = readChartPatterns(c, c.length - 1, swings, a, ENGINE);
     expect(bestPatternFor(patterns, 'bullish')?.bias ?? 'bullish').toBe('bullish');
@@ -143,7 +143,7 @@ describe('robustness', () => {
 
   it('never returns a pattern older than the freshness window', () => {
     const c = market(600, 2);
-    const a = atr(c, ENGINE.atrPeriod)[c.length - 1] ?? 0;
+    const a = typicalRange(c, c.length - 1, ENGINE.rangeLookback) || 0;
     const swings = swingsOf(c, c.length - 1, ENGINE, a);
     for (const p of readChartPatterns(c, c.length - 1, swings, a, ENGINE)) {
       expect(p.barsAgo).toBeLessThanOrEqual(ENGINE.patterns.freshnessBars + ENGINE.structure.fractalWings);
@@ -159,7 +159,7 @@ describe('robustness', () => {
     // A pattern with a target but no invalidation gives the risk module a
     // reward with no defined risk.
     const c = market(500, 9);
-    const a = atr(c, ENGINE.atrPeriod)[c.length - 1] ?? 0;
+    const a = typicalRange(c, c.length - 1, ENGINE.rangeLookback) || 0;
     for (let i = 250; i < c.length; i += 11) {
       const swings = swingsOf(c, i, ENGINE, a);
       for (const p of readChartPatterns(c, i, swings, a, ENGINE)) {

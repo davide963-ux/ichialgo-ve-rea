@@ -49,11 +49,8 @@ const money = (v: number): string =>
   `${v < 0 ? '−' : v > 0 ? '+' : ''}$${Math.abs(Math.round(v)).toLocaleString()}`;
 
 const EXIT_LABEL: Record<BacktestTrade['exit'], string> = {
-  tp1: 'Target 1',
-  tp2: 'Target 2',
-  tp3: 'Target 3',
+  tp: 'Target hit',
   sl: 'Stopped out',
-  be: 'Breakeven',
   open: 'Still open',
 };
 
@@ -208,11 +205,11 @@ export function BacktestResults({ result, startingBalance, riskPct }: Props) {
                         </span>
                       </td>
                       <td className="num mono">{priceOf(t.entry)}</td>
-                      <td className="num mono">{priceOf(t.initialStop)}</td>
+                      <td className="num mono">{priceOf(t.stop)}</td>
                       <td>
                         <span
                           className={`badge badge-${
-                            t.exit === 'sl' ? 'danger' : t.exit === 'open' ? 'muted' : t.exit === 'be' ? 'neutral' : 'ok'
+                            t.exit === 'sl' ? 'danger' : t.exit === 'open' ? 'muted' : 'ok'
                           }`}
                         >
                           {EXIT_LABEL[t.exit]}

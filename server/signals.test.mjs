@@ -26,12 +26,9 @@ const row = (over = {}) => ({
   atr: 0.001,
   entry: 1.1,
   stop_loss: 1.098,
-  take_profit1: 1.103,
-  take_profit2: 1.105,
-  take_profit3: 1.107,
+  take_profit: 1.103,
   stop_pips: 20,
-  result: 'tp2',
-  tp1_hit: true,
+  result: 'tp',
   closed_price: 1.105,
   closed_at: '2026-09-20T14:00:00Z',
   r_multiple: 2.5,
@@ -73,7 +70,7 @@ describe('fromRow', () => {
 
   it('carries the trade result through', () => {
     const s = fromRow(row());
-    expect(s).toMatchObject({ result: 'tp2', rMultiple: 2.5, tp1Hit: true, closedPrice: 1.105 });
+    expect(s).toMatchObject({ result: 'tp', rMultiple: 2.5, closedPrice: 1.105 });
   });
 
   it('leaves an open trade without a close', () => {

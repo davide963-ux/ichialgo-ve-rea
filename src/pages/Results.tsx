@@ -38,7 +38,7 @@ import { useSignalHistory, usePerformance } from '../hooks/useSignalStorage';
 import { MIN_RELIABLE_TRADES, type Group } from '../services/strategy';
 import { RESULT_LABEL, isClosed, type StoredSignal } from '../services/signals/signalHistory';
 
-const RESULTS = ['pending', 'tp1', 'tp2', 'tp3', 'sl', 'be', 'expired'] as const;
+const RESULTS = ['pending', 'tp', 'sl', 'expired'] as const;
 
 const DEFAULT_BALANCE = 10_000;
 const DEFAULT_RISK_PCT = 1;
@@ -65,9 +65,8 @@ const timeLabel = (seconds: number): string => {
 
 /** Colour a result by what it means for the account, not by its name. */
 function resultTone(result: StoredSignal['result']): string {
-  if (result === 'tp1' || result === 'tp2' || result === 'tp3') return 'ok';
+  if (result === 'tp') return 'ok';
   if (result === 'sl') return 'danger';
-  if (result === 'be') return 'neutral';
   return 'muted';
 }
 
@@ -450,17 +449,8 @@ function Row({
                   <dd className="mono">
                     {price(s.stopLoss, s.symbol)} {s.stopPips === null ? '' : `(${s.stopPips.toFixed(0)} pips)`}
                   </dd>
-                  <dt>TP1 / TP2 / TP3</dt>
-                  <dd className="mono">
-                    {price(s.takeProfit1, s.symbol)} · {price(s.takeProfit2, s.symbol)} ·{' '}
-                    {price(s.takeProfit3, s.symbol)}
-                  </dd>
-                  {s.tp1Hit && (
-                    <>
-                      <dt>TP1</dt>
-                      <dd>hit — stop moved to entry</dd>
-                    </>
-                  )}
+                  <dt>Target</dt>
+                  <dd className="mono">{price(s.takeProfit, s.symbol)}</dd>
                   {s.closedPrice !== null && (
                     <>
                       <dt>Closed at</dt>

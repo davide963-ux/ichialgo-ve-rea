@@ -10,12 +10,10 @@ import { describe, expect, it } from 'vitest';
 import { readStructure } from './structure';
 import { ENGINE } from './config';
 import { fromCloses, leg, warmup, market } from './testFixtures';
-import { atr } from '../../../lib/indicators/atr';
+import { typicalRange } from './scale';
 
-const atrOf = (candles: ReturnType<typeof fromCloses>) => {
-  const a = atr(candles, ENGINE.atrPeriod);
-  return a[candles.length - 1] ?? null;
-};
+const scaleOf = (candles: ReturnType<typeof fromCloses>) =>
+  typicalRange(candles, candles.length - 1, ENGINE.rangeLookback) || null;
 
 describe('trend reading', () => {
   it('reads a staircase of higher highs and higher lows as bullish', () => {
@@ -26,7 +24,7 @@ describe('trend reading', () => {
       ...leg(1.132, 1.16, 10),
     ];
     const c = fromCloses(closes);
-    const s = readStructure(c, c.length - 1, ENGINE, atrOf(c));
+    const s = readStructure(c, c.length - 1, ENGINE, scaleOf(c));
     expect(s.trend).toBe('bullish');
     expect(s.base.higherHighs).toBe(true);
     expect(s.base.higherLows).toBe(true);
@@ -40,7 +38,7 @@ describe('trend reading', () => {
       ...leg(1.168, 1.14, 10),
     ];
     const c = fromCloses(closes);
-    const s = readStructure(c, c.length - 1, ENGINE, atrOf(c));
+    const s = readStructure(c, c.length - 1, ENGINE, scaleOf(c));
     expect(s.trend).toBe('bearish');
     expect(s.base.lowerLows).toBe(true);
   });
@@ -56,7 +54,7 @@ describe('BOS vs CHoCH depends on the trend in force', () => {
       ...leg(1.14, 1.17, 8),
     ];
     const c = fromCloses(closes);
-    const s = readStructure(c, c.length - 1, ENGINE, atrOf(c));
+    const s = readStructure(c, c.length - 1, ENGINE, scaleOf(c));
     const bullBreaks = s.events.filter((e) => e.direction === 'bullish');
     expect(bullBreaks.length).toBeGreaterThan(0);
     expect(bullBreaks[bullBreaks.length - 1]!.kind).toBe('BOS');
@@ -72,7 +70,7 @@ describe('BOS vs CHoCH depends on the trend in force', () => {
       ...leg(1.16, 1.19, 10),
     ];
     const c = fromCloses(closes);
-    const s = readStructure(c, c.length - 1, ENGINE, atrOf(c));
+    const s = readStructure(c, c.length - 1, ENGINE, scaleOf(c));
     const chochs = s.events.filter((e) => e.kind === 'CHoCH' && e.direction === 'bullish');
     expect(chochs.length).toBeGreaterThan(0);
   });
@@ -81,7 +79,7 @@ describe('BOS vs CHoCH depends on the trend in force', () => {
     // They are mutually exclusive readings of one event, and the spec is
     // explicit that neither requires the other.
     const c = market(400, 7);
-    const s = readStructure(c, c.length - 1, ENGINE, atrOf(c));
+    const s = readStructure(c, c.length - 1, ENGINE, scaleOf(c));
     for (const e of s.events) {
       expect(['BOS', 'CHoCH']).toContain(e.kind);
     }
@@ -101,7 +99,7 @@ describe('reversal confirmation', () => {
       ...leg(1.18, 1.15, 10), ...leg(1.15, 1.185, 10),
     ];
     const c = fromCloses(closes);
-    const s = readStructure(c, c.length - 1, ENGINE, atrOf(c));
+    const s = readStructure(c, c.length - 1, ENGINE, scaleOf(c));
     if (s.choch) expect(s.reversalConfirmed).toBe(false);
   });
 
@@ -109,7 +107,7 @@ describe('reversal confirmation', () => {
     // A BOS the other way is the old trend resuming — the opposite of
     // confirmation — so it must never set this flag.
     const c = market(500, 3);
-    const s = readStructure(c, c.length - 1, ENGINE, atrOf(c));
+    const s = readStructure(c, c.length - 1, ENGINE, scaleOf(c));
     if (s.reversalConfirmed) {
       const lastChoch = [...s.events].reverse().find((e) => e.kind === 'CHoCH')!;
       const after = s.events.filter((e) => e.kind === 'BOS' && e.index > lastChoch.index);
@@ -121,7 +119,7 @@ describe('reversal confirmation', () => {
 describe('robustness', () => {
   it('does not invent breaks in a dead flat market', () => {
     const c = fromCloses(warmup(1.1, 200), 0.00005);
-    const s = readStructure(c, c.length - 1, ENGINE, atrOf(c));
+    const s = readStructure(c, c.length - 1, ENGINE, scaleOf(c));
     expect(s.events.length).toBe(0);
   });
 
@@ -130,11 +128,11 @@ describe('robustness', () => {
     // would drown the explanation and triple-count one piece of evidence.
     const closes = [...warmup(1.1, 40), ...leg(1.1, 1.13, 10), ...leg(1.13, 1.12, 6), ...leg(1.12, 1.30, 40)];
     const c = fromCloses(closes);
-    const s = readStructure(c, c.length - 1, ENGINE, atrOf(c));
+    const s = readStructure(c, c.length - 1, ENGINE, scaleOf(c));
     expect(s.events.length).toBeLessThan(12);
   });
 
-  it('returns a usable read when ATR is unavailable', () => {
+  it('returns a usable read when SCALE is unavailable', () => {
     const c = fromCloses(warmup(1.1, 60));
     const s = readStructure(c, c.length - 1, ENGINE, null);
     expect(s.events).toEqual([]);

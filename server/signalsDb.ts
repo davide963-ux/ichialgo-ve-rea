@@ -34,14 +34,11 @@ export interface PendingSignal {
   direction: 'long' | 'short';
   entry: number | null;
   stop_loss: number | null;
-  take_profit1: number | null;
-  take_profit2: number | null;
-  take_profit3: number | null;
-  tp1_hit: boolean;
+  take_profit: number | null;
   bar_time: string;
 }
 
-export type Outcome = 'tp1' | 'tp2' | 'tp3' | 'sl' | 'be' | 'expired' | 'invalidated';
+export type Outcome = 'tp' | 'sl' | 'expired' | 'invalidated';
 
 export interface SignalsDb {
   loadSetupState(): Promise<TrackedSetup[]>;
@@ -49,7 +46,6 @@ export interface SignalsDb {
   loadPending(): Promise<PendingSignal[]>;
   recordSignals(rows: readonly SignalRow[]): Promise<number>;
   closeSignal(id: string, outcome: Outcome, price: number): Promise<number>;
-  markBreakeven(id: string): Promise<number>;
   lastRunStartedAt(): Promise<number | null>;
   /** Round-robin cursor from the previous run, so the tail is not starved. */
   lastCursor(): Promise<number>;
@@ -82,14 +78,10 @@ export interface SignalRow {
   market_condition: string;
   setup_status: string;
   price: number;
-  atr: number | null;
   entry: number | null;
   stop_loss: number | null;
-  take_profit1: number | null;
-  take_profit2: number | null;
-  take_profit3: number | null;
+  take_profit: number | null;
   stop_pips: number | null;
-  stop_distance_atr: number | null;
   analysis: unknown;
   reasons: string[];
   warnings: string[];
@@ -104,7 +96,6 @@ export interface SignalRow {
  */
 export function toSignalRow(analysis: StrategyAnalysis, strategy: string, detectedAtMs: number): SignalRow | null {
   if (analysis.direction === 'none') return null;
-  const targets = analysis.risk.targets;
   return {
     id: `${strategy}|${analysis.symbol}|${analysis.timeframe}|${analysis.barTime}`,
     strategy,
@@ -118,33 +109,16 @@ export function toSignalRow(analysis: StrategyAnalysis, strategy: string, detect
     market_condition: analysis.marketCondition,
     setup_status: analysis.status,
     price: analysis.price,
-    atr: numberFromDetail(analysis, 'atr'),
     entry: analysis.risk.entry,
     stop_loss: analysis.risk.stop,
-    take_profit1: targets[0] ?? null,
-    take_profit2: targets[1] ?? null,
-    take_profit3: targets[2] ?? null,
+    take_profit: analysis.risk.target,
     stop_pips: analysis.risk.stopPips,
-    stop_distance_atr: numberFromDetail(analysis, 'stopDistanceAtr'),
     analysis,
     reasons: analysis.reasons,
     warnings: analysis.warnings,
   };
 }
 
-/**
- * Pull an optional number out of a strategy's `detail` payload.
- *
- * `atr` and `stop_distance_atr` are columns the first strategy needed and a
- * later one may not. Rather than forcing every strategy to report them — or
- * dropping columns that are genuinely the best way to compare stop distances
- * across pairs — they are filled when the strategy volunteers them and left
- * null when it does not. Nothing here interprets `detail` beyond this.
- */
-function numberFromDetail(analysis: StrategyAnalysis, key: string): number | null {
-  const value = analysis.detail[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
 
 class DbError extends Error {
   constructor(message: string, readonly status: number) {
@@ -213,7 +187,7 @@ export function createSignalsDb(cfg: SignalsDbConfig, fetchImpl: FetchLike = fet
 
     async loadPending() {
       const query =
-        'select=id,symbol,timeframe,direction,entry,stop_loss,take_profit1,take_profit2,take_profit3,tp1_hit,bar_time' +
+        'select=id,symbol,timeframe,direction,entry,stop_loss,take_profit,bar_time' +
         '&result=eq.pending&order=bar_time.desc&limit=200';
       return (await call<PendingSignal[]>(`/rest/v1/signals?${query}`, { method: 'GET' })) ?? [];
     },
@@ -226,7 +200,6 @@ export function createSignalsDb(cfg: SignalsDbConfig, fetchImpl: FetchLike = fet
     closeSignal: (id, outcome, price) =>
       rpc<number>('close_signal', { p_signal_id: id, p_outcome: outcome, p_price: price }).then((n) => n ?? 0),
 
-    markBreakeven: (id) => rpc<number>('mark_breakeven', { p_signal_id: id }).then((n) => n ?? 0),
 
     async lastRunStartedAt() {
       const rows = await call<{ started_at: string }[]>(

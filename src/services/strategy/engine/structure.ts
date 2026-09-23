@@ -20,7 +20,7 @@
  *
  * WHY BREAKS NEED A BUFFER
  * ────────────────────────
- * A break is a CLOSE beyond the level plus a buffer in ATR. Using the wick
+ * A break is a CLOSE beyond the level plus a buffer in typical range. Using the wick
  * makes every stop-hunt a structural event, and using a bare close makes a
  * one-pip overshoot a signal. The buffer scales with volatility so the same
  * rule works on EUR/CHF and GBP/JPY.
@@ -40,8 +40,8 @@ export interface BreakEvent {
   barsAgo: number;
   /** The swing level that was broken. */
   level: number;
-  /** How far beyond the level it closed, in ATR. */
-  strengthAtr: number;
+  /** How far beyond the level it closed, in typical range. */
+  strengthRatio: number;
 }
 
 export interface StructureRead {
@@ -80,22 +80,22 @@ export function readStructure(
   candles: readonly Candle[],
   end: number,
   config: EngineConfig,
-  atrAt: number | null,
+  scaleAt: number | null,
 ): StructureRead {
   const opts = {
     fractalWings: config.structure.fractalWings,
     swingLookback: config.structure.swingLookback,
     maxBars: config.structure.maxBars,
-    minSwingAtr: config.structure.minSwingAtr,
+    minSwingAtr: config.structure.minSwingRange,
   };
-  const base = analyseStructure(candles, end, opts, atrAt);
-  const atr = atrAt !== null && atrAt > 0 ? atrAt : null;
-  const buffer = atr === null ? 0 : atr * config.structure.breakBufferAtr;
+  const base = analyseStructure(candles, end, opts, scaleAt);
+  const scale = scaleAt !== null && scaleAt > 0 ? scaleAt : null;
+  const buffer = scale === null ? 0 : scale * config.structure.breakBufferRange;
 
   const events: BreakEvent[] = [];
   const swings = base.swings;
 
-  if (atr !== null && swings.length >= 2) {
+  if (scale !== null && swings.length >= 2) {
     const first = swings[0]!.index;
     // The trend as it stood before each break, rebuilt bar by bar.
     for (let i = first + 1; i <= end; i++) {
@@ -113,7 +113,7 @@ export function readStructure(
       const lastLow = lows[lows.length - 1];
 
       // Trend in force at bar i, from the swings known by then.
-      const priorTrend = trendOf(analyseStructure(candles, i - 1, opts, atr));
+      const priorTrend = trendOf(analyseStructure(candles, i - 1, opts, scale));
 
       if (lastHigh && bar.close > lastHigh.price + buffer) {
         const kind: BreakKind = priorTrend === 'bearish' ? 'CHoCH' : 'BOS';
@@ -123,7 +123,7 @@ export function readStructure(
           index: i,
           barsAgo: end - i,
           level: lastHigh.price,
-          strengthAtr: (bar.close - lastHigh.price) / atr,
+          strengthRatio: (bar.close - lastHigh.price) / scale,
         });
       } else if (lastLow && bar.close < lastLow.price - buffer) {
         const kind: BreakKind = priorTrend === 'bullish' ? 'CHoCH' : 'BOS';
@@ -133,7 +133,7 @@ export function readStructure(
           index: i,
           barsAgo: end - i,
           level: lastLow.price,
-          strengthAtr: (lastLow.price - bar.close) / atr,
+          strengthRatio: (lastLow.price - bar.close) / scale,
         });
       }
     }
@@ -178,7 +178,7 @@ export function readStructure(
 }
 
 /** Swings only, for callers that need levels without the break analysis. */
-export function swingsOf(candles: readonly Candle[], end: number, config: EngineConfig, atrAt: number | null): Swing[] {
+export function swingsOf(candles: readonly Candle[], end: number, config: EngineConfig, scaleAt: number | null): Swing[] {
   return findSwings(
     candles,
     end,
@@ -186,8 +186,8 @@ export function swingsOf(candles: readonly Candle[], end: number, config: Engine
       fractalWings: config.structure.fractalWings,
       swingLookback: config.structure.swingLookback,
       maxBars: config.structure.maxBars,
-      minSwingAtr: config.structure.minSwingAtr,
+      minSwingAtr: config.structure.minSwingRange,
     },
-    atrAt,
+    scaleAt,
   );
 }

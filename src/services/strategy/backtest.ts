@@ -53,7 +53,7 @@ import { SetupTracker } from './lifecycle';
 import type { StrategyAnalysis } from './contract';
 import { buildReport, type MeasuredTrade, type PerformanceReport } from './performance';
 
-export type BacktestExit = 'tp1' | 'tp2' | 'tp3' | 'sl' | 'be' | 'open';
+export type BacktestExit = 'tp' | 'sl' | 'open';
 
 export interface BacktestTrade {
   id: string;
@@ -67,24 +67,19 @@ export interface BacktestTrade {
   entryTime: number;
   entryIndex: number;
   entry: number;
-  /** The stop as it stands now — moved to entry once TP1 is hit. */
-  stop: number;
   /**
-   * The stop the trade was SIZED against, never moved.
+   * The stop. Never moved for the life of the trade.
    *
-   * R must be measured against the risk actually taken. Once a breakeven move
-   * overwrites `stop` with `entry`, the original distance is gone and the
-   * division has a zero denominator, which silently turns every runner into an
-   * unscored trade.
+   * Nothing trails it and nothing pulls it to breakeven, so the risk the
+   * trade was sized against is the risk it carries to the end — which is what
+   * makes every R multiple here comparable.
    */
-  initialStop: number;
-  targets: number[];
+  stop: number;
+  target: number;
   exitTime: number | null;
   exitPrice: number | null;
   exit: BacktestExit;
   barsHeld: number;
-  /** True once a target moved the stop to entry. */
-  tp1Hit: boolean;
   /** Result in multiples of the risk taken. Null while open. */
   rMultiple: number | null;
   stopPips: number;
@@ -120,31 +115,27 @@ const DEFAULT_MAX_BARS_HELD = 240;
 /**
  * Resolve an open trade against one bar.
  *
- * Returns the exit, or null when the bar leaves the trade open. TP1 does not
- * exit: it reports `breakeven`, and the caller moves the stop to entry so the
- * worst remaining case is zero.
+ * Two outcomes and nothing else: the target, or the stop. There is no
+ * breakeven rung, because a rung that banks nothing turns the commonest
+ * winner into a scratch while every loser still pays in full.
  */
 export function resolveBar(
   bar: Candle,
   direction: 'long' | 'short',
   stop: number,
-  targets: readonly number[],
-  tp1Hit: boolean,
-): { exit: BacktestExit | null; price: number; breakeven: boolean } {
+  target: number,
+): { exit: BacktestExit | null; price: number } {
   const long = direction === 'long';
   const hitStop = long ? bar.low <= stop : bar.high >= stop;
 
   // Pessimistic: a bar covering both is read as the stop, because OHLC cannot
   // order the two and the alternative invents wins.
-  if (hitStop) return { exit: tp1Hit ? 'be' : 'sl', price: stop, breakeven: false };
+  if (hitStop) return { exit: 'sl', price: stop };
 
-  const reached = (t: number | undefined) => t !== undefined && (long ? bar.high >= t : bar.low <= t);
+  const hitTarget = long ? bar.high >= target : bar.low <= target;
+  if (hitTarget) return { exit: 'tp', price: target };
 
-  if (reached(targets[2])) return { exit: 'tp3', price: targets[2]!, breakeven: false };
-  if (reached(targets[1])) return { exit: 'tp2', price: targets[1]!, breakeven: false };
-  if (!tp1Hit && reached(targets[0])) return { exit: null, price: targets[0]!, breakeven: true };
-
-  return { exit: null, price: bar.close, breakeven: false };
+  return { exit: null, price: bar.close };
 }
 
 /** R from the levels actually recorded — the same arithmetic `close_signal` uses. */
@@ -198,19 +189,13 @@ export function runBacktest(candles: readonly Candle[], options: BacktestOptions
     if (open !== null) {
       const held = i - open.entryIndex;
       if (held >= 1) {
-        const { exit, price, breakeven } = resolveBar(bar, open.direction, open.stop, open.targets, open.tp1Hit);
-        if (breakeven) {
-          open.tp1Hit = true;
-          open.stop = open.entry;
-        } else if (exit !== null) {
+        const { exit, price } = resolveBar(bar, open.direction, open.stop, open.target);
+        if (exit !== null) {
           open.exit = exit;
           open.exitPrice = price;
           open.exitTime = bar.time;
           open.barsHeld = held;
-          // Always against the ORIGINAL stop: that is the risk that was taken.
-          open.rMultiple = rMultipleOf(open.direction, open.entry, open.initialStop, price);
-          // A breakeven stop is exactly zero, whatever floating point says.
-          if (exit === 'be') open.rMultiple = 0;
+          open.rMultiple = rMultipleOf(open.direction, open.entry, open.stop, price);
           tracker.complete(symbol, timeframe);
           open = null;
         } else if (held >= maxBarsHeld) {
@@ -290,8 +275,8 @@ export function runBacktest(candles: readonly Candle[], options: BacktestOptions
  * a number in the results that no rule ever chose.
  */
 function toTrade(analysis: StrategyAnalysis, index: number, pip: number): BacktestTrade | null {
-  const { entry, stop, targets } = analysis.risk;
-  if (entry === null || stop === null || targets.length === 0) return null;
+  const { entry, stop, target } = analysis.risk;
+  if (entry === null || stop === null || target === null) return null;
   if (analysis.direction === 'none') return null;
   if (Math.abs(entry - stop) === 0) return null;
 
@@ -307,13 +292,11 @@ function toTrade(analysis: StrategyAnalysis, index: number, pip: number): Backte
     entryIndex: index,
     entry,
     stop,
-    initialStop: stop,
-    targets: [...targets],
+    target,
     exitTime: null,
     exitPrice: null,
     exit: 'open',
     barsHeld: 0,
-    tp1Hit: false,
     rMultiple: null,
     stopPips: analysis.risk.stopPips ?? Math.abs(entry - stop) / pip,
     reasons: analysis.reasons,

@@ -23,7 +23,7 @@
  * decides what is significant — it reports the count and lets the caller judge.
  */
 
-export type TradeOutcome = 'tp1' | 'tp2' | 'tp3' | 'sl' | 'be' | 'expired' | 'invalidated' | 'pending';
+export type TradeOutcome = 'tp' | 'sl' | 'expired' | 'invalidated' | 'pending';
 
 /** The minimum a trade must carry to be measured. */
 export interface MeasuredTrade {
@@ -44,6 +44,7 @@ export interface Metrics {
   closed: number;
   wins: number;
   losses: number;
+  /** Trades that closed at exactly zero. Excluded from the win rate. */
   breakeven: number;
   winRatePct: number | null;
   /** Mean R across closed trades — the headline number. */
@@ -129,7 +130,10 @@ export function computeMetrics(trades: readonly MeasuredTrade[]): Metrics {
     const r = t.rMultiple!;
     totalR += r;
 
-    if (t.outcome === 'be' || r === 0) breakeven++;
+    // A trade can still land at exactly zero — an expiry closed at entry, or
+    // a target and stop the same distance apart after rounding. It is neither
+    // a win nor a loss, and folding it into either distorts the rate.
+    if (r === 0) breakeven++;
     else if (r > 0) {
       wins++;
       grossWin += r;

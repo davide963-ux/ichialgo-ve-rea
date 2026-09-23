@@ -23,41 +23,45 @@ const bar = (over: Partial<Candle> = {}): Candle => ({
   ...over,
 });
 
-describe('resolveBar — same-bar ambiguity resolves against the trade', () => {
-  it('takes the stop when one bar covers both the stop and a target', () => {
+describe('resolveBar — two outcomes and nothing else', () => {
+  it('takes the stop when one bar covers both the stop and the target', () => {
     // OHLC cannot order the two. Reading it as the target invents a win.
     const b = bar({ low: 1.09, high: 1.12 });
-    expect(resolveBar(b, 'long', 1.095, [1.11], false).exit).toBe('sl');
+    expect(resolveBar(b, 'long', 1.095, 1.11).exit).toBe('sl');
   });
 
   it('applies the same rule to a short', () => {
     const b = bar({ low: 1.08, high: 1.115 });
-    expect(resolveBar(b, 'short', 1.11, [1.09], false).exit).toBe('sl');
+    expect(resolveBar(b, 'short', 1.11, 1.09).exit).toBe('sl');
   });
 
-  it('reports a stop hit after breakeven as be, not sl', () => {
-    const b = bar({ low: 1.09 });
-    expect(resolveBar(b, 'long', 1.095, [1.11], true).exit).toBe('be');
-  });
-});
-
-describe('resolveBar — targets', () => {
-  it('reports the furthest target a bar reached, not the nearest', () => {
-    const b = bar({ high: 1.2, low: 1.099 });
-    expect(resolveBar(b, 'long', 1.09, [1.11, 1.13, 1.15], false).exit).toBe('tp3');
+  it('reports the target when only the target was reached', () => {
+    const b = bar({ high: 1.12, low: 1.099 });
+    expect(resolveBar(b, 'long', 1.09, 1.11).exit).toBe('tp');
   });
 
-  it('treats the first target as a breakeven move rather than an exit', () => {
-    const b = bar({ high: 1.115, low: 1.099 });
-    const out = resolveBar(b, 'long', 1.09, [1.11, 1.13, 1.15], false);
-    expect(out.exit).toBeNull();
-    expect(out.breakeven).toBe(true);
+  it('reports the target for a short reaching down to it', () => {
+    const b = bar({ high: 1.101, low: 1.085 });
+    expect(resolveBar(b, 'short', 1.11, 1.09).exit).toBe('tp');
   });
 
   it('leaves a quiet bar open', () => {
-    const out = resolveBar(bar(), 'long', 1.05, [1.2], false);
-    expect(out.exit).toBeNull();
-    expect(out.breakeven).toBe(false);
+    expect(resolveBar(bar(), 'long', 1.05, 1.2).exit).toBeNull();
+  });
+
+  it('has no breakeven outcome at all', () => {
+    // The ladder's first rung banked nothing and only pulled the stop to
+    // entry, which turned the commonest winner into a 0R scratch while every
+    // loser still paid −1R. Measured on a random walk that lost 0.14R a trade.
+    // There is deliberately no third outcome now.
+    const outcomes = new Set<string>();
+    for (const [low, high] of [[1.09, 1.12], [1.099, 1.12], [1.0999, 1.1001]] as const) {
+      const r = resolveBar(bar({ low, high }), 'long', 1.095, 1.11);
+      if (r.exit) outcomes.add(r.exit);
+    }
+    expect(outcomes.has('sl')).toBe(true);
+    expect(outcomes.has('tp')).toBe(true);
+    expect([...outcomes].every((o) => o === 'sl' || o === 'tp')).toBe(true);
   });
 });
 
@@ -82,7 +86,7 @@ describe('rMultipleOf', () => {
   });
 });
 
-describe('runBacktest with no strategy installed', () => {
+describe('runBacktest guards', () => {
   const series = (n: number): Candle[] =>
     Array.from({ length: n }, (_, i) => bar({ time: 1_700_000_000 + i * 3600 }));
 
@@ -92,10 +96,10 @@ describe('runBacktest with no strategy installed', () => {
     expect(out.note).toMatch(/Needs at least/);
   });
 
-  it('runs clean over a long series and produces nothing', () => {
-    // The stub strategy never signals. The harness must still complete,
-    // report the bars it looked at, and say plainly that nothing confirmed —
-    // rather than erroring or implying a fault.
+  it('runs clean over a featureless series and produces nothing', () => {
+    // Flat bars give no setup. The harness must still complete, report the
+    // bars it looked at, and say plainly that nothing confirmed — rather than
+    // erroring or implying a fault.
     const out = runBacktest(series(MIN_BARS + 50), { symbol: 'EUR/USD', timeframe: '1H' });
     expect(out.trades).toEqual([]);
     expect(out.barsAnalysed).toBeGreaterThan(0);

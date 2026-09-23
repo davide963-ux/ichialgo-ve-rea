@@ -13,7 +13,7 @@ import { ENGINE } from './config';
 import type { StructureRead } from './structure';
 import type { LevelRead } from './levels';
 
-const ATR = 0.001;
+const SCALE = 0.001;
 
 const structure = (over: Partial<StructureRead> = {}): StructureRead =>
   ({
@@ -28,7 +28,7 @@ const structure = (over: Partial<StructureRead> = {}): StructureRead =>
 /**
  * A long setup: price at 1.1000, structure just below, room above.
  *
- * The geometry is deliberately realistic against a 10-pip ATR. An earlier
+ * The geometry is deliberately realistic against a 10-pip SCALE. An earlier
  * version put resistance 40 pips away and the module correctly refused every
  * ticket as too wide to size — the fixture was wrong, not the code.
  */
@@ -40,7 +40,7 @@ const levels = (over: Partial<LevelRead> = {}): LevelRead => ({
   support: { price: 1.0985, touches: 2, barsSinceTouch: 20, role: 'support', halfWidth: 0.0004 },
   resistance: { price: 1.1050, touches: 3, barsSinceTouch: 10, role: 'resistance', halfWidth: 0.0004 },
   atSupport: false, atResistance: false,
-  supportDistanceAtr: 1.5, resistanceDistanceAtr: 5,
+  supportDistanceRatio: 1.5, resistanceDistanceRatio: 5,
   breakout: null, previousHigh: 1.1080, previousLow: 1.0940,
   ...over,
 });
@@ -48,7 +48,7 @@ const levels = (over: Partial<LevelRead> = {}): LevelRead => ({
 const input = (over: Partial<RiskInput> = {}): RiskInput => ({
   side: 'bullish',
   price: 1.1,
-  atr: ATR,
+  scale: SCALE,
   structure: structure(),
   levels: levels(),
   pattern: null,
@@ -102,60 +102,56 @@ describe('stops come from structure', () => {
     expect(ticket!.stop).toBeLessThan(1.1);
   });
 
-  it('falls back to ATR when no structure is in range, and says so', () => {
+  it('keeps a tight structural stop tight instead of padding it out', () => {
+    // There used to be a volatility floor here that widened close stops to a
+    // minimum. It manufactured trades with a very tight stop and a very
+    // distant target — flattering reward/risk, stopped out by ordinary noise
+    // far more often than the geometry implied. The level is the level.
     const { ticket } = buildTicket(input({
-      structure: structure({ lastSwingLow: null, lastSwingHigh: null }),
-      levels: levels({ support: null, resistance: null, zones: [] }),
-    }));
-    expect(ticket!.stopBasis).toMatch(/ATR-based/);
-  });
-
-  it('widens a stop that would sit inside the noise', () => {
-    const { ticket } = buildTicket(input({
-      structure: structure({ lastSwingLow: { index: 95, price: 1.09995, kind: 'low' } }),
+      structure: structure({ lastSwingLow: { index: 95, price: 1.0995, kind: 'low' } }),
       levels: levels({ support: null, zones: [levels().zones[0]!] }),
     }));
-    expect(ticket!.stopDistance).toBeGreaterThanOrEqual(ATR * ENGINE.risk.minStopAtr);
+    expect(ticket!.stopDistance).toBeLessThan(SCALE);
   });
 
-  it('refuses a stop too wide to size against', () => {
+  it('refuses when no structural level sits below entry to anchor a stop to', () => {
+    // A stop no level chose is a guess, not an invalidation.
     const { ticket, reject } = buildTicket(input({
-      structure: structure({ lastSwingLow: { index: 95, price: 1.09, kind: 'low' } }),
-      levels: levels({ support: null, zones: [] }),
+      structure: structure({ lastSwingLow: null, lastSwingHigh: null }),
+      levels: levels({ support: null, resistance: null, zones: [] }),
+      pattern: null,
     }));
     expect(ticket).toBeNull();
-    expect(reject).toMatch(/too wide/);
+    expect(reject).toMatch(/anchor a stop/);
   });
 });
 
 describe('targets come from where price actually stops', () => {
-  it('uses the next opposing zone as the first target', () => {
+  it('aims just short of the next opposing zone, not at it', () => {
+    // The level is where the opposing orders sit, so price routinely turns a
+    // few pips before reaching it. Aiming exactly at it converts moves that
+    // went the right way into full losses.
     const { ticket } = buildTicket(input());
-    expect(ticket!.targets[0]).toBeCloseTo(1.1050, 4);
+    expect(ticket!.target).toBeGreaterThan(1.1);
+    expect(ticket!.target).toBeLessThan(1.1050);
     expect(ticket!.targetBasis).toMatch(/resistance/);
   });
 
-  it('always offers three targets, so a runner still has a plan', () => {
-    expect(buildTicket(input()).ticket!.targets).toHaveLength(3);
+  it('gives exactly one target', () => {
+    const t = buildTicket(input()).ticket!;
+    expect(typeof t.target).toBe('number');
   });
 
-  it('orders targets away from entry', () => {
-    const t = buildTicket(input()).ticket!.targets;
-    expect(t[1]).toBeGreaterThan(t[0]!);
-    expect(t[2]).toBeGreaterThan(t[1]!);
-  });
-
-  it('orders a short\'s targets downward', () => {
-    const t = buildTicket(shortInput()).ticket!.targets;
-    expect(t[0]).toBeLessThan(1.1);
-    expect(t[1]).toBeLessThan(t[0]!);
+  it('puts a short\'s target below entry', () => {
+    const t = buildTicket(shortInput()).ticket!;
+    expect(t.target).toBeLessThan(1.1);
   });
 
   it('uses R multiples when nothing structural is in range, and says so', () => {
     const { ticket } = buildTicket(input({
       levels: levels({ zones: [], resistance: null, previousHigh: null }),
     }));
-    expect(ticket!.targetBasis).toMatch(/R multiples/);
+    expect(ticket!.targetBasis).toMatch(/R multiple/);
   });
 
   it('prefers a pattern measured move when it is the nearest obstacle', () => {
@@ -190,16 +186,16 @@ describe('the reward/risk gate', () => {
 
   it('never reports a reward/risk that disagrees with its own levels', () => {
     const t = buildTicket(input()).ticket!;
-    const recomputed = Math.abs(t.targets[0]! - t.entry) / Math.abs(t.entry - t.stop);
+    const recomputed = Math.abs(t.target - t.entry) / Math.abs(t.entry - t.stop);
     expect(t.rewardRisk).toBeCloseTo(recomputed, 6);
   });
 });
 
 describe('robustness', () => {
-  it('refuses rather than dividing by zero when ATR is unavailable', () => {
-    const { ticket, reject } = buildTicket(input({ atr: 0 }));
+  it('refuses rather than dividing by zero when SCALE is unavailable', () => {
+    const { ticket, reject } = buildTicket(input({ scale: 0 }));
     expect(ticket).toBeNull();
-    expect(reject).toMatch(/ATR/);
+    expect(reject).toMatch(/typical candle range/);
   });
 
   it('never returns a long ticket whose stop is above entry', () => {

@@ -64,6 +64,8 @@ export interface ScoreInput {
   ema: EmaRead | null;
   ichimoku: IchimokuRead | null;
   momentum: number;
+  /** How directly price has travelled, 0–1. Low means chop. */
+  efficiency: number;
   /** Higher-timeframe trend, when the caller fetched one. */
   higherTrend: Direction;
   /** Lower-timeframe confirmation, when the caller fetched one. */
@@ -122,9 +124,20 @@ export function scoreSetup(input: ScoreInput): ScoreResult {
   {
     const { trend, base } = input.structure;
     let pts = 0;
+
+    // Swing shape says "higher highs"; efficiency says whether the market
+    // actually went anywhere. A range prints higher lows on every bounce, so
+    // without this the two disagree and the swing reading wins.
+    const chop = input.efficiency < config.chop.weakEfficiency;
+    if (chop) {
+      warnings.push(`Price is travelling inefficiently (${(input.efficiency * 100).toFixed(0)}% directional) — this looks like a range.`);
+    }
     if ((bull && trend === 'bullish') || (!bull && trend === 'bearish')) {
-      pts += w.marketStructure * 0.75;
-      add('structure', `${bull ? 'Bullish' : 'Bearish'} market structure`, w.marketStructure * 0.75);
+      // Scaled by how directly price is actually moving: a "trend" that has
+      // retraced everything it gained is not one.
+      const conviction = chop ? 0.35 : 1;
+      pts += w.marketStructure * 0.75 * conviction;
+      add('structure', `${bull ? 'Bullish' : 'Bearish'} market structure`, w.marketStructure * 0.75 * conviction);
       // Clean, unambiguous swing sequences are worth more than choppy ones.
       const clean = w.marketStructure * 0.25 * base.strength;
       pts += clean;
@@ -223,10 +236,10 @@ export function scoreSetup(input: ScoreInput): ScoreResult {
 
     // Buying straight into resistance, or selling into support, is the most
     // common way a good-looking setup loses money.
-    const headroom = bull ? l.resistanceDistanceAtr : l.supportDistanceAtr;
+    const headroom = bull ? l.resistanceDistanceRatio : l.supportDistanceRatio;
     if (headroom !== null && headroom < 1.0) {
       pts -= w.supportResistance * 0.5;
-      add('levels', `Only ${headroom.toFixed(1)} ATR of room to the next level`, -w.supportResistance * 0.5);
+      add('levels', `Only ${headroom.toFixed(1)} typical range of room to the next level`, -w.supportResistance * 0.5);
       warnings.push(`Little room before the next ${bull ? 'resistance' : 'support'}.`);
     }
 
@@ -345,7 +358,7 @@ export function scoreSetup(input: ScoreInput): ScoreResult {
       }
       if (e.overextended) {
         pts -= w.ema * 0.4;
-        add('ema', `${e.distanceAtr.toFixed(1)} ATR from EMA50 — extended`, -w.ema * 0.4);
+        add('ema', `${e.distanceRatio.toFixed(1)} typical range from EMA50 — extended`, -w.ema * 0.4);
         warnings.push('Price is far from the EMA50; entry here is chasing.');
       }
     }
@@ -375,7 +388,7 @@ export function scoreSetup(input: ScoreInput): ScoreResult {
         add('ichimoku', 'Price on the wrong side of the cloud', -w.ichimoku * 0.35);
       }
 
-      if (k.thicknessAtr !== null && k.thicknessAtr < config.trend.thinCloudAtr) {
+      if (k.thicknessRatio !== null && k.thicknessRatio < config.trend.thinCloudRange) {
         warnings.push('Cloud is thin — weak as support or resistance.');
       }
     }

@@ -11,12 +11,12 @@ import { readLevels } from './levels';
 import { swingsOf } from './structure';
 import { ENGINE } from './config';
 import { fromCloses, leg, warmup, market } from './testFixtures';
-import { atr } from '../../../lib/indicators/atr';
+import { typicalRange } from './scale';
 
 function read(closes: number[], at?: number) {
   const c = fromCloses(closes);
   const end = at ?? c.length - 1;
-  const a = atr(c, ENGINE.atrPeriod)[end] ?? 0.001;
+  const a = typicalRange(c, end, ENGINE.rangeLookback) || 0.001;
   return readLevels(c, end, swingsOf(c, end, ENGINE, a), a, ENGINE);
 }
 
@@ -71,13 +71,13 @@ describe('role follows price, not origin', () => {
 describe('proximity', () => {
   it('reports being at support when price sits on it', () => {
     const l = read([...rangeBound, ...leg(1.1399, 1.1008, 12)]);
-    expect(l.atSupport || (l.supportDistanceAtr ?? 99) < 1).toBe(true);
+    expect(l.atSupport || (l.supportDistanceRatio ?? 99) < 1).toBe(true);
   });
 
-  it('measures distance in ATR, so the same number means the same thing', () => {
+  it('measures distance in SCALE, so the same number means the same thing', () => {
     const l = read(rangeBound);
-    if (l.supportDistanceAtr !== null) expect(l.supportDistanceAtr).toBeGreaterThanOrEqual(0);
-    if (l.resistanceDistanceAtr !== null) expect(l.resistanceDistanceAtr).toBeGreaterThanOrEqual(0);
+    if (l.supportDistanceRatio !== null) expect(l.supportDistanceRatio).toBeGreaterThanOrEqual(0);
+    if (l.resistanceDistanceRatio !== null) expect(l.resistanceDistanceRatio).toBeGreaterThanOrEqual(0);
   });
 });
 
@@ -122,7 +122,7 @@ describe('robustness', () => {
 
   it('never returns a support above price or a resistance below it', () => {
     const c = market(500, 4);
-    const a = atr(c, ENGINE.atrPeriod)[c.length - 1] ?? 0.001;
+    const a = typicalRange(c, c.length - 1, ENGINE.rangeLookback) || 0.001;
     for (let i = 250; i < c.length; i += 13) {
       const l = readLevels(c, i, swingsOf(c, i, ENGINE, a), a, ENGINE);
       const price = c[i]!.close;

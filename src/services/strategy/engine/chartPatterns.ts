@@ -50,8 +50,8 @@ const near = (a: number, b: number, tol: number) => Math.abs(a - b) <= tol;
 
 /**
  * Score how cleanly two levels match: 1.0 for identical, 0 at the tolerance.
- * A double top whose peaks are 0.05 ATR apart is a better pattern than one
- * whose peaks are 0.49 ATR apart, and the difference should survive into the
+ * A double top whose peaks are 0.05 typical range apart is a better pattern than one
+ * whose peaks are 0.49 typical range apart, and the difference should survive into the
  * confluence score rather than being flattened to a boolean.
  */
 const matchQuality = (a: number, b: number, tol: number) => Math.max(0, 1 - Math.abs(a - b) / tol);
@@ -60,16 +60,16 @@ export function readChartPatterns(
   candles: readonly Candle[],
   end: number,
   swings: readonly Swing[],
-  atr: number,
+  scale: number,
   config: EngineConfig,
 ): ChartPattern[] {
   const out: ChartPattern[] = [];
   // Three is the real floor: a double top is peak, trough, peak. Requiring
   // four silently rejected every valid one.
-  if (atr <= 0 || swings.length < 3) return out;
+  if (scale <= 0 || swings.length < 3) return out;
 
-  const tol = atr * config.patterns.equalityAtr;
-  const minHeight = atr * config.patterns.minHeightAtr;
+  const tol = scale * config.patterns.equalityRange;
+  const minHeight = scale * config.patterns.minHeightRange;
   const recent = swings.filter((s) => end - s.index <= config.patterns.lookback);
   if (recent.length < 3) return out;
 
@@ -182,7 +182,7 @@ export function readChartPatterns(
 
     const highSlope = (hLast.price - hFirst.price) / Math.max(1, hLast.index - hFirst.index);
     const lowSlope = (lLast.price - lFirst.price) / Math.max(1, lLast.index - lFirst.index);
-    const flatTol = atr * 0.02;
+    const flatTol = scale * 0.02;
     const height = Math.abs(hLast.price - lLast.price);
     const index = Math.max(hLast.index, lLast.index);
     const converging = Math.abs(hLast.price - lLast.price) < Math.abs(hFirst.price - lFirst.price);
@@ -258,11 +258,11 @@ export function readChartPatterns(
   // A sharp impulse followed by a shallow, tight drift against it. The
   // pole must dominate: a "flag" whose consolidation is as big as the move
   // before it is just a range.
-  const flag = detectFlag(candles, end, atr);
+  const flag = detectFlag(candles, end, scale);
   if (flag) add(flag);
 
   // ── Rounded top / bottom ───────────────────────────────────────────────
-  const rounded = detectRounded(candles, end, atr, config);
+  const rounded = detectRounded(candles, end, scale, config);
   if (rounded) add(rounded);
 
   return out.sort((a, b) => b.quality - a.quality || a.barsAgo - b.barsAgo);
@@ -277,7 +277,7 @@ export function readChartPatterns(
 function detectFlag(
   candles: readonly Candle[],
   end: number,
-  atr: number,
+  scale: number,
 ): Omit<ChartPattern, 'barsAgo'> | null {
   const consolidation = 8;
   const pole = 12;
@@ -287,7 +287,7 @@ function detectFlag(
   const poleFrom = candles[start]!.close;
   const poleTo = candles[start + pole]!.close;
   const poleMove = poleTo - poleFrom;
-  if (Math.abs(poleMove) < atr * 2.5) return null;
+  if (Math.abs(poleMove) < scale * 2.5) return null;
 
   let hi = -Infinity;
   let lo = Infinity;
@@ -306,7 +306,7 @@ function detectFlag(
   if (!bullish && drift < 0) return null;
 
   // A pennant converges; a flag drifts in a channel. Narrow enough is a pennant.
-  const pennant = consolidationHeight < atr * 1.2;
+  const pennant = consolidationHeight < scale * 1.2;
   const name = bullish
     ? pennant ? 'Bull Pennant' : 'Bull Flag'
     : pennant ? 'Bear Pennant' : 'Bear Flag';
@@ -332,7 +332,7 @@ function detectFlag(
 function detectRounded(
   candles: readonly Candle[],
   end: number,
-  atr: number,
+  scale: number,
   config: EngineConfig,
 ): Omit<ChartPattern, 'barsAgo'> | null {
   const window = 40;
@@ -341,7 +341,7 @@ function detectRounded(
 
   const first = candles[start]!.close;
   const last = candles[end]!.close;
-  if (!near(first, last, atr * 1.2)) return null;
+  if (!near(first, last, scale * 1.2)) return null;
 
   let extremeLow = Infinity;
   let extremeHigh = -Infinity;
@@ -357,7 +357,7 @@ function detectRounded(
   const depth = Math.min(first, last) - extremeLow;
   const heightAbove = extremeHigh - Math.max(first, last);
 
-  if (middle(lowIdx) && depth >= atr * config.patterns.minHeightAtr) {
+  if (middle(lowIdx) && depth >= scale * config.patterns.minHeightRange) {
     return {
       name: 'Rounded Bottom',
       family: 'reversal',
@@ -368,7 +368,7 @@ function detectRounded(
       invalidation: extremeLow,
     };
   }
-  if (middle(highIdx) && heightAbove >= atr * config.patterns.minHeightAtr) {
+  if (middle(highIdx) && heightAbove >= scale * config.patterns.minHeightRange) {
     return {
       name: 'Rounded Top',
       family: 'reversal',
