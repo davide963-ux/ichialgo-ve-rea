@@ -687,3 +687,59 @@ describe('runScan — multi-timeframe', () => {
     expect(new Set(feed.candleCalls).size).toBe(3);
   });
 });
+
+describe('runScan — multi-timeframe', () => {
+  it('fetches context, setup and entry timeframes for each pair', async () => {
+    const db = new FakeDb();
+    const feed = new FakeFeed(longSetupCandles);
+
+    await runScan({
+      db,
+      feed,
+      analyse: alwaysLong,
+      config: smallConfig({ symbols: ['EUR/USD'], timeframes: ['1H'], biasTimeframe: '4H', entryTimeframe: '15min' }),
+      now: () => MONDAY_NOON,
+    });
+
+    expect(feed.candleCalls).toContain('EUR/USD|4H');
+    expect(feed.candleCalls).toContain('EUR/USD|1H');
+    expect(feed.candleCalls).toContain('EUR/USD|15min');
+  });
+
+  it('still scans when the entry timeframe fetch fails', async () => {
+    // Losing the 15M costs the confirmation bonus, not the setup. Skipping the
+    // pair would make a data hiccup on the fastest, flakiest series silently
+    // mute the whole strategy.
+    const db = new FakeDb();
+    const feed = new FakeFeed(longSetupCandles);
+    feed.failTimeframes.add('15min');
+
+    const result = await runScan({
+      db,
+      feed,
+      analyse: alwaysLong,
+      config: smallConfig({ symbols: ['EUR/USD'], timeframes: ['1H'], biasTimeframe: null, entryTimeframe: '15min' }),
+      now: () => MONDAY_NOON,
+    });
+
+    expect(result.scanned).toBeGreaterThan(0);
+    expect(result.errors.some((e) => e.includes('entry'))).toBe(true);
+  });
+
+  it('spends three credits per pair with all three timeframes on', async () => {
+    // 7 pairs x 3 = 21, against a 16-credit cap: the round-robin cursor is
+    // what stops the tail pairs from never being scanned at all.
+    const db = new FakeDb();
+    const feed = new FakeFeed(longSetupCandles);
+
+    await runScan({
+      db,
+      feed,
+      analyse: neverSignals,
+      config: smallConfig({ symbols: ['EUR/USD'], timeframes: ['1H'], biasTimeframe: '4H', entryTimeframe: '15min' }),
+      now: () => MONDAY_NOON,
+    });
+
+    expect(new Set(feed.candleCalls).size).toBe(3);
+  });
+});
