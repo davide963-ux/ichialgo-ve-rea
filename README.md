@@ -13,7 +13,7 @@
 | Build | Vite 8 |
 | Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`), with Twelve Data multi-key failover |
 | Strategy | EMA50 touch + ATR trade plan + Ichimoku confluence — see [§4](#4-strategy) |
-| Tests | Vitest — 254 across the strategy, indicators, the proxy, the key pool, the response cache, the Yahoo candle route and the calculator |
+| Tests | Vitest — 299 across the strategy, the backtest, indicators, the proxy, the key pool, the response cache, the Yahoo candle route and the calculator |
 | Data | Twelve Data, behind a provider interface |
 
 ---
@@ -264,7 +264,8 @@ src/
     tradePlan.ts             entry / stop / target / lot size for one touch
     StrategyEngine.ts        scans pairs, watches quotes between scans
     chartMarkers.ts          touches → arrows, so the chart stays strategy-free
-    realData.test.ts         the detector over 30,000 real OANDA bars
+    backtest.ts              walk-forward replay: fills, exits, R, metrics
+    realData.test.ts         the detector and the backtest over 30,000 real bars
   state/signalStore.ts       the signal log (useSyncExternalStore)
   state/marketStore.ts       immutable external store (useSyncExternalStore)
   state/accountStore.ts      balance + risk %, persisted; shared by plans and calculator
@@ -277,7 +278,7 @@ src/
                              PriceChange, PairDetails, CandlestickChart, TimeframeSelector,
                              EmptyState, Calculator, ConnectionBanner, KumoMark
   components/chart/          kumoPrimitive (the Kumo fill)
-  pages/                     Dashboard, PairPage, CalculatorPage
+  pages/                     Dashboard, PairPage, Backtest, CalculatorPage
 fixtures/market/             real OANDA candles, for validating the strategy against
 server/
   api.mjs                    read-only GET allowlist + Twelve Data key failover
@@ -445,11 +446,63 @@ a worse trade, not an impossible one.
 `fixtures/market/` — 5000 real 1H OANDA bars per pair — and asserts what must
 hold on any real series: it fires sometimes but nowhere near every bar
 (observed 13.7–15.7%), a non-crossing touch stays inside its band, no two
-touches land on one bar, and the last bar leaves a usable level.
+touches land on one bar, and **it reads no bar it could not have seen** (the
+signals from a truncated series must match the full one exactly, Ichimoku
+score included).
 
-That is **not a backtest** and claims nothing about profitability. It catches
-what hand-built fixtures cannot: a detector that fires on everything, one that
-has gone silent, or one that reports a touch nowhere near the EMA.
+That last one is the test everything else rests on. A strategy that peeks at
+later bars prints an edge that does not exist, and nothing downstream can
+detect it — the backtest, the metrics and the confidence interval are all
+computed faithfully from a fiction.
+
+### The backtest
+
+`/backtest` replays the strategy over those same fixtures. It uses the same
+detector and the same `ticketLevels()` the live trade-plan card shows, so
+there is no backtest-only version of the rules.
+
+Four decisions set the number, and every one is taken in the pessimistic
+direction:
+
+| Rule | Why |
+|---|---|
+| **Entry must be a price that traded** (`low <= entry <= high`) | Entry is a resting limit at the EMA. The touch band is wider than the line, so a bar can touch without ever trading at the EMA — those are no-fills, not trades |
+| **The entry bar can stop you out** | The fill happens *inside* the touch bar, so the rest of that bar is live. It can only lose there: the target is not credited until the next bar |
+| **Same-bar ambiguity → the stop wins** | OHLC cannot order the two, and the alternative invents wins |
+| **A trade still open at the end is not counted** | Assuming a result either way is how a losing run gets hidden |
+
+The first one is not a detail. An earlier version filled every touch at the
+EMA regardless, which was worth **+0.23R a trade across 1105 trades** — and it
+was fiction: on GBP/JPY the fillable trades totalled −9R while the unfillable
+ones "made" +34R, with entries up to 4.8 pips better than the bar's own
+extreme. A backtest that buys below the low prints an edge out of nothing.
+
+Costs default to **1 pip**, charged against the risk. The stop is about ten
+pips, so the spread is a tenth of R on every trade — the commonest reason a
+backtest does not survive contact with a broker.
+
+### What it says, at 1 pip of cost
+
+| Setting | Trades | Win | Average | 95% interval | Verdict |
+|---|---|---|---|---|---|
+| Any touch | 1017 | 35.1% | +0.00R | −0.09 … +0.09 | **nothing** |
+| Ichimoku ≥ 3/5 | 664 | 41.6% | +0.19R | +0.08 … +0.31 | clear of zero |
+| Ichimoku ≥ 4/5 | 321 | 45.8% | +0.32R | +0.15 … +0.48 | clear of zero |
+
+So the touch on its own is worth nothing once you pay the spread, and whatever
+edge exists lives in the Ichimoku filter. Per pair the unfiltered rule ranges
+from −0.17R (USD/JPY) to +0.28R (USD/CAD), which with a mean of zero is the
+signature of noise rather than of an effect.
+
+**What this does not prove**, stated on the page itself:
+
+- **One period.** Dec 2025 – Sep 2026 is nine months of one regime.
+- **The pairs are correlated.** EUR/USD, GBP/USD and AUD/USD are largely the
+  same dollar trade, so 664 trades are worth fewer than 664 independent
+  observations and the interval is narrower than it should be.
+- **It is all in-sample.** Every setting was chosen after seeing these candles.
+- **Costs are a flat estimate.** Real spreads widen at the open and on news,
+  exactly when the EMA tends to get touched. Swap is not modelled.
 
 ### The other strategy, and why it is not here
 

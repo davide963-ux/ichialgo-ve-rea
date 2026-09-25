@@ -1430,3 +1430,77 @@ select.input {
   padding: 5px 8px;
   font-size: 12px;
 }
+
+/* ── Backtest controls ─────────────────────────────────────────────────
+   Chips rather than <select>s: every option and the current choice are
+   visible at once, which matters when the choice changes the headline
+   number on the same screen. */
+.backtest-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 20px 28px;
+  align-items: start;
+}
+
+.control-group {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.control-group legend {
+  padding: 0;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.chip:hover {
+  border-color: var(--mint);
+  color: var(--text);
+}
+
+.chip.on {
+  background: var(--mint-soft);
+  border-color: var(--mint);
+  color: var(--mint);
+}
+
+/* The control is the chip itself; the input only carries state and focus. */
+.chip input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.chip:focus-within {
+  outline: 2px solid var(--mint-glow);
+  outline-offset: 2px;
+}

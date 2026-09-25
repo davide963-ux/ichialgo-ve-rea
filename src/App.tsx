@@ -4,6 +4,7 @@ import { DEFAULT_TIMEFRAME, isTimeframe } from './config/timeframes';
 import { useMarketDataConnection } from './hooks/useMarketData';
 import { useStrategyEngine } from './hooks/useSignals';
 import { CalculatorPage } from './pages/CalculatorPage';
+import { Backtest } from './pages/Backtest';
 import { Dashboard } from './pages/Dashboard';
 import { NotFound } from './pages/NotFound';
 import { PairPage } from './pages/PairPage';
@@ -51,11 +52,11 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/pair/:slug" element={<PairPage />} />
+          <Route path="/backtest" element={<Backtest />} />
           <Route path="/calculator" element={<CalculatorPage />} />
           {/* Routes that existed only to show strategy output. Redirected
               rather than 404'd, so old links and bookmarks still land. */}
           <Route path="/results" element={<Navigate to="/" replace />} />
-          <Route path="/backtest" element={<Navigate to="/" replace />} />
           <Route path="/history" element={<Navigate to="/" replace />} />
           <Route path="/performance" element={<Navigate to="/" replace />} />
           <Route path="/equity" element={<Navigate to="/" replace />} />

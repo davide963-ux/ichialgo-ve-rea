@@ -7,8 +7,10 @@ export { analyseEma50Touch, checkLiveTouch, signalId, touchTimeMs } from './ema5
 export type { TouchAnalysis } from './ema50Touch';
 export { ICHIMOKU_CHECKS, explainContext, ichimokuContextAt } from './ichimokuContext';
 export type { IchimokuContext } from './ichimokuContext';
+export { backtestTouches, combine, equityCurve, measure, rMultipleOf } from './backtest';
+export type { BacktestExit, BacktestFilters, BacktestMetrics, BacktestResult, BacktestTrade } from './backtest';
 export { touchMarkers } from './chartMarkers';
 export type { TouchMarker } from './chartMarkers';
-export { calculatorLink, directionOf, planFromTouch } from './tradePlan';
+export { calculatorLink, directionOf, planFromTouch, ticketLevels } from './tradePlan';
 export type { TradePlan } from './tradePlan';
 export type { Approach, Bias, StrategyId, TouchOutcome, TouchSignal, Trend, WatchLevel } from './types';
