@@ -1,10 +1,10 @@
 # Ichialgo — Forex terminal
 
-**Live Forex market data, charts and a position-size calculator.**
+**Live Forex market data, charts, the EMA50 touch strategy and a position-size calculator.**
 
-> **No trading strategy.** One was built and removed — measured against real market data it had
-> no edge. [§4](#4-strategy) records what happened and why, because the mistake is worth not
-> repeating.
+> **The strategy runs in the browser.** A touch is a pure function of the candles on screen — no
+> scanner, no cron, no database, so what the chart shows and what the engine decided cannot
+> disagree. [§4](#4-strategy) covers the rules, and why a *different* strategy was removed.
 
 | Stack | |
 |---|---|
@@ -12,8 +12,8 @@
 | Charts | TradingView Lightweight Charts v5 (open-source charting library) |
 | Build | Vite 8 |
 | Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`), with Twelve Data multi-key failover |
-| Strategy | **none** — see [§4](#4-strategy) |
-| Tests | Vitest — 156 across indicators, the proxy, the key pool, the response cache, the Yahoo candle route and the calculator |
+| Strategy | EMA50 touch + ATR trade plan + Ichimoku confluence — see [§4](#4-strategy) |
+| Tests | Vitest — 254 across the strategy, indicators, the proxy, the key pool, the response cache, the Yahoo candle route and the calculator |
 | Data | Twelve Data, behind a provider interface |
 
 ---
@@ -249,7 +249,7 @@ Rules enforced by the structure:
 
 ```
 src/
-  config/        pairs.ts (add pairs here), timeframes.ts, app.ts
+  config/        pairs.ts (add pairs here), timeframes.ts, app.ts, strategy.ts (thresholds)
   services/marketData/
     types.ts                 provider contract, Quote, Candle, ProviderError
     http.ts                  fetch + timeout + HTTP→error mapping
@@ -258,17 +258,27 @@ src/
     providers/yahooCandles   free candles: symbol/range mapping, 4H resampling
     providers/YahooCandleRouter  Yahoo first, Twelve Data on refusal (+breaker)
     index.ts                 singleton + public exports
+  services/strategy/
+    ema50Touch.ts            the detector: band, arm/re-arm, outcome (+tests)
+    ichimokuContext.ts       the five checks, read in the touch's direction
+    tradePlan.ts             entry / stop / target / lot size for one touch
+    StrategyEngine.ts        scans pairs, watches quotes between scans
+    chartMarkers.ts          touches → arrows, so the chart stays strategy-free
+    realData.test.ts         the detector over 30,000 real OANDA bars
+  state/signalStore.ts       the signal log (useSyncExternalStore)
   state/marketStore.ts       immutable external store (useSyncExternalStore)
   state/accountStore.ts      balance + risk %, persisted; shared by plans and calculator
   hooks/                     useMarketData, useCandles, useChartIndicators, useNow
   lib/indicators/            ema, atr, ichimoku (+tests)
   lib/                       positionSize (+tests), pips, format, time, locale
+  hooks/useSignals.ts        strategy hooks: engine, log, per-pair level, ticket
   components/                Navbar, MetricCard, ForexTable, ForexRow, MarketStatus,
+                             SignalTable, SignalBadge, TradePlanCard, IchimokuPanel,
                              PriceChange, PairDetails, CandlestickChart, TimeframeSelector,
                              EmptyState, Calculator, ConnectionBanner, KumoMark
   components/chart/          kumoPrimitive (the Kumo fill)
   pages/                     Dashboard, PairPage, CalculatorPage
-fixtures/market/             real OANDA candles, for validating any future strategy
+fixtures/market/             real OANDA candles, for validating the strategy against
 server/
   api.mjs                    read-only GET allowlist + Twelve Data key failover
   tdValidate.mjs             request guard: currency pairs only, batch + outputsize caps
@@ -361,20 +371,98 @@ tooltip says so. There is no bid/ask on the REST quote, so those columns show `�
 
 ## 4. Strategy
 
-**There is none.** The signal engine, the 24/7 scanner and everything that
-stored or displayed their output were removed.
+**EMA50 touch**, annotated with Ichimoku and turned into a sized order ticket.
+It runs **in the browser**, off the candles the charts already hold: no
+scanner, no cron, no database. An earlier design had a server-side scanner
+writing its opinion to Postgres while the page computed another, and the two
+could disagree with nothing saying which was right.
 
-### Why, and what it cost
+```mermaid
+flowchart TD
+    C["candles the chart already has<br/>(no extra request)"] --> E["EMA50 + ATR14"]
+    E --> B{"bar's range enters<br/>the band, and armed?"}
+    B -- no --> W["keep watching"]
+    B -- yes --> T["touch"]
+    T --> O["outcome: bounce / cross / inside"]
+    T --> I["Ichimoku: 5 checks,<br/>read in the touch's direction"]
+    T --> P["ticket: entry at EMA,<br/>stop 1.5×ATR, target 2R, lot size"]
+    T --> D["disarm until a close leaves<br/>the band by 1.5 bands"]
+    D --> W
+```
 
-Two strategies were built here. Both were validated against a synthetic market
-generator written alongside them — and that generator injected trends 45% of
-the time, which flatters a trend-following strategy by construction. It
-reported healthy numbers throughout: +0.39R a trade in "trending" conditions,
-clean parameter sweeps, a tidy knee in the tuning curve. All of it measured
-against a fiction.
+### The touch
 
-When real OANDA data arrived (`fixtures/market/`, 6 pairs, 30,000 hourly
-candles) the same engine returned:
+A touch is **the bar's range entering a band around the EMA50**, where the
+band is `max(ATR14 × 0.15, 1.5 pips)`. A fixed pip tolerance would mean
+different things in a dead session and a fast one.
+
+One signal **per approach, not per bar**: after a touch the pair is disarmed
+until a close leaves the band by 1.5×. Without that, a market riding its EMA
+fires on every single bar.
+
+Each signal carries the side price came from, what the bar did next
+(bounce / cross / inside / forming), the EMA's own slope as trend, and a
+long / short / counter-trend read. Signals are dated by **market time, not
+detection time** — dating them by the scan would stamp every touch in the
+initial 300-bar window with the moment the page loaded.
+
+### Ichimoku confluence
+
+The touch says *where* price is; Ichimoku says whether the rest of the picture
+agrees with taking it. Five checks, each read in the direction the touch
+implies, so the same bar scores differently for a long and a short:
+
+1. price on the right side of the Kumo
+2. cloud colour (Senkou A vs B)
+3. Tenkan on the trade's side of Kijun
+4. Chikou clear of the candles 26 bars back
+5. EMA50 within 5 pips of Kijun-sen — two independent methods marking the
+   same level, which is the case worth waiting for
+
+**Signals are annotated, never hidden.** A 0/5 touch is still logged and
+flagged; the dashboard has an "Ichimoku confluent only" filter, off by
+default, so a weak setup can be judged rather than silently dropped.
+
+### The ticket
+
+| | |
+|---|---|
+| Entry | the EMA50 itself |
+| Stop | 1.5 × ATR beyond it, floored at 8 pips |
+| Target | 2R |
+| Size | from `lib/positionSize.ts` — the same tested math the calculator uses |
+
+Prices are rounded to the pair's own precision **before** sizing. Sizing off
+the raw EMA float once made the plan quote 0.98 lots while the calculator it
+prefilled said 0.99, because nobody can place an order at 1.1015183.
+
+A counter-trend touch still gets a plan, flagged in the card's warnings: it is
+a worse trade, not an impossible one.
+
+### Validated against real candles
+
+`src/services/strategy/realData.test.ts` runs the detector over
+`fixtures/market/` — 5000 real 1H OANDA bars per pair — and asserts what must
+hold on any real series: it fires sometimes but nowhere near every bar
+(observed 13.7–15.7%), a non-crossing touch stays inside its band, no two
+touches land on one bar, and the last bar leaves a usable level.
+
+That is **not a backtest** and claims nothing about profitability. It catches
+what hand-built fixtures cannot: a detector that fires on everything, one that
+has gone silent, or one that reports a touch nowhere near the EMA.
+
+### The other strategy, and why it is not here
+
+A second, much larger strategy was built later — multi-timeframe confluence
+scoring over market structure, S/R, chart patterns and 21 candlestick
+patterns — and removed. Both it and its predecessor were validated against a
+synthetic market generator written alongside them, and that generator injected
+trends 45% of the time, which flatters a trend-following strategy by
+construction. It reported healthy numbers throughout: +0.39R a trade in
+"trending" conditions, clean parameter sweeps, a tidy knee in the tuning curve.
+All measured against a fiction.
+
+When real OANDA data arrived the same engine returned:
 
 ```
 172 trades      −0.097R per trade
@@ -385,32 +473,19 @@ win rate 30.8%  (34.1% needed at the observed 1.93:1 payoff)
 No edge. Not catastrophically broken either — indistinguishable from a coin
 flip, which is its own kind of answer.
 
-### The lesson worth keeping
+**The lesson worth keeping:** a generated market can establish that an engine
+is *causal* (it does not read future bars), that its *tickets are coherent*
+(stop the right side of entry, reward/risk as claimed), and that it *does not
+throw*. Those are real and worth testing. It cannot establish that a rule
+works. Using it for that produced three rounds of tuning against noise, and
+every number reported along the way was wrong in the same direction.
 
-A generated market can establish that an engine is **causal** (it does not
-read future bars), that its **tickets are coherent** (stop the right side of
-entry, reward/risk as claimed), and that it **does not throw**. Those are real
-and worth testing.
-
-It cannot establish that a rule works. Using it for that produced three rounds
-of tuning against noise, and every number reported along the way was wrong in
-the same direction.
-
-The fixtures are checked in so the next attempt can be measured properly from
-its first line, and so that this mistake needs making only once.
-
-### What survived
-
-Everything under the strategy, because none of it depended on the rules being
-good:
-
-| Kept | Why |
-|---|---|
-| `lib/indicators/` | Ichimoku, EMA, market structure — pure maths, drawn on the chart |
-| Market data layer | providers, service, store, key-pool proxy |
-| UI | dashboard, pair charts, calculator |
-| `fixtures/market/` | real candles to validate against |
-
+The fixtures are checked in so any attempt can be measured properly from its
+first line. The EMA50 touch strategy makes **no profitability claim** either —
+what it has is a detector whose behaviour is pinned to real candles, and a
+ticket whose arithmetic is tested. Whether the rule makes money is an open
+question, and the honest place to answer it is a backtest over
+`fixtures/market/`, not a synthetic one.
 
 ## 5. Position-size calculator
 
@@ -469,8 +544,9 @@ next — they cost nothing idle.
 
 
 
-**Add a strategy:** there is no strategy layer any more, so this is a green field. Whatever goes
-in, measure it against `fixtures/market/` before tuning a single threshold — [§4](#4-strategy)
+**Tune the strategy:** every threshold lives in `src/config/strategy.ts` — band width, re-arm
+distance, stop multiple, R target, the Ichimoku agreement threshold. Measure any change against
+`fixtures/market/` before trusting it — [§4](#4-strategy)
 records what happens otherwise.
 
 ---

@@ -1,6 +1,8 @@
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes, useSearchParams } from 'react-router-dom';
 import { Navbar } from './components/Navbar';
+import { DEFAULT_TIMEFRAME, isTimeframe } from './config/timeframes';
 import { useMarketDataConnection } from './hooks/useMarketData';
+import { useStrategyEngine } from './hooks/useSignals';
 import { CalculatorPage } from './pages/CalculatorPage';
 import { Dashboard } from './pages/Dashboard';
 import { NotFound } from './pages/NotFound';
@@ -8,20 +10,31 @@ import { PairPage } from './pages/PairPage';
 import { useMarketStore } from './state/marketStore';
 
 /**
- * Live market data and charts. No strategy.
+ * Live market data, charts, and the EMA50 touch strategy.
  *
- * The signal engine, the 24/7 scanner and everything that read their output
- * were removed: measured against real market data the strategy had no edge,
- * and the honest move was to stop building on it rather than tune it again.
- * What is left is the part that was never in question — prices, charts and
- * the position-size calculator.
+ * The strategy runs in the BROWSER, off the candles the charts already hold.
+ * There is no scanner, no cron and no database behind it: a touch is a pure
+ * function of the bars on screen, so what the page shows and what the engine
+ * decided can never disagree.
  */
+
+/**
+ * Keeps the strategy engine pointed at the timeframe in the URL, for every
+ * route. Lives inside the router because that is where `?tf=` is readable.
+ */
+function StrategyRunner() {
+  const [params] = useSearchParams();
+  const tf = params.get('tf');
+  useStrategyEngine(isTimeframe(tf) ? tf : DEFAULT_TIMEFRAME);
+  return null;
+}
+
 function Footer() {
   const provider = useMarketStore((s) => s.provider.label);
   return (
     <footer className="footer">
       <div className="footer-inner">
-        <span>Ichialgo: live Forex market data.</span>
+        <span>Ichialgo: live Forex market data + EMA50 touch strategy.</span>
         <span>Data: {provider}. Charts by TradingView Lightweight Charts.</span>
       </div>
     </footer>
@@ -33,6 +46,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <div className="app">
+        <StrategyRunner />
         <Navbar />
         <Routes>
           <Route path="/" element={<Dashboard />} />

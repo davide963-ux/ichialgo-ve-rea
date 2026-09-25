@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { Timeframe } from '../config/timeframes';
 import { useCandles } from '../hooks/useCandles';
@@ -6,12 +6,19 @@ import { useNow } from '../hooks/useNow';
 import { CHART_EMA_PERIOD, useChartIndicators } from '../hooks/useChartIndicators';
 import { formatNumber, formatPrice } from '../lib/format';
 import { formatAgo } from '../lib/time';
+import { EMA50_TOUCH } from '../config/strategy';
+import { useStrategyNotice, useTouchAnalysis, useTradePlan } from '../hooks/useSignals';
+import { pipSize } from '../lib/pips';
+import { touchMarkers } from '../services/strategy';
 import { useMarketStore } from '../state/marketStore';
 import { CandlestickChart } from './CandlestickChart';
 import { EmptyState } from './EmptyState';
 import { MarketStatus } from './MarketStatus';
 import { PriceChange } from './PriceChange';
+import { IchimokuPanel } from './IchimokuPanel';
+import { SignalTable } from './SignalTable';
 import { TimeframeSelector } from './TimeframeSelector';
+import { TradePlanCard } from './TradePlanCard';
 
 interface Props {
   symbol: string;
@@ -30,6 +37,23 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
   const now = useNow();
   const [showIchimoku, setShowIchimoku] = useState(true);
   const live = status === 'ONLINE';
+
+  /**
+   * The strategy reads the SAME candles the chart is drawing, so what the
+   * panel says and what you can see never disagree — and it costs no extra
+   * provider request. The chart's own overlays stay on useChartIndicators:
+   * a price chart must still render when the strategy has nothing to say.
+   */
+  const analysis = useTouchAnalysis(symbol, timeframe, candles);
+  const latestTouch = analysis.signals.at(-1) ?? null;
+  const plan = useTradePlan(latestTouch);
+  const strategyNotice = useStrategyNotice(symbol);
+  const markers = useMemo(() => touchMarkers(analysis.signals, symbol, timeframe), [analysis.signals, symbol, timeframe]);
+
+  // Distance to the EMA right now, from the same bars the chart is showing.
+  const level = analysis.level;
+  const distancePips = level && quote ? (quote.price - level.ema) / pipSize(symbol) : null;
+  const atTheLevel = level !== null && distancePips !== null && Math.abs(distancePips) <= level.tolerancePips;
 
   return (
     <>
@@ -108,6 +132,7 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
             candles={candles}
             ema={indicators.ema}
             emaLabel={`EMA${CHART_EMA_PERIOD}`}
+            markers={markers}
             ichimoku={indicators.ichimoku ?? undefined}
             showIchimoku={showIchimoku}
           />
@@ -145,6 +170,91 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
           </span>
         </div>
       </section>
+
+      <section className="panel">
+        <div className="panel-head">
+          <div>
+            <h2 className="panel-title">EMA{EMA50_TOUCH.period} touch</h2>
+            <span className="panel-sub">
+              A touch is price entering a band of ±{level ? formatNumber(level.tolerancePips, 1) : '—'} pips around
+              the EMA{EMA50_TOUCH.period} — scaled to current volatility (ATR{EMA50_TOUCH.atrPeriod}), so it means the
+              same thing in a dead session and a fast one.
+            </span>
+          </div>
+          {atTheLevel && <span className="tag pos" title="Price is inside the band right now">AT THE LEVEL</span>}
+        </div>
+
+        {level ? (
+          <>
+            <dl className="quote-grid panel-body">
+              <div>
+                <dt>EMA{EMA50_TOUCH.period}</dt>
+                <dd className="num">{formatPrice(symbol, level.ema)}</dd>
+              </div>
+              <div>
+                <dt>Distance</dt>
+                <dd className={`num${atTheLevel ? ' pos' : ''}`}>
+                  {distancePips === null
+                    ? '—'
+                    : `${distancePips > 0 ? '+' : '−'}${formatNumber(Math.abs(distancePips), 1)} pips`}
+                </dd>
+              </div>
+              <div>
+                <dt>EMA trend</dt>
+                <dd className={level.trend === 'up' ? 'pos' : level.trend === 'down' ? 'neg' : 'muted'}>
+                  {level.trend.toUpperCase()}
+                </dd>
+              </div>
+              <div>
+                <dt>State</dt>
+                <dd className="muted" title="Armed = ready to signal the next approach">
+                  {level.armed ? 'ARMED' : 'IN ZONE'}
+                </dd>
+              </div>
+            </dl>
+            <SignalTable
+              signals={analysis.signals.slice().reverse()}
+              limit={10}
+              emptyHint={`No EMA${EMA50_TOUCH.period} touch in the last ${candles.length} ${timeframe} candles.`}
+            />
+          </>
+        ) : (
+          <EmptyState title="Not enough history" compact>
+            {strategyNotice ??
+              `The EMA${EMA50_TOUCH.period} needs at least ${EMA50_TOUCH.minBars} ${timeframe} candles; ${candles.length} loaded.`}
+          </EmptyState>
+        )}
+      </section>
+
+      {latestTouch && (
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <h2 className="panel-title">Trade plan</h2>
+              <span className="panel-sub">
+                From the most recent touch. Entry at the EMA, stop beyond it, target at the R multiple — sized off
+                the balance and risk % the calculator uses.
+              </span>
+            </div>
+          </div>
+          <TradePlanCard signal={latestTouch} plan={plan} />
+        </section>
+      )}
+
+      {latestTouch && analysis.ichimoku && (
+        <section className="panel">
+          <div className="panel-head">
+            <div>
+              <h2 className="panel-title">Ichimoku confluence</h2>
+              <span className="panel-sub">
+                The touch says where price is; these five checks say whether the rest of the picture agrees with
+                taking it — read in the direction the touch implies.
+              </span>
+            </div>
+          </div>
+          <IchimokuPanel signal={latestTouch} series={analysis.ichimoku} candles={candles} />
+        </section>
+      )}
 
     </>
   );
