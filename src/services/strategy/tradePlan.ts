@@ -59,12 +59,25 @@ export interface TradePlan {
 export const directionOf = (signal: Pick<TouchSignal, 'approach'>): 'LONG' | 'SHORT' =>
   signal.approach === 'above' ? 'LONG' : 'SHORT';
 
-export function planFromTouch(
-  signal: TouchSignal,
-  account: AccountState,
-  lookup: RateLookup = () => null,
-  config: TradePlanConfig = TRADE_PLAN,
-): TradePlan | null {
+/**
+ * The three prices of a ticket, with no sizing.
+ *
+ * Split out so the BACKTEST uses this and nothing of its own: a backtested
+ * trade and a live ticket then come from one implementation, and there is no
+ * "backtest version" of the levels that could quietly drift from the ones
+ * actually being traded. Sizing needs an account balance; R multiples do not,
+ * which is the whole reason a backtest measures in R.
+ */
+export interface TicketLevels {
+  direction: 'LONG' | 'SHORT';
+  entry: number;
+  stop: number;
+  target: number;
+  /** True when the ATR was small enough that the pip floor set the stop. */
+  atStopFloor: boolean;
+}
+
+export function ticketLevels(signal: TouchSignal, config: TradePlanConfig = TRADE_PLAN): TicketLevels | null {
   if (!Number.isFinite(signal.ema) || signal.ema <= 0) return null;
 
   const pip = pipSize(signal.symbol);
@@ -80,6 +93,22 @@ export function planFromTouch(
     direction === 'LONG' ? entry + stopDistance * config.rewardMultiple : entry - stopDistance * config.rewardMultiple,
   );
 
+  return { direction, entry, stop, target, atStopFloor: rawStopDistance <= config.minStopPips * pip };
+}
+
+export function planFromTouch(
+  signal: TouchSignal,
+  account: AccountState,
+  lookup: RateLookup = () => null,
+  config: TradePlanConfig = TRADE_PLAN,
+): TradePlan | null {
+  const levels = ticketLevels(signal, config);
+  if (!levels) return null;
+
+  const pip = pipSize(signal.symbol);
+  const { direction, entry, stop, target } = levels;
+  const stopDistance = Math.abs(entry - stop);
+
   const sized = calculatePosition(
     { balance: account.balance, riskPct: account.riskPct, symbol: signal.symbol, entry, stopLoss: stop, takeProfit: target },
     lookup,
@@ -87,7 +116,7 @@ export function planFromTouch(
 
   const warnings = [...sized.warnings, ...sized.errors];
   if (signal.counterTrend) warnings.unshift('Touch is against the EMA trend — the weaker case.');
-  if (rawStopDistance <= config.minStopPips * pip) {
+  if (levels.atStopFloor) {
     warnings.push(`ATR is small: the stop is at the ${config.minStopPips}-pip floor, not ${config.stopAtrMultiple}×ATR.`);
   }
 

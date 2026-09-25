@@ -5,6 +5,7 @@ import { MarketStatus } from './MarketStatus';
 
 const LINKS = [
   { to: '/', label: 'Dashboard', end: true },
+  { to: '/backtest', label: 'Backtest' },
   { to: '/calculator', label: 'Calculator' },
 ];
 
