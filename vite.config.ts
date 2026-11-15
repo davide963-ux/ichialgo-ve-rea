@@ -6,15 +6,26 @@
 import { defineConfig, loadEnv, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { createMarketDataApi } from './server/api.mjs';
+import { createHistoryApi } from './server/historyApi.mjs';
 
 
 function marketDataProxy(env: Record<string, string>): Plugin {
   const api = createMarketDataApi(env);
+  // The history routes go FIRST: the proxy answers anything outside its
+  // allowlist with a 403, so mounting it ahead of them would make
+  // /api/signals unreachable in dev while working fine in production.
+  const history = createHistoryApi();
   return {
     name: 'ichialgo-market-data-proxy',
     // Registered before Vite's own middlewares, so /api/* never hits the SPA fallback.
-    configureServer: (server) => void server.middlewares.use(api.middleware),
-    configurePreviewServer: (server) => void server.middlewares.use(api.middleware),
+    configureServer(server) {
+      server.middlewares.use(history.middleware);
+      server.middlewares.use(api.middleware);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(history.middleware);
+      server.middlewares.use(api.middleware);
+    },
   };
 }
 

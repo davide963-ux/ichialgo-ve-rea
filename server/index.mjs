@@ -10,6 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createMarketDataApi } from './api.mjs';
+import { createHistoryApi } from './historyApi.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dist = path.resolve(here, '../dist');
@@ -17,8 +18,11 @@ const port = Number(process.env.PORT || 8080);
 const host = process.env.HOST || '127.0.0.1';
 
 const api = createMarketDataApi(process.env);
+const history = createHistoryApi();
 const app = express();
 app.disable('x-powered-by');
+// Before the proxy: it 403s anything it does not recognise.
+app.use(history.middleware);
 app.use(api.middleware);
 app.use(express.static(dist, { index: false, maxAge: '1h' }));
 app.use((_req, res) => res.sendFile(path.join(dist, 'index.html'))); // SPA fallback

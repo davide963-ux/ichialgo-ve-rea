@@ -53,8 +53,17 @@ function deployedRoutes() {
 export const serves = (deployed, { prefix, hasSubPath }) =>
   deployed.some((d) => d.prefix === prefix && (hasSubPath ? d.kind === 'catchall' || d.kind === 'static' : d.kind === 'static'));
 
-/** Functions that are not market-data proxy routes and never will be. */
-const STANDALONE = new Set();
+/**
+ * Functions that are not market-data proxy routes and never will be.
+ *
+ * These two own their own handlers deliberately: the proxy's middleware is
+ * GET-only and forwards to an upstream provider, which is the wrong shape for
+ * a token-guarded POST that writes to Postgres and for a read straight out of
+ * it. They are still subject to the SHAPE rule above — both are bare paths
+ * with no segment after the prefix, so both must be static files, which is
+ * what the test below checks.
+ */
+const STANDALONE = new Set(['scan', 'signals']);
 
 describe('proxy routes vs Vercel functions', () => {
   it('finds the route table (so this cannot pass by reading nothing)', () => {
@@ -99,6 +108,22 @@ describe('proxy routes vs Vercel functions', () => {
     for (const d of deployedRoutes()) {
       if (STANDALONE.has(d.prefix)) continue;
       expect(prefixes, `api/ deploys ${d.prefix} but server/api.mjs serves no /api/${d.prefix} route`).toContain(d.prefix);
+    }
+  });
+
+  /**
+   * Exempting the standalone routes from the handler check must not exempt
+   * them from the shape rule — that is the rule that actually 404s in
+   * production. /api/scan and /api/signals are both bare paths, so each needs
+   * a static api/<name>.js and must NOT be a [...path] folder.
+   */
+  it('deploys the standalone routes as bare static files', () => {
+    const deployed = deployedRoutes();
+    for (const prefix of STANDALONE) {
+      expect(
+        serves(deployed, { prefix, hasSubPath: false }),
+        `/api/${prefix} is a bare path, so it needs api/${prefix}.js — a [...path] catch-all cannot match it`,
+      ).toBe(true);
     }
   });
 

@@ -6,6 +6,7 @@ import { useStrategyEngine } from './hooks/useSignals';
 import { CalculatorPage } from './pages/CalculatorPage';
 import { Backtest } from './pages/Backtest';
 import { Dashboard } from './pages/Dashboard';
+import { History } from './pages/History';
 import { NotFound } from './pages/NotFound';
 import { PairPage } from './pages/PairPage';
 import { useMarketStore } from './state/marketStore';
@@ -13,10 +14,16 @@ import { useMarketStore } from './state/marketStore';
 /**
  * Live market data, charts, and the EMA50 touch strategy.
  *
- * The strategy runs in the BROWSER, off the candles the charts already hold.
- * There is no scanner, no cron and no database behind it: a touch is a pure
- * function of the bars on screen, so what the page shows and what the engine
- * decided can never disagree.
+ * The strategy runs in the BROWSER, off the candles the charts already hold:
+ * a touch is a pure function of the bars on screen, so what the page shows
+ * and what the engine decided can never disagree.
+ *
+ * /history is the one exception, and deliberately a READ-ONLY one. A browser
+ * can only record what happens while a tab is open, which would make the
+ * history a log of when somebody visited the site rather than of what the
+ * market did. So a server-side scanner writes it on a schedule and this app
+ * only reads it — and the scanner runs the SAME compiled strategy (see
+ * src/services/strategy/serverEntry.ts), so the two still cannot disagree.
  */
 
 /**
@@ -53,12 +60,13 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/pair/:slug" element={<PairPage />} />
           <Route path="/backtest" element={<Backtest />} />
+          <Route path="/history" element={<History />} />
           <Route path="/calculator" element={<CalculatorPage />} />
           {/* Routes that existed only to show strategy output. Redirected
-              rather than 404'd, so old links and bookmarks still land. */}
-          <Route path="/results" element={<Navigate to="/" replace />} />
-          <Route path="/history" element={<Navigate to="/" replace />} />
-          <Route path="/performance" element={<Navigate to="/" replace />} />
+              rather than 404'd, so old links and bookmarks still land.
+              /history is no longer among them — it is a real page again. */}
+          <Route path="/results" element={<Navigate to="/history" replace />} />
+          <Route path="/performance" element={<Navigate to="/history" replace />} />
           <Route path="/equity" element={<Navigate to="/" replace />} />
           <Route path="*" element={<NotFound />} />
         </Routes>

@@ -188,8 +188,16 @@ export interface BacktestResult {
   equity: { time: number; pips: number }[];
 }
 
-/** Does this bar close the position, and at what price? Stop checked first. */
-function resolveBar(
+/**
+ * Does this bar close the position, and at what price? Stop checked first.
+ *
+ * Exported because the LIVE trade resolver calls this exact function. A
+ * separate "did it hit TP or SL" check written for live trades would be a
+ * second set of rules, and the first thing to diverge would be the same-bar
+ * ambiguity below — which is precisely the decision that flatters a backtest.
+ * One function, one answer, both places.
+ */
+export function resolveBar(
   bar: Candle,
   direction: 'LONG' | 'SHORT',
   stop: number,
