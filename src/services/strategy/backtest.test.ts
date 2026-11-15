@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Candle } from '../marketData/types';
-import { backtestTouches, combine, equityCurve, measure, rMultipleOf, type BacktestTrade } from './backtest';
+import { backtestTouches, combine, equityCurve, measure, pipsOf, type BacktestTrade } from './backtest';
 import { analyseEma50Touch } from './ema50Touch';
 
 const bar = (time: number, o: number, h: number, l: number, c: number): Candle => ({
@@ -33,56 +33,92 @@ const trade = (over: Partial<BacktestTrade> = {}): BacktestTrade => ({
   exitTime: 3600,
   exitPrice: 1.12,
   barsHeld: 1,
-  rMultiple: 2,
+  pips: 200,
+  stopPips: 100,
   ichimokuScore: 3,
   counterTrend: false,
   touchOutcome: 'bounce',
   ...over,
 });
 
-describe('rMultipleOf', () => {
-  it('measures a win and a loss in multiples of the risk taken', () => {
-    expect(rMultipleOf('LONG', 1.1, 1.09, 1.12)).toBeCloseTo(2, 9);
-    expect(rMultipleOf('LONG', 1.1, 1.09, 1.09)).toBeCloseTo(-1, 9);
-    expect(rMultipleOf('SHORT', 1.1, 1.11, 1.08)).toBeCloseTo(2, 9);
-    expect(rMultipleOf('SHORT', 1.1, 1.11, 1.11)).toBeCloseTo(-1, 9);
+describe('pipsOf', () => {
+  it('measures a win and a loss in pips, both directions', () => {
+    expect(pipsOf('EUR/USD', 'LONG', 1.1, 1.09, 1.12)).toBeCloseTo(200, 6);
+    expect(pipsOf('EUR/USD', 'LONG', 1.1, 1.09, 1.09)).toBeCloseTo(-100, 6);
+    expect(pipsOf('EUR/USD', 'SHORT', 1.1, 1.11, 1.08)).toBeCloseTo(200, 6);
+    expect(pipsOf('EUR/USD', 'SHORT', 1.1, 1.11, 1.11)).toBeCloseTo(-100, 6);
   });
 
-  it('refuses a zero-risk trade rather than dividing by it', () => {
-    expect(rMultipleOf('LONG', 1.1, 1.1, 1.2)).toBeNull();
+  /**
+   * The reason the symbol is a parameter at all. The same price move is a
+   * different number of pips on a JPY pair, and getting this wrong would
+   * inflate every JPY result by a hundred times.
+   */
+  it('uses the pair\'s own pip size, so a JPY pip is 0.01', () => {
+    expect(pipsOf('USD/JPY', 'LONG', 150.0, 149.0, 152.0)).toBeCloseTo(200, 6);
+    expect(pipsOf('EUR/USD', 'LONG', 1.1, 1.0999, 1.1002)).toBeCloseTo(2, 6);
+  });
+
+  /** Cost is a price distance, so it must be charged before the pip division. */
+  it('charges the cost in price units, not in pips', () => {
+    // 1 pip of EUR/USD = 0.0001: a +200-pip win becomes +199.
+    expect(pipsOf('EUR/USD', 'LONG', 1.1, 1.09, 1.12, 0.0001)).toBeCloseTo(199, 6);
+    // 1 pip of USD/JPY = 0.01, a hundred times the price distance.
+    expect(pipsOf('USD/JPY', 'LONG', 150.0, 149.0, 152.0, 0.01)).toBeCloseTo(199, 6);
+  });
+
+  it('refuses a zero-risk trade rather than reporting a result for it', () => {
+    expect(pipsOf('EUR/USD', 'LONG', 1.1, 1.1, 1.2)).toBeNull();
   });
 });
 
 describe('measure', () => {
   it('counts only closed trades, and says how many are still open', () => {
-    const m = measure([trade(), trade({ rMultiple: -1, exit: 'sl' }), trade({ rMultiple: null, exit: 'open' })]);
+    const m = measure([trade(), trade({ pips: -100, exit: 'sl' }), trade({ pips: null, exit: 'open' })]);
     expect(m.trades).toBe(2);
     expect(m.stillOpen).toBe(1);
-    expect(m.totalR).toBeCloseTo(1, 9);
-    expect(m.averageR).toBeCloseTo(0.5, 9);
+    expect(m.totalPips).toBeCloseTo(100, 9);
+    expect(m.averagePips).toBeCloseTo(50, 9);
+  });
+
+  /**
+   * The average result means nothing without the average bet beside it, so it
+   * is computed over the same population: closed trades only.
+   */
+  it('averages the stop over closed trades, ignoring the open one', () => {
+    const m = measure([
+      trade({ stopPips: 10 }),
+      trade({ stopPips: 30 }),
+      trade({ pips: null, exit: 'open', stopPips: 1000 }),
+    ]);
+    expect(m.averageStopPips).toBeCloseTo(20, 9);
+  });
+
+  it('has no average stop to report for an empty run', () => {
+    expect(measure([]).averageStopPips).toBeNull();
   });
 
   it('reports the win rate the payoff actually needs to break even', () => {
-    // +2R wins against −1R losses: 1/3 of trades must win to stand still.
-    const m = measure([trade({ rMultiple: 2 }), trade({ rMultiple: -1 }), trade({ rMultiple: -1 })]);
+    // +200-pip wins against −100-pip losses: 1/3 must win to stand still.
+    const m = measure([trade({ pips: 200 }), trade({ pips: -100 }), trade({ pips: -100 })]);
     expect(m.breakEvenWinRatePct).toBeCloseTo(33.33, 1);
     expect(m.winRatePct).toBeCloseTo(33.33, 1);
-    expect(m.averageR).toBeCloseTo(0, 9);
+    expect(m.averagePips).toBeCloseTo(0, 9);
   });
 
   /**
    * The headline number alone has misled this project before: an average of
-   * −0.1R over 170 trades and over 5000 are different claims, and only the
+   * −1 pip over 170 trades and over 5000 are different claims, and only the
    * interval says which one you have.
    */
   it('puts a confidence interval on the average, and calls a spanning one insignificant', () => {
-    const noise = measure([trade({ rMultiple: 2 }), trade({ rMultiple: -1 }), trade({ rMultiple: 2 }), trade({ rMultiple: -1 })]);
+    const noise = measure([trade({ pips: 200 }), trade({ pips: -100 }), trade({ pips: 200 }), trade({ pips: -100 })]);
     expect(noise.standardError).toBeGreaterThan(0);
     expect(noise.ciLow! < 0 && noise.ciHigh! > 0).toBe(true);
     expect(noise.significant).toBe(false);
 
     // Twenty identical wins: the interval collapses and the sign is real.
-    const clear = measure(Array.from({ length: 20 }, () => trade({ rMultiple: 2 })));
+    const clear = measure(Array.from({ length: 20 }, () => trade({ pips: 200 })));
     expect(clear.significant).toBe(true);
     expect(clear.ciLow).toBeGreaterThan(0);
   });
@@ -94,27 +130,27 @@ describe('measure', () => {
   });
 
   it('measures drawdown from the running peak, not from zero', () => {
-    // +2, −1, −1, +2 → peak 2, trough 0, so the deepest fall is 2R.
-    const m = measure([trade({ rMultiple: 2 }), trade({ rMultiple: -1 }), trade({ rMultiple: -1 }), trade({ rMultiple: 2 })]);
-    expect(m.maxDrawdownR).toBeCloseTo(2, 9);
+    // +200, −100, −100, +200 → peak 200, trough 0: the deepest fall is 200.
+    const m = measure([trade({ pips: 200 }), trade({ pips: -100 }), trade({ pips: -100 }), trade({ pips: 200 })]);
+    expect(m.maxDrawdownPips).toBeCloseTo(200, 9);
   });
 
   it('reports no profit factor when nothing lost, rather than a fake infinity on an empty run', () => {
     expect(measure([]).profitFactor).toBeNull();
-    expect(measure([trade({ rMultiple: 2 })]).profitFactor).toBe(Infinity);
+    expect(measure([trade({ pips: 200 })]).profitFactor).toBe(Infinity);
   });
 });
 
 describe('equityCurve', () => {
   it('accumulates closed trades and skips open ones', () => {
     const curve = equityCurve([
-      trade({ rMultiple: 2, exitTime: 100 }),
-      trade({ rMultiple: null, exit: 'open', exitTime: null }),
-      trade({ rMultiple: -1, exitTime: 300 }),
+      trade({ pips: 200, exitTime: 100 }),
+      trade({ pips: null, exit: 'open', exitTime: null }),
+      trade({ pips: -100, exitTime: 300 }),
     ]);
     expect(curve).toEqual([
-      { time: 100, r: 2 },
-      { time: 300, r: 1 },
+      { time: 100, pips: 200 },
+      { time: 300, pips: 100 },
     ]);
   });
 });
@@ -180,7 +216,8 @@ describe('backtestTouches', () => {
 
     const result = backtestTouches(wide, symbol, '1H');
     expect(result.trades[0]!.exit).toBe('sl');
-    expect(result.trades[0]!.rMultiple).toBeCloseTo(-1, 6);
+    // Stopped out: the loss is exactly the stop distance it recorded.
+    expect(result.trades[0]!.pips).toBeCloseTo(-result.trades[0]!.stopPips, 6);
   });
 
   it('holds at most one position at a time', () => {
@@ -198,7 +235,7 @@ describe('backtestTouches', () => {
     const { candles } = seriesWithTouch([]);
     const result = backtestTouches(candles, symbol, '1H');
     for (const t of result.trades) {
-      if (t.exit === 'open') expect(t.rMultiple).toBeNull();
+      if (t.exit === 'open') expect(t.pips).toBeNull();
     }
     expect(result.metrics.trades + result.metrics.stillOpen).toBe(result.trades.length);
   });
@@ -234,39 +271,64 @@ describe('backtestTouches', () => {
     const result = backtestTouches([bar(0, 1.1, 1.1, 1.1, 1.1)], symbol, '1H');
     expect(result.trades).toEqual([]);
     expect(result.metrics.trades).toBe(0);
-    expect(result.metrics.averageR).toBeNull();
+    expect(result.metrics.averagePips).toBeNull();
   });
 });
 
 describe('combine', () => {
   it('orders trades across pairs by when they closed', () => {
-    const mk = (symbol: string, exitTime: number, r: number) => ({
+    const mk = (symbol: string, exitTime: number, pips: number) => ({
       symbol,
       timeframe: '1H' as const,
       bars: 0,
       touches: 0,
       filtered: 0,
       noFill: 0,
-      trades: [trade({ symbol, exitTime, rMultiple: r })],
+      trades: [trade({ symbol, exitTime, pips })],
       metrics: measure([]),
       equity: [],
     });
-    const merged = combine([mk('EUR/USD', 300, 2), mk('GBP/USD', 100, -1)]);
+    const merged = combine([mk('EUR/USD', 300, 200), mk('GBP/USD', 100, -100)]);
     expect(merged.trades.map((t) => t.symbol)).toEqual(['GBP/USD', 'EUR/USD']);
     expect(merged.equity).toEqual([
-      { time: 100, r: -1 },
-      { time: 300, r: 1 },
+      { time: 100, pips: -100 },
+      { time: 300, pips: 100 },
     ]);
+  });
+
+  /**
+   * Adding a JPY pip to a EUR/USD pip is adding unlike things. The merge is
+   * still allowed — the page needs one curve — but it has to be FLAGGED, and
+   * the flag belongs next to the trades rather than re-derived by each caller.
+   */
+  it('flags a selection that mixes JPY and non-JPY pips, and leaves a single-unit one unflagged', () => {
+    const mk = (symbol: string, exitTime: number, pips: number) => ({
+      symbol,
+      timeframe: '1H' as const,
+      bars: 0,
+      touches: 0,
+      filtered: 0,
+      noFill: 0,
+      trades: [trade({ symbol, exitTime, pips })],
+      metrics: measure([]),
+      equity: [],
+    });
+
+    expect(combine([mk('EUR/USD', 100, 10), mk('GBP/USD', 200, 10)]).mixesPipValues).toBe(false);
+    expect(combine([mk('EUR/USD', 100, 10), mk('USD/JPY', 200, 10)]).mixesPipValues).toBe(true);
+    expect(combine([mk('USD/JPY', 100, 10), mk('GBP/JPY', 200, 10)]).mixesPipValues).toBe(false);
+    // Nothing to mix.
+    expect(combine([]).mixesPipValues).toBe(false);
   });
 });
 
 describe('trading costs', () => {
-  it('charges the cost against the risk, not the price', () => {
-    // 10-pip stop on EUR/USD, +2R win. A 1-pip spread is a tenth of the risk.
-    expect(rMultipleOf('LONG', 1.1, 1.099, 1.102, 0.0001)).toBeCloseTo(1.9, 9);
-    expect(rMultipleOf('LONG', 1.1, 1.099, 1.099, 0.0001)).toBeCloseTo(-1.1, 9);
+  it('takes the cost straight off the pip result, both directions', () => {
+    // 10-pip stop on EUR/USD, 20-pip target. A 1-pip spread costs one pip.
+    expect(pipsOf('EUR/USD', 'LONG', 1.1, 1.099, 1.102, 0.0001)).toBeCloseTo(19, 9);
+    expect(pipsOf('EUR/USD', 'LONG', 1.1, 1.099, 1.099, 0.0001)).toBeCloseTo(-11, 9);
     // A short pays it the same way round.
-    expect(rMultipleOf('SHORT', 1.1, 1.101, 1.098, 0.0001)).toBeCloseTo(1.9, 9);
+    expect(pipsOf('EUR/USD', 'SHORT', 1.1, 1.101, 1.098, 0.0001)).toBeCloseTo(19, 9);
   });
 
   it('makes every trade worse, and never changes how many there are', () => {
@@ -276,7 +338,7 @@ describe('trading costs', () => {
 
     expect(paid.trades.length).toBe(free.trades.length);
     expect(paid.metrics.trades).toBe(free.metrics.trades);
-    expect(paid.metrics.totalR).toBeLessThan(free.metrics.totalR);
+    expect(paid.metrics.totalPips).toBeLessThan(free.metrics.totalPips);
   });
 });
 

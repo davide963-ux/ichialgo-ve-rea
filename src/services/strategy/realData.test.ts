@@ -172,7 +172,7 @@ describe('analyseEma50Touch on real OANDA candles', () => {
         const closedBefore = (r: typeof full) =>
           r.trades
             .filter((t) => t.exitTime !== null && t.exitTime <= cutoff)
-            .map((t) => `${t.id}|${t.exit}|${t.rMultiple?.toFixed(6)}`);
+            .map((t) => `${t.id}|${t.exit}|${t.pips?.toFixed(4)}`);
 
         const partial = closedBefore(part);
         expect(partial.length, 'the truncation must contain closed trades').toBeGreaterThan(10);
@@ -181,8 +181,8 @@ describe('analyseEma50Touch on real OANDA candles', () => {
 
       /**
        * Entry is a resting limit at the EMA, so it can only fill at a price
-       * the bar actually traded. Filling the rest anyway was worth +0.23R a
-       * trade of pure fiction — see backtest.ts, rule 1.
+       * the bar actually traded. Filling the rest anyway was worth about a
+       * fifth of the stop per trade of pure fiction — see backtest.ts, rule 1.
        */
       it('turns a large share of touches away for want of a fill', () => {
         // The band is wider than the line, so most touches never trade at the

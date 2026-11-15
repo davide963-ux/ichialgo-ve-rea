@@ -9,9 +9,25 @@
  *
  *   touch at bar i ──▶ ticketLevels() ──▶ open at the EMA
  *                                          │
- *                        bars i+1, i+2, … ─┴─▶ stop hit?  ──▶ −1R
- *                                             target hit? ──▶ +2R
+ *                        bars i+1, i+2, … ─┴─▶ stop hit?  ──▶ −stopPips
+ *                                             target hit? ──▶ +2 × stopPips
  *                                             neither     ──▶ keep holding
+ *
+ * EVERYTHING IS MEASURED IN PIPS
+ * ─────────────────────────────
+ * A pip is the unit the levels are actually quoted in, so a pip result can be
+ * checked against the chart by hand: entry 1.0850, stop 1.0840, stopped out
+ * ⇒ −10 pips, and nothing has been divided by anything.
+ *
+ * The cost of that choice is worth stating, because the page states it too.
+ * The stop is ATR-based, so each trade risks a DIFFERENT number of pips — a
+ * quiet EUR/USD touch might risk 8, a volatile one 22. Averaging their pip
+ * results therefore averages outcomes of unequal bets. And a JPY pip is a
+ * different amount of money from a EUR/USD pip, and typically travels further,
+ * so a total that adds the two mixes units outright.
+ *
+ * `stopPips` is recorded on every trade for exactly that reason: it is the
+ * size of the bet, and the pip result means little without it.
  *
  * THE DECISIONS THAT DECIDE THE NUMBER
  * ────────────────────────────────────
@@ -84,8 +100,13 @@ export interface BacktestTrade {
   exitTime: number | null;
   exitPrice: number | null;
   barsHeld: number;
-  /** Result in multiples of risk. Null for a trade still open at the end. */
-  rMultiple: number | null;
+  /**
+   * Net result in pips, after cost. Null for a trade still open at the end.
+   * Signed: positive is a gain in the trade's own direction.
+   */
+  pips: number | null;
+  /** |entry − stop| in pips: the risk taken. The pip result's denominator. */
+  stopPips: number;
   // ── context, so results can be sliced without re-running ──
   ichimokuScore: number | null;
   counterTrend: boolean;
@@ -96,11 +117,10 @@ export interface BacktestFilters {
   /**
    * Round-trip cost in pips — spread, and commission if any.
    *
-   * It is charged against the RISK, not the price, which is what makes it
-   * comparable across pairs: `cost / |entry − stop|`. That matters more here
-   * than it looks. The stop is roughly 10 pips, so a 1-pip spread is 0.10R
-   * off every single trade — enough on its own to turn a small edge into
-   * nothing, and it is the commonest reason a backtest does not survive
+   * Charged against the price, so it comes straight off the pip result: a
+   * 1-pip spread turns a +20-pip winner into +19 and a −10-pip loser into
+   * −11. On a ~10-pip stop that is a tenth of the bet given away on every
+   * single trade, which is the commonest reason a backtest does not survive
    * contact with a broker.
    */
   costPips?: number;
@@ -115,18 +135,26 @@ export interface BacktestMetrics {
   wins: number;
   losses: number;
   winRatePct: number | null;
-  /** Mean R across closed trades — the headline number. */
-  averageR: number | null;
-  totalR: number;
-  /** Gross R won ÷ gross R lost. Above 1 is profitable. */
+  /** Mean pips across closed trades — the headline number. */
+  averagePips: number | null;
+  totalPips: number;
+  /** Gross pips won ÷ gross pips lost. Above 1 is profitable. */
   profitFactor: number | null;
-  /** Deepest peak-to-trough fall of the cumulative R curve. */
-  maxDrawdownR: number;
+  /** Deepest peak-to-trough fall of the cumulative pip curve, in pips. */
+  maxDrawdownPips: number;
   /**
-   * Standard error of the mean R, and the 95% interval around it.
+   * Mean stop distance in pips — the average size of the bet.
+   *
+   * Reported next to `averagePips` because the headline is meaningless without
+   * it. "+2 pips a trade" is a good result against an 8-pip stop and a poor
+   * one against a 40-pip stop, and nothing else on the page says which.
+   */
+  averageStopPips: number | null;
+  /**
+   * Standard error of the mean, and the 95% interval around it, in pips.
    *
    * These are here because the headline number alone has misled this project
-   * before. An average of −0.1R over 170 trades and an average of −0.1R over
+   * before. An average of −1 pip over 170 trades and an average of −1 pip over
    * 5000 are different claims, and only the interval says which one you have.
    */
   standardError: number | null;
@@ -156,8 +184,8 @@ export interface BacktestResult {
   noFill: number;
   trades: BacktestTrade[];
   metrics: BacktestMetrics;
-  /** Cumulative R after each closed trade, for the equity curve. */
-  equity: { time: number; r: number }[];
+  /** Cumulative pips after each closed trade, for the equity curve. */
+  equity: { time: number; pips: number }[];
 }
 
 /** Does this bar close the position, and at what price? Stop checked first. */
@@ -175,8 +203,18 @@ function resolveBar(
   return { exit: null, price: bar.close };
 }
 
-/** R from the levels actually recorded, less the cost of doing the trade. */
-export function rMultipleOf(
+/**
+ * Net pips from the levels actually recorded, less the cost of doing the trade.
+ *
+ * `costPrice` is in price units, so it is subtracted BEFORE the pip division —
+ * a 1-pip spread on EUR/USD and on USD/JPY is a different price distance, and
+ * dividing first would charge the wrong amount on one of them.
+ *
+ * Returns null when the levels are unusable (a zero or non-finite stop
+ * distance), which is the same thing `ticketLevels` guards against upstream.
+ */
+export function pipsOf(
+  symbol: string,
   direction: 'LONG' | 'SHORT',
   entry: number,
   stop: number,
@@ -186,7 +224,8 @@ export function rMultipleOf(
   const risk = Math.abs(entry - stop);
   if (!Number.isFinite(risk) || risk === 0) return null;
   const move = direction === 'LONG' ? exitPrice - entry : entry - exitPrice;
-  return (move - costPrice) / risk;
+  if (!Number.isFinite(move)) return null;
+  return (move - costPrice) / pipSize(symbol);
 }
 
 const passesFilters = (s: TouchSignal, f: BacktestFilters): boolean => {
@@ -231,7 +270,7 @@ export function backtestTouches(
         open.exitTime = bar.time;
         open.exitPrice = price;
         open.barsHeld = i - open.entryIndex;
-        open.rMultiple = rMultipleOf(open.direction, open.entry, open.stop, price, cost);
+        open.pips = pipsOf(symbol, open.direction, open.entry, open.stop, price, cost);
         trades.push(open);
         open = null;
       }
@@ -265,7 +304,8 @@ export function backtestTouches(
             exitTime: null,
             exitPrice: null,
             barsHeld: 0,
-            rMultiple: null,
+            pips: null,
+            stopPips: Math.abs(levels.entry - levels.stop) / pipSize(symbol),
             ichimokuScore: signal.ichimoku?.score ?? null,
             counterTrend: signal.counterTrend,
             touchOutcome: signal.outcome,
@@ -278,7 +318,7 @@ export function backtestTouches(
             open.exitTime = bar.time;
             open.exitPrice = onEntryBar.price;
             open.barsHeld = 0;
-            open.rMultiple = rMultipleOf(open.direction, open.entry, open.stop, onEntryBar.price, cost);
+            open.pips = pipsOf(symbol, open.direction, open.entry, open.stop, onEntryBar.price, cost);
             trades.push(open);
             open = null;
           }
@@ -306,27 +346,31 @@ export function backtestTouches(
   };
 }
 
-/** Cumulative R after each CLOSED trade, oldest first. */
-export function equityCurve(trades: readonly BacktestTrade[]): { time: number; r: number }[] {
-  const out: { time: number; r: number }[] = [];
+/** Cumulative pips after each CLOSED trade, oldest first. */
+export function equityCurve(trades: readonly BacktestTrade[]): { time: number; pips: number }[] {
+  const out: { time: number; pips: number }[] = [];
   let cum = 0;
   for (const t of trades) {
-    if (t.rMultiple === null || t.exitTime === null) continue;
-    cum += t.rMultiple;
-    out.push({ time: t.exitTime, r: cum });
+    if (t.pips === null || t.exitTime === null) continue;
+    cum += t.pips;
+    out.push({ time: t.exitTime, pips: cum });
   }
   return out;
 }
 
 export function measure(trades: readonly BacktestTrade[]): BacktestMetrics {
-  const closed = trades.filter((t) => t.rMultiple !== null);
-  const rs = closed.map((t) => t.rMultiple!);
-  const wins = rs.filter((r) => r > 0);
-  const losses = rs.filter((r) => r < 0);
-  const n = rs.length;
+  const closed = trades.filter((t) => t.pips !== null);
+  const ps = closed.map((t) => t.pips!);
+  const wins = ps.filter((p) => p > 0);
+  const losses = ps.filter((p) => p < 0);
+  const n = ps.length;
 
-  const totalR = rs.reduce((a, b) => a + b, 0);
-  const averageR = n > 0 ? totalR / n : null;
+  const totalPips = ps.reduce((a, b) => a + b, 0);
+  const averagePips = n > 0 ? totalPips / n : null;
+
+  // The size of the average bet. Taken over CLOSED trades only, so it is the
+  // denominator of the same population the headline describes.
+  const averageStopPips = n > 0 ? closed.reduce((a, t) => a + t.stopPips, 0) / n : null;
 
   const grossWin = wins.reduce((a, b) => a + b, 0);
   const grossLoss = Math.abs(losses.reduce((a, b) => a + b, 0));
@@ -335,12 +379,12 @@ export function measure(trades: readonly BacktestTrade[]): BacktestMetrics {
   // fewer than two trades neither exists, and pretending otherwise would put
   // a confidence interval on a single coin flip.
   let standardError: number | null = null;
-  if (n > 1 && averageR !== null) {
-    const variance = rs.reduce((acc, r) => acc + (r - averageR) ** 2, 0) / (n - 1);
+  if (n > 1 && averagePips !== null) {
+    const variance = ps.reduce((acc, p) => acc + (p - averagePips) ** 2, 0) / (n - 1);
     standardError = Math.sqrt(variance / n);
   }
-  const ciLow = averageR !== null && standardError !== null ? averageR - 1.96 * standardError : null;
-  const ciHigh = averageR !== null && standardError !== null ? averageR + 1.96 * standardError : null;
+  const ciLow = averagePips !== null && standardError !== null ? averagePips - 1.96 * standardError : null;
+  const ciHigh = averagePips !== null && standardError !== null ? averagePips + 1.96 * standardError : null;
 
   // Break-even win rate for the payoff actually observed. With no losses
   // there is nothing to break even against.
@@ -350,11 +394,11 @@ export function measure(trades: readonly BacktestTrade[]): BacktestMetrics {
 
   let peak = 0;
   let cum = 0;
-  let maxDrawdownR = 0;
-  for (const r of rs) {
-    cum += r;
+  let maxDrawdownPips = 0;
+  for (const p of ps) {
+    cum += p;
     peak = Math.max(peak, cum);
-    maxDrawdownR = Math.max(maxDrawdownR, peak - cum);
+    maxDrawdownPips = Math.max(maxDrawdownPips, peak - cum);
   }
 
   return {
@@ -362,10 +406,11 @@ export function measure(trades: readonly BacktestTrade[]): BacktestMetrics {
     wins: wins.length,
     losses: losses.length,
     winRatePct: n > 0 ? (wins.length / n) * 100 : null,
-    averageR,
-    totalR,
+    averagePips,
+    totalPips,
     profitFactor: grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? Infinity : null,
-    maxDrawdownR,
+    maxDrawdownPips,
+    averageStopPips,
     standardError,
     ciLow,
     ciHigh,
@@ -375,10 +420,36 @@ export function measure(trades: readonly BacktestTrade[]): BacktestMetrics {
   };
 }
 
+export interface Portfolio {
+  trades: BacktestTrade[];
+  metrics: BacktestMetrics;
+  equity: { time: number; pips: number }[];
+  /**
+   * True when the merged trades span both JPY-quoted and non-JPY-quoted pairs.
+   *
+   * Pips are only addable within one pip size. A USD/JPY pip is 0.01 and a
+   * EUR/USD pip is 0.0001; in money they are different amounts, and JPY pairs
+   * routinely travel two to three times as far in pips for the same risk. So
+   * a total that spans both is a sum of unlike things, and the page has to say
+   * so rather than print it as a plain number.
+   *
+   * Computed here, next to the trades, so no caller has to re-derive it and
+   * get it wrong.
+   */
+  mixesPipValues: boolean;
+}
+
 /** Merge per-pair runs into one portfolio view, trades ordered by exit. */
-export function combine(results: readonly BacktestResult[]): { trades: BacktestTrade[]; metrics: BacktestMetrics; equity: { time: number; r: number }[] } {
+export function combine(results: readonly BacktestResult[]): Portfolio {
   const trades = results
     .flatMap((r) => r.trades)
     .sort((a, b) => (a.exitTime ?? a.entryTime) - (b.exitTime ?? b.entryTime));
-  return { trades, metrics: measure(trades), equity: equityCurve(trades) };
+
+  const sizes = new Set(trades.map((t) => pipSize(t.symbol)));
+  return {
+    trades,
+    metrics: measure(trades),
+    equity: equityCurve(trades),
+    mixesPipValues: sizes.size > 1,
+  };
 }
