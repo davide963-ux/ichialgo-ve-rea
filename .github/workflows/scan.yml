@@ -7,6 +7,15 @@
 # Actions schedules are free and unlimited on a public repository and go down
 # to five minutes, so the schedule lives here and Vercel just answers the POST.
 #
+# WHY THERE IS NO SECRET TO SET UP
+# ────────────────────────────────
+# `id-token: write` lets this run ask GitHub for a short-lived token that says
+# which repository, workflow and ref it came from, signed by GitHub. The
+# endpoint verifies that against GitHub's public keys. Nothing is stored on
+# either side: no secret to create, paste into two places, keep in step, or
+# rotate — and a token copied out of a log expires in minutes and names the
+# run it came from.
+#
 # WHY LATENESS IS NOT A PROBLEM
 # ─────────────────────────────
 # GitHub makes no punctuality promise: scheduled runs are queued at low
@@ -30,7 +39,7 @@ on:
     - cron: '*/15 * * * 1-5'
     - cron: '*/15 22-23 * * 0'
   # So it can be run by hand from the Actions tab — the quickest way to check
-  # the token and the database after changing either.
+  # the deployment and the database after changing either.
   workflow_dispatch:
 
 # A run takes seconds; two overlapping ones would only duplicate work that the
@@ -39,6 +48,12 @@ concurrency:
   group: scan
   cancel-in-progress: false
 
+permissions:
+  # The whole of the authentication setup. Without it the runner cannot mint
+  # an identity token and the endpoint has no reason to trust the call.
+  id-token: write
+  contents: read
+
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -46,27 +61,35 @@ jobs:
     steps:
       - name: Trigger the scan
         env:
-          # Set in Settings → Secrets and variables → Actions.
-          #   secret   SCANNER_TOKEN  — must equal the Vercel env var of the same name
-          #   variable SCAN_URL       — optional; defaults to the production domain
-          SCANNER_TOKEN: ${{ secrets.SCANNER_TOKEN }}
+          # Optional override; defaults to the production domain.
           SCAN_URL: ${{ vars.SCAN_URL || 'https://ichialgo.world/api/scan' }}
+          # Must match SCAN_AUDIENCE in server/scanAuth.mjs. Checked on the
+          # other side so a token minted for some other service that also
+          # trusts this repository cannot be replayed here.
+          SCAN_AUDIENCE: ichialgo-scan
         run: |
           set -euo pipefail
 
-          if [ -z "${SCANNER_TOKEN}" ]; then
-            echo "::error::SCANNER_TOKEN is not set. Add it under Settings → Secrets and variables → Actions."
+          # Ask the Actions runtime for an identity token. These two variables
+          # exist only because of `permissions: id-token: write` above.
+          id_token=$(curl --silent --show-error --fail --max-time 30 \
+                       -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+                       "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${SCAN_AUDIENCE}" \
+                     | sed -n 's/.*"value":"\([^"]*\)".*/\1/p')
+
+          if [ -z "${id_token}" ]; then
+            echo "::error::Could not get an OIDC token from the Actions runtime."
             exit 1
           fi
 
           # Separate the body from the status line so both can be reported:
           # a failing scan returns a JSON body that says which pair broke, and
           # throwing it away would make every failure look the same.
-          http=$(curl --silent --show-error --fail-with-body \
+          http=$(curl --silent --show-error \
                       --max-time 120 --retry 2 --retry-delay 10 --retry-connrefused \
                       --output body.json --write-out '%{http_code}' \
                       -X POST "${SCAN_URL}" \
-                      -H "Authorization: Bearer ${SCANNER_TOKEN}" \
+                      -H "Authorization: Bearer ${id_token}" \
                       -H 'Content-Length: 0' ) || true
 
           echo "HTTP ${http}"

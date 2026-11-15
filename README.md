@@ -603,6 +603,26 @@ Results are stored in **pips**, raw — no spread. The backtest charges a spread
 because it asks whether the strategy would have made money; this table records
 what price did.
 
+### Authentication needs no setup
+
+The workflow proves who it is with a **GitHub OIDC token** minted for that
+run — `permissions: id-token: write` and nothing else. `/api/scan` verifies it
+against GitHub's public keys and checks the issuer, the audience, the expiry
+and, crucially, that the `repository` claim is this one. Every public repo on
+GitHub can get a valid token from the same issuer; the repository check is
+what makes the endpoint ours.
+
+There is no shared secret to create, paste into two places, keep in step or
+rotate, and a token copied out of a log expires in minutes. `SCANNER_TOKEN`
+still works if one is configured, for driving the endpoint from something
+that is not GitHub Actions.
+
+The endpoint is **closed by default**: with neither a secret nor a known
+repository configured, every request is refused rather than allowed.
+`server/scanAuth.test.mjs` and `server/githubOidc.test.mjs` pin that, along
+with `alg: none`, algorithm confusion, a wrong signing key, a tampered
+payload, a token for another repository and one for another audience.
+
 ### Why GitHub Actions and not a Vercel cron
 
 Vercel's Hobby plan runs a cron job **once a day, accurate to the hour**. The
@@ -620,17 +640,17 @@ nothing twice.
 
 1. **Vercel → Storage → Neon.** The integration is a Marketplace product;
    creating the database adds `DATABASE_URL` to the project automatically.
-2. **`SCANNER_TOKEN`** — a random string, set in two places: the Vercel
-   project's environment variables, and the repository's
-   *Settings → Secrets and variables → Actions*. The route refuses every
-   request unless they match, and refuses them all if the variable is unset.
+2. **Nothing.** Authentication is handled by the OIDC token above, and the
+   allowed repository comes from `VERCEL_GIT_REPO_OWNER`/`_SLUG`, which Vercel
+   sets on every deployment from a connected repository.
 3. **Deploy.** `npm run build` ends with `npm run migrate`, which applies
    `db/migrations/*.sql`. With no `DATABASE_URL` it skips and the build still
    succeeds — the history is an addition to the app, not a prerequisite. Once
    there IS a database, a failed migration fails the build, because deploying
    an app whose queries name missing columns is worse.
 
-Until all three are done, `/history` says so and explains what is missing.
+Until the database is attached, `/history` says so and explains what is
+missing.
 
 ### Local development
 

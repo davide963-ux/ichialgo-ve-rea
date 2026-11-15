@@ -3,8 +3,17 @@
  *
  * Called by .github/workflows/scan.yml on a schedule, because Vercel's Hobby
  * plan allows one cron firing a day and a 30-minute strategy needs better.
- * Any trigger that can send an authenticated POST will do; nothing here
- * depends on which one, or on it being punctual.
+ *
+ * AUTHENTICATION NEEDS NO SETUP
+ * ─────────────────────────────
+ * The workflow proves who it is with a GitHub OIDC token minted for that run,
+ * so there is no shared secret to create, paste into two places, keep in step
+ * or rotate. `SCANNER_TOKEN` still works if one is configured, for driving
+ * the endpoint from anything that is not GitHub Actions.
+ *
+ * See server/scanAuth.mjs — the decision lives there rather than here because
+ * nothing imports this file, so nothing can test it. Vercel treats api/*.js
+ * as route entry points only.
  *
  * A STATIC file, not a [...path] folder: this route has no path segment after
  * the prefix, and a catch-all requires at least one — the mistake that made
@@ -12,6 +21,7 @@
  */
 import { isConfigured } from '../server/db.mjs';
 import { runScan } from '../server/scanner.mjs';
+import { authoriseScan } from '../server/scanAuth.mjs';
 
 export const config = { api: { bodyParser: false } };
 
@@ -27,19 +37,17 @@ export default async function handler(req, res) {
     return send(res, 405, { error: 'METHOD_NOT_ALLOWED', errorMessage: 'POST only.' });
   }
 
-  /**
-   * The token is required, and a deployment without one refuses every call
-   * rather than defaulting to open. An unauthenticated scan endpoint is a
-   * free way for anyone to spend this project's Yahoo goodwill and fill its
-   * database.
-   */
-  const expected = process.env.SCANNER_TOKEN?.trim();
-  if (!expected) {
-    return send(res, 503, { error: 'NOT_CONFIGURED', errorMessage: 'SCANNER_TOKEN is not set.' });
-  }
-  const offered = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
-  if (offered !== expected) {
-    return send(res, 401, { error: 'UNAUTHORIZED', errorMessage: 'Bad or missing scanner token.' });
+  const allowed = await authoriseScan(req.headers, process.env);
+  if (!allowed.ok) {
+    // The reason goes to the server log, not to the caller: telling an
+    // unauthenticated client which check failed only helps them past it.
+    console.warn(`/api/scan refused — ${allowed.reason}`);
+    return send(res, 401, {
+      error: 'UNAUTHORIZED',
+      errorMessage:
+        'Not authorised. Call this from the repository\'s own GitHub Actions workflow, ' +
+        'or send a bearer token matching SCANNER_TOKEN.',
+    });
   }
 
   if (!isConfigured()) {
@@ -51,7 +59,7 @@ export default async function handler(req, res) {
     // A run where every pair failed is a failure, even though the route
     // itself worked — the trigger should be able to see that without parsing
     // the body, so it gets a 502.
-    return send(res, summary.ok ? 200 : 502, summary);
+    return send(res, summary.ok ? 200 : 502, { ...summary, authenticatedVia: allowed.via });
   } catch (err) {
     return send(res, 500, { error: 'SCAN_FAILED', errorMessage: err?.message || String(err) });
   }
