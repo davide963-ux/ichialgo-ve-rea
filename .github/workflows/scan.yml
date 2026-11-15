@@ -61,8 +61,15 @@ jobs:
     steps:
       - name: Trigger the scan
         env:
-          # Optional override; defaults to the production domain.
-          SCAN_URL: ${{ vars.SCAN_URL || 'https://ichialgo.world/api/scan' }}
+          # The CANONICAL host, not the apex.
+          #
+          # ichialgo.world is configured in Vercel as a 308 redirect to
+          # www.ichialgo.world, and this must not be pointed at a redirect.
+          # Following one is not a fix either: curl drops the Authorization
+          # header when a redirect crosses hosts, so the OIDC token would be
+          # silently stripped and the scan would come back 401 instead of 308
+          # — a much harder failure to read. Post straight at the real host.
+          SCAN_URL: ${{ vars.SCAN_URL || 'https://www.ichialgo.world/api/scan' }}
           # Must match SCAN_AUDIENCE in server/scanAuth.mjs. Checked on the
           # other side so a token minted for some other service that also
           # trusts this repository cannot be replayed here.
