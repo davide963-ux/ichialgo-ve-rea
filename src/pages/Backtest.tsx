@@ -26,7 +26,7 @@ import { useMemo, useState } from 'react';
 import { EquityCurve, type EquityPoint } from '../components/EquityCurve';
 import { MetricCard } from '../components/MetricCard';
 import { EMA50_TOUCH, ICHIMOKU_CONFLUENCE, TRADE_PLAN } from '../config/strategy';
-import { FIXTURE_PAIRS, useBacktest } from '../hooks/useBacktest';
+import { FIXTURE_PAIRS, UNTESTED_PAIRS, useBacktest } from '../hooks/useBacktest';
 import { formatNumber } from '../lib/format';
 import { ICHIMOKU_CHECKS, type BacktestFilters, type BacktestMetrics } from '../services/strategy';
 
@@ -336,6 +336,15 @@ export function Backtest() {
               </div>
             </div>
             <ul className="panel-body msg-list">
+              {UNTESTED_PAIRS.length > 0 && (
+                <li>
+                  <strong>It does not cover every pair you trade.</strong> {UNTESTED_PAIRS.join(' and ')}{' '}
+                  {UNTESTED_PAIRS.length === 1 ? 'is scanned' : 'are scanned'} live but {UNTESTED_PAIRS.length === 1 ? 'has' : 'have'}{' '}
+                  no checked-in candles, so nothing here says anything about{' '}
+                  {UNTESTED_PAIRS.length === 1 ? 'it' : 'them'}. These numbers describe{' '}
+                  {FIXTURE_PAIRS.length} of the {FIXTURE_PAIRS.length + UNTESTED_PAIRS.length} pairs on the scanner.
+                </li>
+              )}
               <li>
                 <strong>One period.</strong> {span && `${day(span.from)} – ${day(span.to)}`} is about nine months. A
                 rule can fit nine months of one regime and fail the next.
