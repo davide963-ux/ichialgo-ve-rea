@@ -129,12 +129,139 @@ export function resetClient() {
 // ── schema ────────────────────────────────────────────────────────────────
 
 /**
+ * Split a .sql file into individual statements.
+ *
+ * WHY THIS EXISTS, WHICH IS NOT "TIDINESS"
+ * ────────────────────────────────────────
+ * Neon's HTTP driver sends each request as a single parse message, so it
+ * accepts exactly ONE statement. Handing it a whole migration file fails with
+ * 42601 — a plain syntax error, pointing at nothing useful.
+ *
+ * It is worth being precise about how that got shipped: the integration tests
+ * run against a local Postgres through node-postgres, whose simple-query
+ * protocol happily executes a multi-statement string. So the migration passed
+ * every test and failed on the first real deploy. The lesson is in the code
+ * now — `migrate` splits unconditionally, for every driver, so the tests
+ * exercise the same one-statement-per-call path Neon will take.
+ *
+ * WHY NOT `text.split(';')`
+ * ─────────────────────────
+ * The migration defines a trigger function:
+ *
+ *     create function set_updated_at() ... as $$
+ *     begin
+ *       new.updated_at = now();     ← a semicolon INSIDE the body
+ *       return new;                 ← and another
+ *     end;
+ *     $$;
+ *
+ * Splitting on `;` would cut that into four pieces, none of them valid. So
+ * this walks the text and only treats `;` as a terminator at the top level —
+ * outside dollar-quoted bodies ($$ or $tag$), string literals, quoted
+ * identifiers, and comments.
+ */
+export function splitSql(text) {
+  const out = [];
+  let start = 0;
+  let i = 0;
+  /**
+   * Has anything executable been seen since the last `;`?
+   *
+   * Tracked separately from "is the slice non-empty", because a file usually
+   * ends with a trailing comment. Without this, that comment is emitted as a
+   * final statement and sent to the server as an empty query.
+   */
+  let hasSql = false;
+
+  /** Close off the statement ending at `end`, if it holds any SQL. */
+  const flush = (end) => {
+    if (hasSql) {
+      const stmt = text.slice(start, end).trim();
+      if (stmt) out.push(stmt);
+    }
+    hasSql = false;
+  };
+
+  while (i < text.length) {
+    const c = text[i];
+
+    // -- line comment
+    if (c === '-' && text[i + 1] === '-') {
+      const nl = text.indexOf('\n', i);
+      i = nl === -1 ? text.length : nl + 1;
+      continue;
+    }
+    // /* block comment */ — nests in Postgres, so count depth
+    if (c === '/' && text[i + 1] === '*') {
+      let depth = 1;
+      i += 2;
+      while (i < text.length && depth > 0) {
+        if (text[i] === '/' && text[i + 1] === '*') (depth++, (i += 2));
+        else if (text[i] === '*' && text[i + 1] === '/') (depth--, (i += 2));
+        else i++;
+      }
+      continue;
+    }
+    // 'string literal' — '' is an escaped quote, not a terminator
+    if (c === "'") {
+      hasSql = true;
+      i++;
+      while (i < text.length) {
+        if (text[i] === "'" && text[i + 1] === "'") i += 2;
+        else if (text[i] === "'") {
+          i++;
+          break;
+        } else i++;
+      }
+      continue;
+    }
+    // "quoted identifier" — same doubling rule
+    if (c === '"') {
+      hasSql = true;
+      i++;
+      while (i < text.length) {
+        if (text[i] === '"' && text[i + 1] === '"') i += 2;
+        else if (text[i] === '"') {
+          i++;
+          break;
+        } else i++;
+      }
+      continue;
+    }
+    // $$ ... $$ or $tag$ ... $tag$
+    if (c === '$') {
+      const tag = /^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/.exec(text.slice(i));
+      if (tag) {
+        hasSql = true;
+        const close = text.indexOf(tag[0], i + tag[0].length);
+        i = close === -1 ? text.length : close + tag[0].length;
+        continue;
+      }
+    }
+    if (c === ';') {
+      flush(i);
+      start = i + 1;
+      i++;
+      continue;
+    }
+    if (!/\s/.test(c)) hasSql = true;
+    i++;
+  }
+
+  flush(text.length);
+  return out;
+}
+
+/**
  * Apply any migration the database has not seen, in filename order.
  *
- * Each file runs inside the same statement batch that records it, so a crash
- * half way cannot leave a migration marked as applied when it was not. The
- * files are written to be idempotent as well (`create table if not exists`),
- * which makes a re-run harmless even if the ledger is ever lost.
+ * Statements run one at a time — see `splitSql` for why that is a hard
+ * requirement and not a style choice. The file is only recorded as applied
+ * after every one of its statements has succeeded, so a failure half way
+ * leaves it un-recorded and the next run retries it. That is safe because the
+ * files are written to be idempotent (`create table if not exists`,
+ * `create or replace`, `drop trigger if exists`), so re-running the part that
+ * already succeeded changes nothing.
  */
 export async function migrate(files, env = process.env) {
   const q = sql(env);
@@ -147,11 +274,16 @@ export async function migrate(files, env = process.env) {
   const ran = [];
   for (const { name, text } of files) {
     if (applied.has(name)) continue;
-    // neon's http driver takes multi-statement SQL through .transaction() only
-    // for parameterised calls; a migration is static text, so unsafe-raw is
-    // both correct and the only thing that works here. The text comes from
-    // files in this repository, never from a request.
-    await q.query(text);
+    for (const statement of splitSql(text)) {
+      try {
+        await q.query(statement);
+      } catch (err) {
+        // Name the file and show the statement: a bare 42601 from a 100-line
+        // migration tells you nothing about where to look.
+        const head = statement.length > 200 ? `${statement.slice(0, 200)}…` : statement;
+        throw new Error(`${name}: ${err?.message || err}\n\nStatement:\n${head}`);
+      }
+    }
     await q`insert into schema_migrations (name) values (${name}) on conflict do nothing`;
     ran.push(name);
   }
