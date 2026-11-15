@@ -19,6 +19,7 @@
   "include": [
     "vite.config.ts",
     "server/api.d.mts",
+    "server/historyApi.d.mts",
     "server/*.ts",
     "scripts/*.mjs"
   ]

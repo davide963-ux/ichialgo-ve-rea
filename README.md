@@ -564,15 +564,94 @@ Worked example (unit test): USD/JPY at 150.00, stop 150.50, $10,000, 1% risk
 
 ---
 
-## 6. Signal history (removed)
+## 6. Signal history
 
-The app no longer reads or writes signals, so `/api/signals`, the scanner and
-the Supabase client are gone from the codebase.
+The strategy runs in the browser, which means it only runs while a tab is
+open. A history assembled that way records when somebody was looking at the
+site, not what the market did — an earlier version of this project threw away
+421 rows for exactly that reason. So the history is written by a server-side
+scanner and the browser only reads it.
 
-The Postgres tables and their RPCs still exist in the project and are empty;
-the migrations that created them remain in `supabase/migrations/` as history.
-Nothing in the app touches them. Drop them, or leave them for whatever comes
-next — they cost nothing idle.
+```mermaid
+flowchart LR
+    A["GitHub Actions<br/>every 15 min, Mon–Fri"] -->|"POST /api/scan<br/>Bearer SCANNER_TOKEN"| B["api/scan.js"]
+    B --> C["Yahoo candles"]
+    C --> D["analyseEma50Touch()<br/>+ ticketLevels()"]
+    D -->|"new, closed bars"| E[("Neon Postgres<br/>signals")]
+    B -->|"open trades"| F["resolveBar()"]
+    F -->|"TP / SL / expired"| E
+    E -->|"GET /api/signals"| G["/history page"]
+```
+
+**One strategy, two runtimes.** The scanner does not re-implement anything.
+`scripts/bundle-strategy.mjs` compiles `src/services/strategy/serverEntry.ts`
+to `server/strategy.bundle.mjs` during the build, so the server executes the
+same functions the browser does — including `resolveBar`, which is the
+backtest's own take-profit/stop rule. `server/scanner.test.mjs` replays a
+fixture through both and requires the same verdict on every trade.
+
+It applies the backtest's three pessimistic rules, for the same reason:
+
+1. **Entry must be a price that traded.** A resting limit at the EMA fills
+   only if the touch bar's range covered it. Touches that never reach it are
+   stored as `nofill`, not as trades.
+2. **The entry bar can stop you out, but cannot take profit.** OHLC cannot say
+   whether the high came before or after the fill.
+3. **Same-bar ambiguity goes to the stop.**
+
+Results are stored in **pips**, raw — no spread. The backtest charges a spread
+because it asks whether the strategy would have made money; this table records
+what price did.
+
+### Why GitHub Actions and not a Vercel cron
+
+Vercel's Hobby plan runs a cron job **once a day, accurate to the hour**. The
+strategy is evaluated on 30-minute bars, so that is useless. GitHub Actions
+schedules are free and unlimited on a public repository and go down to five
+minutes (`.github/workflows/scan.yml`).
+
+Nothing depends on the trigger being punctual. Every run re-reads the last
+`SCAN_LOOKBACK_BARS` closed bars (four by default — two hours on 30M), and the
+signal id is deterministic (`strategy|symbol|timeframe|barTime`) with
+`ON CONFLICT DO NOTHING`, so a late run catches up and a repeated run writes
+nothing twice.
+
+### Setting it up
+
+1. **Vercel → Storage → Neon.** The integration is a Marketplace product;
+   creating the database adds `DATABASE_URL` to the project automatically.
+2. **`SCANNER_TOKEN`** — a random string, set in two places: the Vercel
+   project's environment variables, and the repository's
+   *Settings → Secrets and variables → Actions*. The route refuses every
+   request unless they match, and refuses them all if the variable is unset.
+3. **Deploy.** `npm run build` ends with `npm run migrate`, which applies
+   `db/migrations/*.sql`. With no `DATABASE_URL` it skips and the build still
+   succeeds — the history is an addition to the app, not a prerequisite. Once
+   there IS a database, a failed migration fails the build, because deploying
+   an app whose queries name missing columns is worse.
+
+Until all three are done, `/history` says so and explains what is missing.
+
+### Local development
+
+`DATABASE_URL` pointing anywhere other than `*.neon.tech` falls back to
+`pg` (a devDependency) instead of Neon's HTTPS driver, so a local Postgres
+works:
+
+```bash
+createdb ichialgo
+DATABASE_URL=postgresql://localhost/ichialgo npm run migrate
+DATABASE_URL=postgresql://localhost/ichialgo npm run dev
+```
+
+The database tests run against a real PostgreSQL server rather than a mock,
+because the things that break — `jsonb_to_recordset` column lists, the
+conflict target, `extract(epoch from …)` — only break in Postgres. They skip
+themselves when `TEST_DATABASE_URL` is unset:
+
+```bash
+TEST_DATABASE_URL=postgresql://localhost/ichialgo npm test
+```
 
 
 ## 7. Extending

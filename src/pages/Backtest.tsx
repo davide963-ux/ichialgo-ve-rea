@@ -10,30 +10,44 @@
  *
  * WHY THE HEADLINE IS A SENTENCE AND NOT A NUMBER
  * ───────────────────────────────────────────────
- * "+0.05R per trade" reads as a small edge. "Indistinguishable from zero —
+ * "+0.5 pips per trade" reads as a small edge. "Indistinguishable from zero —
  * the interval spans it" is the same fact and the correct conclusion. This
  * project has already spent three rounds of tuning on the difference, so the
  * page states the conclusion and shows the number underneath it.
  *
  * COSTS ARE ON BY DEFAULT
  * ───────────────────────
- * One pip, charged against the risk. The stop is about ten pips, so the
- * spread is a tenth of R on every trade — the commonest reason a backtest
- * does not survive contact with a broker. Showing the zero-cost number first
- * would be flattering the strategy by default.
+ * One pip. The stop is about ten pips, so the spread is a tenth of the bet
+ * given away on every trade — the commonest reason a backtest does not
+ * survive contact with a broker. Showing the zero-cost number first would be
+ * flattering the strategy by default.
+ *
+ * EVERY NUMBER IS IN PIPS, AND THE AVERAGE STOP IS SHOWN NEXT TO IT
+ * ─────────────────────────────────────────────────────────────────
+ * Pips are checkable against the chart, which is why they are here. But the
+ * stop is ATR-based, so trades risk different amounts and the pip average is
+ * an average over unequal bets — and across JPY and non-JPY pairs it adds two
+ * different pip values outright. Neither is hidden: the average stop sits
+ * beside the average result, and `portfolio.mixesPipValues` drives a note
+ * above the totals whenever the selection spans both kinds of pair.
  */
 import { useMemo, useState } from 'react';
 import { EquityCurve, type EquityPoint } from '../components/EquityCurve';
 import { MetricCard } from '../components/MetricCard';
 import { EMA50_TOUCH, ICHIMOKU_CONFLUENCE, TRADE_PLAN } from '../config/strategy';
-import { FIXTURE_PAIRS, useBacktest } from '../hooks/useBacktest';
+import { FIXTURE_PAIRS, UNTESTED_PAIRS, useBacktest } from '../hooks/useBacktest';
 import { formatNumber } from '../lib/format';
 import { ICHIMOKU_CHECKS, type BacktestFilters, type BacktestMetrics } from '../services/strategy';
 
 const DEFAULT_COST_PIPS = 1;
 const TRADE_ROWS = 60;
 
-const r = (v: number | null, digits = 2) => (v === null ? '—' : `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(digits)}R`);
+/** Signed pips. The unit is in the column heading, so it is not repeated per cell. */
+const p = (v: number | null, digits = 1) =>
+  v === null ? '—' : `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(digits)}`;
+
+/** Signed pips with the unit, for prose and for cards that stand alone. */
+const pips = (v: number | null, digits = 1) => (v === null ? '—' : `${p(v, digits)} pips`);
 const pct = (v: number | null) => (v === null ? '—' : `${v.toFixed(1)}%`);
 const pf = (v: number | null) => (v === null ? '—' : v === Infinity ? 'no losses' : v.toFixed(2));
 
@@ -51,17 +65,17 @@ function verdict(m: BacktestMetrics): { text: string; tone: 'pos' | 'neg' | 'mut
   if (m.trades < 2) return { text: 'Not enough trades to say anything.', tone: 'muted' };
   if (!m.significant) {
     return {
-      text: `No measurable edge. At ${r(m.averageR)} a trade the 95% interval runs ${r(m.ciLow)} to ${r(m.ciHigh)} — it spans zero, so the sign is noise.`,
+      text: `No measurable edge. At ${pips(m.averagePips)} a trade the 95% interval runs ${p(m.ciLow)} to ${pips(m.ciHigh)} — it spans zero, so the sign is noise.`,
       tone: 'muted',
     };
   }
-  return m.averageR! > 0
+  return m.averagePips! > 0
     ? {
-        text: `Profitable on this sample: ${r(m.averageR)} a trade, 95% interval ${r(m.ciLow)} to ${r(m.ciHigh)} — clear of zero.`,
+        text: `Profitable on this sample: ${pips(m.averagePips)} a trade, 95% interval ${p(m.ciLow)} to ${pips(m.ciHigh)} — clear of zero.`,
         tone: 'pos',
       }
     : {
-        text: `Loses money on this sample: ${r(m.averageR)} a trade, 95% interval ${r(m.ciLow)} to ${r(m.ciHigh)} — clear of zero.`,
+        text: `Loses money on this sample: ${pips(m.averagePips)} a trade, 95% interval ${p(m.ciLow)} to ${pips(m.ciHigh)} — clear of zero.`,
         tone: 'neg',
       };
 }
@@ -85,11 +99,11 @@ export function Backtest() {
     let n = 0;
     let cum = 0;
     return portfolio.trades
-      .filter((t) => t.rMultiple !== null)
+      .filter((t) => t.pips !== null)
       .map((t) => {
         n += 1;
-        cum += t.rMultiple!;
-        return { n, cumR: cum, r: t.rMultiple!, label: `${t.symbol} ${t.direction}` };
+        cum += t.pips!;
+        return { n, cumPips: cum, pips: t.pips!, label: `${t.symbol} ${t.direction}` };
       });
   }, [portfolio]);
 
@@ -111,7 +125,7 @@ export function Backtest() {
           <h1>Backtest</h1>
           <p className="page-sub">
             The EMA{EMA50_TOUCH.period} touch strategy replayed over real OANDA candles — entry at the EMA, stop{' '}
-            {TRADE_PLAN.stopAtrMultiple}× ATR beyond it, target {TRADE_PLAN.rewardMultiple}R.
+            {TRADE_PLAN.stopAtrMultiple}× ATR beyond it, target {TRADE_PLAN.rewardMultiple}× the stop distance.
             {span && ` ${day(span.from)} – ${day(span.to)}, 1H.`}
           </p>
         </div>
@@ -165,7 +179,8 @@ export function Backtest() {
               ))}
             </div>
             <span className="panel-sub">
-              Spread, charged against the risk. The stop is ~10 pips, so a pip is ~0.1R off every trade.
+              Spread, taken straight off the result. The stop is ~10 pips, so each pip of spread is about a tenth
+              of the bet.
             </span>
           </fieldset>
 
@@ -199,17 +214,32 @@ export function Backtest() {
             </div>
           </section>
 
+          {portfolio?.mixesPipValues && (
+            <p className="panel-sub backtest-unit-note">
+              <strong>These totals add JPY and non-JPY pips together.</strong> A USD/JPY pip is 0.01 and a EUR/USD pip
+              is 0.0001 — different amounts of money, and JPY pairs usually travel further in pips for the same risk.
+              Read the by-pair table below for figures that are in one unit, or deselect one group of pairs above.
+            </p>
+          )}
+
           <section className="metric-strip" aria-label="Backtest summary">
             <MetricCard label="Trades" value={metrics.trades} hint={`${metrics.wins}W / ${metrics.losses}L`} />
             <MetricCard
               label="Average"
-              value={r(metrics.averageR)}
-              hint={`95% CI ${r(metrics.ciLow)} … ${r(metrics.ciHigh)}`}
-              accent={metrics.significant && (metrics.averageR ?? 0) > 0}
+              value={pips(metrics.averagePips, 2)}
+              hint={`95% CI ${p(metrics.ciLow, 2)} … ${p(metrics.ciHigh, 2)}`}
+              accent={metrics.significant && (metrics.averagePips ?? 0) > 0}
             />
-            <MetricCard label="Total" value={r(metrics.totalR, 1)} hint="sum of every closed trade" />
+            {/* The denominator of the line above it: a result is only good or
+                bad relative to what was risked to get it. */}
+            <MetricCard
+              label="Average stop"
+              value={metrics.averageStopPips === null ? '—' : `${metrics.averageStopPips.toFixed(1)} pips`}
+              hint="what each trade risked"
+            />
+            <MetricCard label="Total" value={pips(metrics.totalPips, 0)} hint="sum of every closed trade" />
             <MetricCard label="Profit factor" value={pf(metrics.profitFactor)} hint="gross won ÷ gross lost" />
-            <MetricCard label="Max drawdown" value={r(-metrics.maxDrawdownR, 1)} hint="deepest fall from a peak" />
+            <MetricCard label="Max drawdown" value={pips(-metrics.maxDrawdownPips, 0)} hint="deepest fall from a peak" />
           </section>
 
           <section className="panel">
@@ -217,8 +247,8 @@ export function Backtest() {
               <div>
                 <h2 className="panel-title">Equity curve</h2>
                 <span className="panel-sub">
-                  Cumulative R, trade by trade, pairs merged and ordered by exit. In R rather than money, so the shape
-                  does not depend on a position-sizing choice.
+                  Cumulative pips, trade by trade, pairs merged and ordered by exit. In pips rather than money, so
+                  the shape does not depend on a balance or a risk-per-trade choice.
                 </span>
               </div>
             </div>
@@ -245,8 +275,9 @@ export function Backtest() {
                     <th className="num">NO FILL</th>
                     <th className="num">TRADES</th>
                     <th className="num">WIN</th>
-                    <th className="num">AVERAGE</th>
-                    <th className="num">TOTAL</th>
+                    <th className="num">AVG PIPS</th>
+                    <th className="num">AVG STOP</th>
+                    <th className="num">TOTAL PIPS</th>
                     <th className="num">PF</th>
                   </tr>
                 </thead>
@@ -258,11 +289,14 @@ export function Backtest() {
                       <td className="num muted">{res.noFill}</td>
                       <td className="num">{res.metrics.trades}</td>
                       <td className="num">{pct(res.metrics.winRatePct)}</td>
-                      <td className={`num ${(res.metrics.averageR ?? 0) > 0 ? 'pos' : (res.metrics.averageR ?? 0) < 0 ? 'neg' : ''}`}>
-                        {r(res.metrics.averageR)}
+                      <td className={`num ${(res.metrics.averagePips ?? 0) > 0 ? 'pos' : (res.metrics.averagePips ?? 0) < 0 ? 'neg' : ''}`}>
+                        {p(res.metrics.averagePips, 2)}
                       </td>
-                      <td className={`num ${res.metrics.totalR > 0 ? 'pos' : res.metrics.totalR < 0 ? 'neg' : ''}`}>
-                        {r(res.metrics.totalR, 1)}
+                      <td className="num muted">
+                        {res.metrics.averageStopPips === null ? '—' : res.metrics.averageStopPips.toFixed(1)}
+                      </td>
+                      <td className={`num ${res.metrics.totalPips > 0 ? 'pos' : res.metrics.totalPips < 0 ? 'neg' : ''}`}>
+                        {p(res.metrics.totalPips, 0)}
                       </td>
                       <td className="num muted">{pf(res.metrics.profitFactor)}</td>
                     </tr>
@@ -297,7 +331,8 @@ export function Backtest() {
                     <th className="num">ICHI</th>
                     <th className="num">BARS</th>
                     <th>EXIT</th>
-                    <th className="num">R</th>
+                    <th className="num">STOP PIPS</th>
+                    <th className="num">PIPS</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -319,8 +354,9 @@ export function Backtest() {
                           {t.exit === 'open' ? 'STILL OPEN' : t.exit.toUpperCase()}
                         </span>
                       </td>
-                      <td className={`num ${(t.rMultiple ?? 0) > 0 ? 'pos' : (t.rMultiple ?? 0) < 0 ? 'neg' : 'muted'}`}>
-                        {t.rMultiple === null ? '—' : r(t.rMultiple)}
+                      <td className="num muted">{t.stopPips.toFixed(1)}</td>
+                      <td className={`num ${(t.pips ?? 0) > 0 ? 'pos' : (t.pips ?? 0) < 0 ? 'neg' : 'muted'}`}>
+                        {p(t.pips)}
                       </td>
                     </tr>
                   ))}
@@ -336,6 +372,15 @@ export function Backtest() {
               </div>
             </div>
             <ul className="panel-body msg-list">
+              {UNTESTED_PAIRS.length > 0 && (
+                <li>
+                  <strong>It does not cover every pair you trade.</strong> {UNTESTED_PAIRS.join(' and ')}{' '}
+                  {UNTESTED_PAIRS.length === 1 ? 'is scanned' : 'are scanned'} live but {UNTESTED_PAIRS.length === 1 ? 'has' : 'have'}{' '}
+                  no checked-in candles, so nothing here says anything about{' '}
+                  {UNTESTED_PAIRS.length === 1 ? 'it' : 'them'}. These numbers describe{' '}
+                  {FIXTURE_PAIRS.length} of the {FIXTURE_PAIRS.length + UNTESTED_PAIRS.length} pairs on the scanner.
+                </li>
+              )}
               <li>
                 <strong>One period.</strong> {span && `${day(span.from)} – ${day(span.to)}`} is about nine months. A
                 rule can fit nine months of one regime and fail the next.

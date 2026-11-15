@@ -155,32 +155,40 @@ function unwrap(body: YahooChart, symbol: string) {
 }
 
 /**
- * Fetch `count` candles. Throws a ProviderError on any failure — the caller
- * decides whether to fall back, because only it knows what that costs.
+ * The query string for one candle request: symbol, interval and range.
+ *
+ * Separate from the fetch because the SERVER-SIDE scanner needs the same
+ * three decisions — which Yahoo ticker, which interval, how far back — while
+ * talking to Yahoo directly rather than through this app's proxy. Two copies
+ * of this mapping would be two chances to ask 4H for the wrong interval.
  */
-export async function fetchYahooCandles(
-  symbol: string,
-  timeframe: Timeframe,
-  count: number,
-  signal?: AbortSignal,
-): Promise<Candle[]> {
-  const qs = new URLSearchParams({
+export function yahooQuery(symbol: string, timeframe: Timeframe, count: number): URLSearchParams {
+  return new URLSearchParams({
     symbol: toYahooSymbol(symbol),
     interval: INTERVAL[timeframe],
     range: rangeFor(timeframe, count),
   });
+}
 
-  let result;
-  try {
-    result = unwrap(await fetchJson<YahooChart>(`${REST}?${qs}`, signal), symbol);
-  } catch (err) {
-    if (isAbort(err)) throw err;
-    throw toProviderError(err);
-  }
-
+/**
+ * Turn a Yahoo chart body into candles.
+ *
+ * This is the whole of the awkward part — the nulls, the forming bar, the 4H
+ * resample — and it is deliberately pure: body in, candles out, no transport.
+ * The browser gets the body from `/api/yahoo-chart`; the scanner gets it from
+ * Yahoo directly. Both must agree about what a bar IS, so both call this.
+ */
+export function parseYahooChart(
+  body: unknown,
+  symbol: string,
+  timeframe: Timeframe,
+  count: number,
+): Candle[] {
+  const result = unwrap(body as YahooChart, symbol);
   const times = result.timestamp ?? [];
   const q = result.indicators?.quote?.[0] ?? {};
   const candles: Candle[] = [];
+
 
   for (let i = 0; i < times.length; i++) {
     const o = num(q.open?.[i]);
@@ -210,4 +218,26 @@ export async function fetchYahooCandles(
 
   const merged = RESAMPLED.has(timeframe) ? resample(candles, TIMEFRAME_SECONDS[timeframe]) : candles;
   return merged.slice(-count);
+}
+
+/**
+ * Fetch `count` candles through this app's proxy. Throws a ProviderError on
+ * any failure — the caller decides whether to fall back, because only it
+ * knows what that costs.
+ */
+export async function fetchYahooCandles(
+  symbol: string,
+  timeframe: Timeframe,
+  count: number,
+  signal?: AbortSignal,
+): Promise<Candle[]> {
+  const qs = yahooQuery(symbol, timeframe, count);
+  let body: YahooChart;
+  try {
+    body = await fetchJson<YahooChart>(`${REST}?${qs}`, signal);
+  } catch (err) {
+    if (isAbort(err)) throw err;
+    throw toProviderError(err);
+  }
+  return parseYahooChart(body, symbol, timeframe, count);
 }

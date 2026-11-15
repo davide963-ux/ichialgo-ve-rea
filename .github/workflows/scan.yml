@@ -1,0 +1,88 @@
+# Scheduled trigger for the signal scanner.
+#
+# WHY THIS EXISTS INSTEAD OF A VERCEL CRON
+# ────────────────────────────────────────
+# Vercel's Hobby plan runs a cron job once a day, accurate to within the hour.
+# The strategy is evaluated on 30-minute bars, so that is useless here. GitHub
+# Actions schedules are free and unlimited on a public repository and go down
+# to five minutes, so the schedule lives here and Vercel just answers the POST.
+#
+# WHY LATENESS IS NOT A PROBLEM
+# ─────────────────────────────
+# GitHub makes no punctuality promise: scheduled runs are queued at low
+# priority and are routinely minutes late, occasionally skipped, sometimes
+# bunched. The scanner is built for that — every run re-reads the last few
+# closed bars (SCAN_LOOKBACK_BARS, four by default = two hours on 30M) and the
+# signal id is deterministic, so a late run catches up and a repeated run
+# writes nothing twice. Missing one firing costs nothing.
+#
+# ⚠️  GitHub disables scheduled workflows on a repository with no commits for
+#     60 days, and emails the owner first. If signals stop appearing, check
+#     the Actions tab before suspecting the scanner.
+name: scan
+
+on:
+  schedule:
+    # Every 15 minutes, Monday to Friday. Forex is shut at the weekend, so
+    # Saturday is skipped entirely and Sunday only from the 22:00 UTC open.
+    # Friday evening after the close is left in: the scanner simply finds no
+    # newly closed bar, which costs one request and writes nothing.
+    - cron: '*/15 * * * 1-5'
+    - cron: '*/15 22-23 * * 0'
+  # So it can be run by hand from the Actions tab — the quickest way to check
+  # the token and the database after changing either.
+  workflow_dispatch:
+
+# A run takes seconds; two overlapping ones would only duplicate work that the
+# database would then reject. Let the in-flight one finish.
+concurrency:
+  group: scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger the scan
+        env:
+          # Set in Settings → Secrets and variables → Actions.
+          #   secret   SCANNER_TOKEN  — must equal the Vercel env var of the same name
+          #   variable SCAN_URL       — optional; defaults to the production domain
+          SCANNER_TOKEN: ${{ secrets.SCANNER_TOKEN }}
+          SCAN_URL: ${{ vars.SCAN_URL || 'https://ichialgo.world/api/scan' }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SCANNER_TOKEN}" ]; then
+            echo "::error::SCANNER_TOKEN is not set. Add it under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+          # Separate the body from the status line so both can be reported:
+          # a failing scan returns a JSON body that says which pair broke, and
+          # throwing it away would make every failure look the same.
+          http=$(curl --silent --show-error --fail-with-body \
+                      --max-time 120 --retry 2 --retry-delay 10 --retry-connrefused \
+                      --output body.json --write-out '%{http_code}' \
+                      -X POST "${SCAN_URL}" \
+                      -H "Authorization: Bearer ${SCANNER_TOKEN}" \
+                      -H 'Content-Length: 0' ) || true
+
+          echo "HTTP ${http}"
+          cat body.json || true
+          echo
+
+          # Summary on the run page, so the Actions tab is readable at a glance.
+          {
+            echo "### Scan — HTTP ${http}"
+            echo ''
+            echo '```json'
+            cat body.json 2>/dev/null || echo '(no body)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${http}" != "200" ]; then
+            echo "::error::Scan failed with HTTP ${http}"
+            exit 1
+          fi

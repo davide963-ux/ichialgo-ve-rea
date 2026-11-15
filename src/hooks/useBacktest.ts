@@ -15,20 +15,51 @@
  * touches the main bundle.
  */
 import { useEffect, useMemo, useState } from 'react';
+import { PAIRS } from '../config/pairs';
 import type { Candle } from '../services/marketData';
 import { backtestTouches, combine, type BacktestFilters, type BacktestResult } from '../services/strategy';
 
-/** Pairs with a checked-in fixture, and how to fetch each one. */
-export const FIXTURE_PAIRS = [
-  { symbol: 'EUR/USD', load: () => import('../../fixtures/market/EURUSD_1H.csv?raw') },
-  { symbol: 'GBP/USD', load: () => import('../../fixtures/market/GBPUSD_1H.csv?raw') },
-  { symbol: 'USD/JPY', load: () => import('../../fixtures/market/USDJPY_1H.csv?raw') },
-  { symbol: 'AUD/USD', load: () => import('../../fixtures/market/AUDUSD_1H.csv?raw') },
-  { symbol: 'USD/CAD', load: () => import('../../fixtures/market/USDCAD_1H.csv?raw') },
-  { symbol: 'GBP/JPY', load: () => import('../../fixtures/market/GBPJPY_1H.csv?raw') },
-] as const;
+/**
+ * Every pair with a checked-in fixture, and how to fetch it.
+ *
+ * This is the set of candles that EXIST, not the set the backtest runs. The
+ * two are different, and conflating them is what put GBP/JPY in the results:
+ * these CSVs were downloaded for an earlier strategy, and nobody kept them in
+ * step with config/pairs.ts afterwards.
+ */
+const FIXTURES: Record<string, () => Promise<{ default: string }>> = {
+  'EUR/USD': () => import('../../fixtures/market/EURUSD_1H.csv?raw'),
+  'GBP/USD': () => import('../../fixtures/market/GBPUSD_1H.csv?raw'),
+  'USD/JPY': () => import('../../fixtures/market/USDJPY_1H.csv?raw'),
+  'AUD/USD': () => import('../../fixtures/market/AUDUSD_1H.csv?raw'),
+  'USD/CAD': () => import('../../fixtures/market/USDCAD_1H.csv?raw'),
+  'GBP/JPY': () => import('../../fixtures/market/GBPJPY_1H.csv?raw'),
+};
 
-export type FixtureSymbol = (typeof FIXTURE_PAIRS)[number]['symbol'];
+/**
+ * What the backtest actually runs: pairs the scanner trades AND for which
+ * candles exist. Derived from PAIRS rather than listed, so the backtest can
+ * never again report a pair the live system does not trade — add one to
+ * config/pairs.ts and it appears here by itself, drop one and it leaves.
+ */
+export const FIXTURE_PAIRS = PAIRS.filter((p) => p.symbol in FIXTURES).map((p) => ({
+  symbol: p.symbol,
+  load: FIXTURES[p.symbol]!,
+}));
+
+/**
+ * Pairs the scanner trades that have NO fixture, so the backtest says nothing
+ * about them. Reported on the page: an untested pair that is being traded is
+ * exactly the thing a reader should be told, not something to leave implicit.
+ */
+export const UNTESTED_PAIRS: string[] = PAIRS.filter((p) => !(p.symbol in FIXTURES)).map((p) => p.symbol);
+
+/** Fixtures that exist but are not traded — kept on disk, excluded from results. */
+export const UNUSED_FIXTURES: string[] = Object.keys(FIXTURES).filter(
+  (symbol) => !PAIRS.some((p) => p.symbol === symbol),
+);
+
+export type FixtureSymbol = string;
 
 /** "t,o,h,l,c" rows, oldest first. */
 function parse(csv: string): Candle[] {
