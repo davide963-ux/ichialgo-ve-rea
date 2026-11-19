@@ -13,5 +13,17 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+
+    <!--
+      Chatbot widget. Third-party, loaded async so it never blocks the app's
+      own bundle or first paint, and placed last so the terminal is interactive
+      before it arrives. It mounts its own element; nothing in src/ refers to
+      it, so removing this one line removes the widget entirely.
+    -->
+    <script
+      src="https://chatbot-platform-beta.vercel.app/widget.js"
+      data-bot-id="zb_UV7kQwXQIqLZnedkedjPNa"
+      async
+    ></script>
   </body>
 </html>

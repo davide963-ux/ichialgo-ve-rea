@@ -35,5 +35,6 @@ export { TIMEFRAME_SECONDS } from '../../config/timeframes';
 // Candle plumbing: the scanner talks to Yahoo directly rather than through
 // this app's proxy, but must agree with the browser about what a bar is.
 export { yahooQuery, parseYahooChart, toYahooSymbol, resample, rangeFor } from '../marketData/providers/yahooCandles';
+export { tdSeriesQuery, parseTdSeries } from '../marketData/providers/twelveDataSeries';
 export type { Timeframe } from '../../config/timeframes';
 export type { TouchSignal, WatchLevel } from './types';

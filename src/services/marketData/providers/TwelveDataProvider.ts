@@ -27,7 +27,7 @@ import type { Timeframe } from '../../../config/timeframes';
 import { APP_CONFIG } from '../../../config/app';
 import { CreditBudget } from './creditBudget';
 import { fetchJson, num } from '../http';
-import { parseUtcDateTime } from '../../../lib/time';
+import { isTdError, mapTdError, parseTdSeries, tdSeriesQuery } from './twelveDataSeries';
 import {
   ProviderError,
   isAbort,
@@ -51,19 +51,6 @@ const BACKGROUND_WAIT_MS = 1_500;
 /** Hard ceiling on the poll interval, however tight the budget is. */
 const MAX_POLL_MS = 300_000;
 
-const INTERVAL: Record<Timeframe, string> = {
-  '30M': '30min',
-  '1H': '1h',
-  '4H': '4h',
-  '1D': '1day',
-};
-
-interface TdError {
-  status: 'error';
-  code?: number;
-  message?: string;
-}
-
 interface TdQuote {
   symbol: string;
   close?: string;
@@ -81,29 +68,9 @@ interface TdPoolStatus {
   perDayTotal: number | null;
 }
 
-interface TdSeries {
-  values?: { datetime: string; open: string; high: string; low: string; close: string; volume?: string }[];
-}
-
-const isError = (v: unknown): v is TdError =>
-  !!v && typeof v === 'object' && (v as { status?: unknown }).status === 'error';
-
-function mapError(e: TdError, symbol?: string): ProviderError {
-  const message = e.message ?? 'Twelve Data error';
-  switch (e.code) {
-    case 401:
-    case 403:
-      return new ProviderError('auth', 'Twelve Data rejected the API key. Check TWELVEDATA_API_KEY in .env, then restart the dev server.');
-    case 429:
-      // The proxy's own pool-exhausted message names the key count — keep it.
-      return new ProviderError('rate_limit', message || 'Twelve Data credit limit reached', { retryAfterMs: 60_000 });
-    case 400:
-    case 404:
-      return new ProviderError('invalid_symbol', symbol ? `${symbol}: ${message}` : message, { symbol });
-    default:
-      return new ProviderError('provider', message, { symbol });
-  }
-}
+/** Error shape and mapping live in twelveDataSeries, shared with the scanner. */
+const isError = isTdError;
+const mapError = mapTdError;
 
 export class TwelveDataProvider implements MarketDataProvider {
   readonly id = 'twelvedata' as const;
@@ -248,13 +215,7 @@ export class TwelveDataProvider implements MarketDataProvider {
     signal?: AbortSignal,
     opts?: CandleRequestOptions,
   ): Promise<Candle[]> {
-    const qs = new URLSearchParams({
-      symbol,
-      interval: INTERVAL[timeframe],
-      outputsize: String(Math.min(Math.max(count, 1), 5000)),
-      order: 'asc',
-      timezone: 'UTC',
-    });
+    const qs = tdSeriesQuery(symbol, timeframe, count);
     // Background scans yield the credit rather than queue behind the window.
     await this.budget.reserve(1, signal, opts?.background ? BACKGROUND_WAIT_MS : USER_WAIT_MS);
     let body: unknown;
@@ -264,24 +225,7 @@ export class TwelveDataProvider implements MarketDataProvider {
       if (isAbort(err)) throw err;
       throw toProviderError(err);
     }
-    if (isError(body)) throw mapError(body, symbol);
-
-    const values = (body as TdSeries).values ?? [];
-    const candles: Candle[] = [];
-    values.forEach((v, i) => {
-      const o = num(v.open), h = num(v.high), l = num(v.low), c = num(v.close);
-      const t = parseUtcDateTime(v.datetime);
-      if (o === null || h === null || l === null || c === null || !Number.isFinite(t)) return;
-      candles.push({
-        time: Math.floor(t / 1000),
-        open: o,
-        high: h,
-        low: l,
-        close: c,
-        volume: num(v.volume),
-        complete: i < values.length - 1, // newest bar is still forming
-      });
-    });
-    return candles;
+    return parseTdSeries(body, symbol);
   }
 }
+

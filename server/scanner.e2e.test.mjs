@@ -37,6 +37,28 @@ const candles = readFileSync(new URL('../fixtures/market/EURUSD_1H.csv', import.
     return { time: t, open: o, high: h, low: lo, close: c };
   });
 
+/**
+ * Shape those rows the way Twelve Data's time_series returns them: newest
+ * last, datetimes rather than epochs, numbers as strings.
+ */
+function tdBody(rows) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return {
+    values: rows.map((c) => {
+      const d = new Date(c.time * 1000);
+      return {
+        datetime:
+          `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ` +
+          `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`,
+        open: String(c.open),
+        high: String(c.high),
+        low: String(c.low),
+        close: String(c.close),
+      };
+    }),
+  };
+}
+
 /** Shape those rows the way Yahoo would return them. */
 function yahooBody(rows) {
   return {
@@ -172,7 +194,7 @@ run('runScan end to end', () => {
 
   it('survives a provider failure without writing a half-finished run', async () => {
     globalThis.fetch = async () => ({ ok: false, status: 429, json: async () => ({}) });
-    const out = await runScan({ env });
+    const out = await runScan({ env: { ...env, TWELVEDATA_API_KEY_1: '' } });
 
     expect(out.recorded).toBe(0);
     expect(out.errors.join(' ')).toContain('429');
@@ -182,5 +204,95 @@ run('runScan end to end', () => {
     const [logged] = await pool.query('select * from scanner_runs order by id desc limit 1').then((r) => r.rows);
     expect(logged.ok).toBe(false);
     expect(logged.errors.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * The failure that ran in production for four days: Yahoo's chart endpoint
+   * rate-limits datacentre IPs, so every scan returned "Yahoo 429" seven
+   * times and recorded nothing. Yahoo stays first because it is free; Twelve
+   * Data has to catch what it refuses.
+   */
+  describe('when Yahoo refuses', () => {
+    const withKey = { ...env, TWELVEDATA_API_KEY_1: 'test-key', TWELVEDATA_REST_URL: 'https://td.test' };
+
+    it('falls back to Twelve Data and still records signals', async () => {
+      const seen = { yahoo: 0, td: 0 };
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes('finance/chart')) {
+          seen.yahoo++;
+          return { ok: false, status: 429, json: async () => ({}) };
+        }
+        seen.td++;
+        expect(u).toContain('apikey=test-key');
+        expect(u).toContain('interval=1h');
+        return { ok: true, status: 200, json: async () => tdBody(candles.slice(0, 300)) };
+      };
+
+      const out = await runScan({ env: withKey });
+      expect(out.ok).toBe(true);
+      expect(out.errors).toEqual([]);
+      expect(out.recorded).toBeGreaterThan(0);
+      expect(out.provider).toBe('twelvedata');
+      expect(out.yahooParked).toMatch(/429/);
+
+      // Yahoo is asked ONCE for the whole run, not once per pair: leaning on
+      // an endpoint that is already rate-limiting is how a soft limit becomes
+      // a hard one.
+      expect(seen.yahoo).toBe(1);
+      expect(seen.td).toBe(1); // one pair in SCAN_SYMBOLS
+    });
+
+    it('tries the next pooled key when the first one is rejected', async () => {
+      const keys = [];
+      globalThis.fetch = async (url) => {
+        const u = String(url);
+        if (u.includes('finance/chart')) return { ok: false, status: 429, json: async () => ({}) };
+        const key = new URL(u).searchParams.get('apikey');
+        keys.push(key);
+        // Twelve Data reports this INSIDE the body, with HTTP 200.
+        if (key === 'dead') return { ok: true, status: 200, json: async () => ({ status: 'error', code: 429, message: 'run out of credits' }) };
+        return { ok: true, status: 200, json: async () => tdBody(candles.slice(0, 300)) };
+      };
+
+      const out = await runScan({
+        env: { ...withKey, TWELVEDATA_API_KEY_1: 'dead', TWELVEDATA_API_KEY_2: 'alive' },
+      });
+      expect(keys).toEqual(['dead', 'alive']);
+      expect(out.recorded).toBeGreaterThan(0);
+    });
+
+    it('reports both providers when the fallback fails too', async () => {
+      globalThis.fetch = async (url) =>
+        String(url).includes('finance/chart')
+          ? { ok: false, status: 429, json: async () => ({}) }
+          : { ok: false, status: 500, json: async () => ({}) };
+
+      const out = await runScan({ env: withKey });
+      expect(out.ok).toBe(false);
+      // Naming only the fallback would hide that Yahoo went first.
+      expect(out.errors.join(' ')).toMatch(/Twelve Data 500/);
+      expect(out.errors.join(' ')).toMatch(/Yahoo 429/);
+    });
+
+    it('says so plainly when there is no fallback key configured', async () => {
+      globalThis.fetch = async () => ({ ok: false, status: 429, json: async () => ({}) });
+      const out = await runScan({ env: { ...env, TWELVEDATA_API_KEY_1: '' } });
+      expect(out.errors.join(' ')).toMatch(/no Twelve Data API key configured/);
+    });
+  });
+
+  it('stays on Yahoo, and does not spend a credit, while Yahoo works', async () => {
+    window = { from: 0, to: 300 };
+    let td = 0;
+    const realStub = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      if (!String(url).includes('finance/chart')) td++;
+      return realStub(url);
+    };
+    const out = await runScan({ env: { ...env, TWELVEDATA_API_KEY_1: 'test-key' } });
+    expect(out.provider).toBe('yahoo');
+    expect(out.yahooParked).toBeNull();
+    expect(td, 'Twelve Data must not be touched when Yahoo answers').toBe(0);
   });
 });

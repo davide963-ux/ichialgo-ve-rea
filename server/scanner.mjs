@@ -62,14 +62,17 @@ import {
   STRATEGY_CONFIG,
   TIMEFRAME_SECONDS,
   analyseEma50Touch,
+  parseTdSeries,
   parseYahooChart,
   pipSize,
   pipsOf,
   resolveBar,
+  tdSeriesQuery,
   ticketLevels,
   yahooQuery,
 } from './strategy.bundle.mjs';
 import { YAHOO_REST_DEFAULT, YAHOO_UA } from './yahoo.mjs';
+import { readConfig } from './api.mjs';
 import { closeTrade, finishRun, openTrades, recordSignals, startRun } from './db.mjs';
 
 /** Bars to fetch per pair. Enough for EMA50 + Ichimoku's 52-period span. */
@@ -85,6 +88,9 @@ export function scannerConfig(env = process.env) {
      */
     lookbackBars: Math.max(1, Number(env.SCAN_LOOKBACK_BARS ?? 4) || 4),
     yahooRest: (env.YAHOO_REST_URL || YAHOO_REST_DEFAULT).trim(),
+    /** Twelve Data: the fallback when Yahoo refuses. Keys come from the same
+     *  pooled configuration the proxy uses, so there is one place to add one. */
+    td: readConfig(env).twelvedata,
     /** Pairs to scan. Defaults to the app's own list, so the two cannot drift. */
     symbols: (env.SCAN_SYMBOLS?.trim() ? env.SCAN_SYMBOLS.split(',').map((s) => s.trim()) : PAIRS.map((p) => p.symbol)),
   };
@@ -98,11 +104,80 @@ export function scannerConfig(env = process.env) {
  * it talks to Yahoo directly and parses the body with `parseYahooChart`,
  * which is the browser's own parser.
  */
-async function fetchCandles(symbol, timeframe, base, signal) {
+async function fetchFromYahoo(symbol, timeframe, base, signal) {
   const url = `${base}/v8/finance/chart/?${yahooQuery(symbol, timeframe, CANDLE_COUNT)}`;
   const res = await fetch(url, { headers: { 'User-Agent': YAHOO_UA, Accept: 'application/json' }, signal });
   if (!res.ok) throw new Error(`Yahoo ${res.status} for ${symbol}`);
   return parseYahooChart(await res.json(), symbol, timeframe, CANDLE_COUNT);
+}
+
+/**
+ * Candles from Twelve Data, trying each pooled key in turn.
+ *
+ * Failover is deliberately simple compared with the proxy's credit meter: a
+ * scan asks for at most one series per pair, a few times an hour, so the
+ * budget is never the binding constraint. What matters is that one exhausted
+ * or revoked key does not take the whole scan down, hence the loop.
+ *
+ * Twelve Data reports failures inside the body with HTTP 200, so
+ * `parseTdSeries` throws on those too — a 429 on key #1 must move to key #2,
+ * not be read as "no candles".
+ */
+async function fetchFromTwelveData(symbol, timeframe, td, signal) {
+  if (td.keys.length === 0) throw new Error('no Twelve Data API key configured');
+  const qs = tdSeriesQuery(symbol, timeframe, CANDLE_COUNT);
+  let last;
+  for (const key of td.keys) {
+    try {
+      const res = await fetch(`${td.rest}/time_series?${qs}&apikey=${encodeURIComponent(key)}`, {
+        headers: { Accept: 'application/json' },
+        signal,
+      });
+      if (!res.ok) throw new Error(`Twelve Data ${res.status}`);
+      return parseTdSeries(await res.json(), symbol);
+    } catch (err) {
+      last = err;
+    }
+  }
+  throw new Error(`Twelve Data: ${last?.message || last}`);
+}
+
+/**
+ * Yahoo first, Twelve Data when Yahoo refuses.
+ *
+ * WHY THE FALLBACK IS NOT OPTIONAL
+ * ────────────────────────────────
+ * Yahoo's chart endpoint is unofficial and rate-limits datacentre IP ranges.
+ * From a browser on a home connection it is fine, which is why the app uses
+ * it and why it costs no credits. From a serverless function it answers 429 —
+ * every pair, every run. This scanner ran for four days returning
+ * "Yahoo 429" seven times a scan and recording nothing at all.
+ *
+ * So Yahoo stays FIRST, because when it works it is free, and Twelve Data
+ * catches what it refuses. The browser already works this way
+ * (YahooCandleRouter); this is the same arrangement on the server.
+ *
+ * `state.yahooParked` makes that one decision per RUN rather than per pair.
+ * Once Yahoo has refused, the other six pairs will be refused too — asking
+ * anyway would spend six round trips to be told so, and leaning harder on an
+ * endpoint that is already rate-limiting is how a soft limit becomes a hard
+ * one.
+ */
+async function fetchCandles(symbol, timeframe, cfg, state, signal) {
+  if (!state.yahooParked) {
+    try {
+      return await fetchFromYahoo(symbol, timeframe, cfg.yahooRest, signal);
+    } catch (err) {
+      state.yahooParked = String(err?.message || err);
+    }
+  }
+  try {
+    return await fetchFromTwelveData(symbol, timeframe, cfg.td, signal);
+  } catch (err) {
+    // Name both, or a run that failed everywhere looks like a Twelve Data
+    // problem when Yahoo was the first thing to go.
+    throw new Error(`${err?.message || err} (after ${state.yahooParked ?? 'Yahoo not tried'})`);
+  }
 }
 
 /**
@@ -243,6 +318,8 @@ export async function runScan({ env = process.env, now = Date.now(), signal } = 
   let recorded = 0;
   let resolved = 0;
   let scanned = 0;
+  /** Per-run provider state: see fetchCandles for why Yahoo is parked once. */
+  const providerState = { yahooParked: null };
 
   // Fetch once per pair and use the same candles for both halves of the job.
   const open = await openTrades(env);
@@ -258,7 +335,7 @@ export async function runScan({ env = process.env, now = Date.now(), signal } = 
 
   for (const symbol of symbols) {
     try {
-      const candles = await fetchCandles(symbol, cfg.timeframe, cfg.yahooRest, signal);
+      const candles = await fetchCandles(symbol, cfg.timeframe, cfg, providerState, signal);
       scanned++;
 
       // ── resolve what is already running ───────────────────────────────
@@ -308,6 +385,10 @@ export async function runScan({ env = process.env, now = Date.now(), signal } = 
     recorded,
     resolved,
     errors,
+    // Which provider actually served the run, so a silent switch to the
+    // metered one is visible in the run log rather than only in the bill.
+    provider: providerState.yahooParked ? 'twelvedata' : 'yahoo',
+    yahooParked: providerState.yahooParked,
     detail: perPair,
   };
   await finishRun(runId, summary, env);
