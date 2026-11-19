@@ -16,14 +16,23 @@
 # rotate — and a token copied out of a log expires in minutes and names the
 # run it came from.
 #
-# WHY LATENESS IS NOT A PROBLEM
-# ─────────────────────────────
-# GitHub makes no punctuality promise: scheduled runs are queued at low
-# priority and are routinely minutes late, occasionally skipped, sometimes
-# bunched. The scanner is built for that — every run re-reads the last few
-# closed bars (SCAN_LOOKBACK_BARS, four by default = two hours on 30M) and the
-# signal id is deterministic, so a late run catches up and a repeated run
-# writes nothing twice. Missing one firing costs nothing.
+# WHAT THIS SCHEDULE ACTUALLY DELIVERS
+# ────────────────────────────────────
+# Not every 15 minutes. GitHub queues scheduled runs at low priority and drops
+# them under load, and a */15 schedule on a public repository is throttled
+# hard. Measured over the first 81 hours of real scheduling here: 12 runs, one
+# every 7.4 hours on average, the widest gap 9.4 hours.
+#
+# The cron is left at */15 because the extra firings are free whenever GitHub
+# does deliver them. What makes the gaps harmless is the SCANNER, not the
+# schedule: every run reconsiders the last SCAN_LOOKBACK_BARS closed bars —
+# 48 by default, 24 hours on 30M, sized past the worst observed gap — and the
+# signal id is deterministic, so a late run catches up and a repeated bar
+# writes nothing twice.
+#
+# If you need tighter timing than this, the schedule is the wrong lever: an
+# external cron service that actually fires on time, POSTing to the same
+# endpoint, would need nothing changed on the Vercel side except a token.
 #
 # ⚠️  GitHub disables scheduled workflows on a repository with no commits for
 #     60 days, and emails the owner first. If signals stop appearing, check

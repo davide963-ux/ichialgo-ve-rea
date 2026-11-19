@@ -82,11 +82,30 @@ export function scannerConfig(env = process.env) {
   return {
     timeframe: env.SCAN_TIMEFRAME || STRATEGY_CONFIG.scanTimeframe,
     /**
-     * How many recently-closed bars each run considers. Four 30M bars is two
-     * hours of slack, which covers a GitHub Actions schedule running late or
-     * being skipped entirely for a cycle.
+     * How many recently-closed bars each run reconsiders.
+     *
+     * SIZED FROM WHAT GITHUB ACTUALLY DELIVERS, NOT FROM THE CRON
+     * ──────────────────────────────────────────────────────────
+     * The workflow asks for a run every 15 minutes. Measured over the first
+     * 81 hours of real scheduling, GitHub delivered 12 — one every 7.4 hours
+     * on average, the widest gap 9.4 hours. Scheduled workflows are queued at
+     * low priority and dropped under load, and a once-every-15-minutes
+     * schedule on a public repository is throttled hard.
+     *
+     * The first version used four bars: two hours on 30M. Against 8-hour
+     * gaps that meant most closed bars were never looked at, so the history
+     * would have had holes through it even once the provider was fixed.
+     *
+     * 48 bars is 24 hours on 30M — comfortably past the worst observed gap,
+     * with room for GitHub getting worse. It costs NOTHING extra: the same
+     * 300 candles are already fetched (150 hours on 30M, so the window is
+     * well inside them), and the signal id is deterministic with ON CONFLICT
+     * DO NOTHING, so re-reading a bar writes nothing the second time.
+     *
+     * The limit is the candle window, not this number: a bar older than the
+     * 300 fetched cannot be recovered whatever the lookback says.
      */
-    lookbackBars: Math.max(1, Number(env.SCAN_LOOKBACK_BARS ?? 4) || 4),
+    lookbackBars: Math.max(1, Number(env.SCAN_LOOKBACK_BARS ?? 48) || 48),
     yahooRest: (env.YAHOO_REST_URL || YAHOO_REST_DEFAULT).trim(),
     /** Twelve Data: the fallback when Yahoo refuses. Keys come from the same
      *  pooled configuration the proxy uses, so there is one place to add one. */

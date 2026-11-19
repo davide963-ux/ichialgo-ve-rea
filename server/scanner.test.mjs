@@ -10,8 +10,8 @@
  */
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { resolveOpenTrade, signalRow } from './scanner.mjs';
-import { analyseEma50Touch, pipSize, ticketLevels } from './strategy.bundle.mjs';
+import { resolveOpenTrade, scannerConfig, signalRow } from './scanner.mjs';
+import { TIMEFRAME_SECONDS, analyseEma50Touch, pipSize, ticketLevels } from './strategy.bundle.mjs';
 import { backtestTouches } from '../src/services/strategy/backtest';
 
 const bar = (time, o, h, l, c) => ({ time, open: o, high: h, low: l, close: c, volume: null, complete: true });
@@ -81,6 +81,33 @@ describe('signalRow — rule 2, the entry bar can lose but cannot win', () => {
     const { entry, stop, target } = ticketLevels(s);
     const row = signalRow(s, bar(1000, entry, target + 0.001, stop - 0.001, entry), 0);
     expect(row.result).toBe('sl');
+  });
+});
+
+/**
+ * The lookback is what makes an irregular schedule harmless, so its size is a
+ * claim about reality rather than a taste: GitHub delivered this workflow's
+ * runs 7.4 hours apart on average over 81 hours, worst gap 9.4 hours. A
+ * window smaller than that leaves closed bars nobody ever looks at.
+ */
+describe('scannerConfig lookback', () => {
+  const WORST_OBSERVED_GAP_HOURS = 9.4;
+
+  it('covers the worst observed gap between scheduled runs, on the scan timeframe', () => {
+    const { lookbackBars, timeframe } = scannerConfig({});
+    const hours = (lookbackBars * TIMEFRAME_SECONDS[timeframe]) / 3600;
+    expect(hours).toBeGreaterThan(WORST_OBSERVED_GAP_HOURS);
+  });
+
+  it('stays inside the candle window, since a bar outside it cannot be recovered', () => {
+    const { lookbackBars } = scannerConfig({});
+    expect(lookbackBars).toBeLessThan(300);
+  });
+
+  it('can be overridden, and never drops below one bar', () => {
+    expect(scannerConfig({ SCAN_LOOKBACK_BARS: '12' }).lookbackBars).toBe(12);
+    expect(scannerConfig({ SCAN_LOOKBACK_BARS: '0' }).lookbackBars).toBeGreaterThanOrEqual(1);
+    expect(scannerConfig({ SCAN_LOOKBACK_BARS: 'nonsense' }).lookbackBars).toBeGreaterThanOrEqual(1);
   });
 });
 
