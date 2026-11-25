@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import type { Candle } from '../marketData/types';
 import { backtestTouches, combine, equityCurve, measure, pipsOf, type BacktestTrade } from './backtest';
 import { analyseEma50Touch } from './ema50Touch';
+import eurusd from '../../../fixtures/market/EURUSD_1H.csv?raw';
 
 const bar = (time: number, o: number, h: number, l: number, c: number): Candle => ({
   time,
@@ -19,6 +20,18 @@ const bar = (time: number, o: number, h: number, l: number, c: number): Candle =
   volume: null,
   complete: true,
 });
+
+/** "t,o,h,l,c" rows, oldest first — the fixtures' format. */
+function parseCsv(csv: string): Candle[] {
+  return csv
+    .trim()
+    .split('\n')
+    .slice(1)
+    .map((line) => {
+      const [t, o, h, l, c] = line.split(',').map(Number);
+      return { time: t!, open: o!, high: h!, low: l!, close: c!, volume: null, complete: true };
+    });
+}
 
 const trade = (over: Partial<BacktestTrade> = {}): BacktestTrade => ({
   id: 't',
@@ -319,6 +332,83 @@ describe('combine', () => {
     expect(combine([mk('USD/JPY', 100, 10), mk('GBP/JPY', 200, 10)]).mixesPipValues).toBe(false);
     // Nothing to mix.
     expect(combine([]).mixesPipValues).toBe(false);
+  });
+});
+
+/**
+ * `accept` exists so a PROPOSED entry rule can be measured through the same
+ * walk-forward as the real one. The subtlety it is there for: rejecting a
+ * touch frees the position, so a later touch the unfiltered run never saw can
+ * now be taken. Filtering a finished trade list cannot produce that, which is
+ * why rule variants have to be tested here rather than afterwards.
+ */
+describe('accept — measuring a proposed rule', () => {
+  it('runs the rule against every touch and keeps only what it allows', () => {
+    const { candles, symbol } = seriesWithTouch([]);
+    const all = backtestTouches(candles, symbol, '1H');
+    const none = backtestTouches(candles, symbol, '1H', { accept: () => false });
+    const every = backtestTouches(candles, symbol, '1H', { accept: () => true });
+
+    expect(none.trades).toEqual([]);
+    expect(none.filtered).toBe(all.touches);
+    // Accepting everything must be identical to no filter at all.
+    expect(every.trades.length).toBe(all.trades.length);
+    expect(every.metrics.totalPips).toBeCloseTo(all.metrics.totalPips, 9);
+  });
+
+  it('is applied on top of the built-in filters, not instead of them', () => {
+    const { candles, symbol } = seriesWithTouch([]);
+    const both = backtestTouches(candles, symbol, '1H', {
+      minIchimoku: 5,
+      accept: () => true,
+    });
+    const ichiOnly = backtestTouches(candles, symbol, '1H', { minIchimoku: 5 });
+    expect(both.trades.length).toBe(ichiOnly.trades.length);
+  });
+
+  /**
+   * The behaviour that makes post-hoc filtering wrong: with one position at a
+   * time, rejecting a touch lets a DIFFERENT touch trade that the unfiltered
+   * run was too busy to take. Filtering a finished trade list can only ever
+   * remove rows, so it cannot show this, and it would quietly measure the
+   * wrong strategy.
+   *
+   * Needs REAL candles: the hand-built fixture above has too few touches for
+   * any of them to be crowded out, so it cannot demonstrate this at all.
+   * Over 5000 bars of EUR/USD the detector finds far more touches than the
+   * one-position rule can trade, which is exactly the crowded case.
+   */
+  it('can open a trade the unfiltered run never took', () => {
+    const candles = parseCsv(eurusd);
+    const all = backtestTouches(candles, 'EUR/USD', '1H');
+    expect(all.touches, 'the fixture must crowd out touches').toBeGreaterThan(all.trades.length * 2);
+    const taken = new Set(all.trades.map((t) => t.id));
+
+    // Trades that hold a touch inside their window — the ones whose removal
+    // frees something. 123 of this fixture's 167 trades qualify.
+    const index = new Map(candles.map((c, i) => [c.time, i]));
+    const touches = analyseEma50Touch(candles, 'EUR/USD', '1H').signals;
+    const blockers = all.trades.filter((t) => {
+      if (t.exitTime === null) return false;
+      const from = index.get(t.entryTime)!;
+      const to = index.get(t.exitTime)!;
+      return touches.some((sig) => {
+        const i = index.get(sig.barTime)!;
+        return i > from && i <= to;
+      });
+    });
+    expect(blockers.length, 'the fixture must contain trades that block a touch').toBeGreaterThan(10);
+
+    // Removing a blocker usually admits the touch it was sitting on — but not
+    // always, because that touch may itself be a no-fill. The claim is that it
+    // CAN happen, which post-hoc filtering could never show, so it is enough
+    // that one of a handful does it. (Measured: 12 of the first 15.)
+    const admitted = blockers.slice(0, 15).filter((b) => {
+      const without = backtestTouches(candles, 'EUR/USD', '1H', { accept: (sig) => sig.id !== b.id });
+      expect(without.trades.some((t) => t.id === b.id)).toBe(false);
+      return without.trades.some((t) => !taken.has(t.id));
+    });
+    expect(admitted.length, 'freeing a position should admit touches the unfiltered run never took').toBeGreaterThan(5);
   });
 });
 

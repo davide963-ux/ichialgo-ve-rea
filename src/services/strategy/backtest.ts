@@ -128,6 +128,17 @@ export interface BacktestFilters {
   minIchimoku?: number;
   /** Skip touches against the EMA's own trend. */
   skipCounterTrend?: boolean;
+  /**
+   * An arbitrary extra rule, applied after the two above.
+   *
+   * Exists so a proposed entry rule can be measured through the SAME
+   * walk-forward — with the same fill rule, the same one-position-at-a-time
+   * accounting and the same pessimistic exits — instead of by filtering the
+   * finished trade list. Those are not the same thing: rejecting a trade
+   * frees the position for a later touch that the unfiltered run never took,
+   * so post-hoc filtering answers a question nobody asked.
+   */
+  accept?: (signal: TouchSignal) => boolean;
 }
 
 export interface BacktestMetrics {
@@ -240,6 +251,7 @@ const passesFilters = (s: TouchSignal, f: BacktestFilters): boolean => {
   if (f.skipCounterTrend && s.counterTrend) return false;
   const min = f.minIchimoku ?? 0;
   if (min > 0 && (s.ichimoku?.score ?? 0) < min) return false;
+  if (f.accept && !f.accept(s)) return false;
   return true;
 };
 
