@@ -23,9 +23,11 @@ import { backtest, combine, type BacktestFilters, type BacktestResult } from '..
  * Every pair with a checked-in fixture, and how to fetch it.
  *
  * This is the set of candles that EXIST, not the set the backtest runs. The
- * two are different, and conflating them is what put GBP/JPY in the results:
- * these CSVs were downloaded for an earlier strategy, and nobody kept them in
- * step with config/pairs.ts afterwards.
+ * two are different, and conflating them once put a pair in the results that
+ * the scanner does not trade: these CSVs were downloaded for an earlier
+ * strategy and nobody kept them in step with config/pairs.ts afterwards.
+ * They are the same set today, and UNUSED_FIXTURES below exists to say so
+ * out loud if they ever diverge again.
  */
 const FIXTURES: Record<string, () => Promise<{ default: string }>> = {
   'EUR/USD': () => import('../../fixtures/market/EURUSD_1H.csv?raw'),
@@ -33,7 +35,6 @@ const FIXTURES: Record<string, () => Promise<{ default: string }>> = {
   'USD/JPY': () => import('../../fixtures/market/USDJPY_1H.csv?raw'),
   'AUD/USD': () => import('../../fixtures/market/AUDUSD_1H.csv?raw'),
   'USD/CAD': () => import('../../fixtures/market/USDCAD_1H.csv?raw'),
-  'GBP/JPY': () => import('../../fixtures/market/GBPJPY_1H.csv?raw'),
 };
 
 /**

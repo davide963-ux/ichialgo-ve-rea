@@ -352,7 +352,7 @@ describe('combine', () => {
   it('flags a selection that mixes JPY and non-JPY pips, and leaves a single-unit one unflagged', () => {
     expect(combine([result(SYMBOL, 100, 10), result('GBP/USD', 200, 10)]).mixesPipValues).toBe(false);
     expect(combine([result(SYMBOL, 100, 10), result('USD/JPY', 200, 10)]).mixesPipValues).toBe(true);
-    expect(combine([result('USD/JPY', 100, 10), result('GBP/JPY', 200, 10)]).mixesPipValues).toBe(false);
+    expect(combine([result('USD/JPY', 100, 10), result('EUR/JPY', 200, 10)]).mixesPipValues).toBe(false);
     // Nothing to mix.
     expect(combine([]).mixesPipValues).toBe(false);
   });

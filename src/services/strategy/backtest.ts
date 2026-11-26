@@ -47,9 +47,9 @@
  *     version rather than a kinder one. Entry used to be a resting limit at
  *     the EMA, which meant deciding whether each touch bar had actually
  *     reached the line: a third of them had not, and filling them anyway was
- *     worth +0.23R a trade of pure fiction (on GBP/JPY the fillable trades
- *     totalled −9R while the unfillable ones "made" +34R, with entries up to
- *     4.8 pips better than the bar's own extreme). A market order at the
+ *     worth +0.23R a trade of pure fiction (on the worst pair the fillable
+ *     trades totalled −9R while the unfillable ones "made" +34R, with
+ *     entries up to 4.8 pips better than the bar's own extreme). A market order at the
  *     close cannot be flattered that way, because the close is in the bar.
  *
  *  2. THE TRADE IS LIVE FROM THE NEXT BAR. Nothing about the signal bar can

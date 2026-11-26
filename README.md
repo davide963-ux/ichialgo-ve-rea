@@ -274,7 +274,7 @@ src/
     backtest.ts              walk-forward replay: exits, pips, metrics, intervals
     serverEntry.ts           what esbuild bundles for the scanner — one implementation
     ichimokuSystem.test.ts   the RULES, condition by condition, vs the article
-    realData.test.ts         breadth + integration over 30,000 real bars
+    realData.test.ts         breadth + integration over 25,000 real bars
   state/signalStore.ts       the signal log (useSyncExternalStore)
   state/marketStore.ts       immutable external store (useSyncExternalStore)
   state/accountStore.ts      balance + risk %, persisted; shared by plans and calculator
@@ -545,7 +545,7 @@ Two files, deliberately split:
   break a *transition* rather than a trending state, each stop on the correct
   structure. Plus the purity test over every strategy file.
 - **`realData.test.ts`** tests **breadth and integration**: the same detector
-  over all six fixtures, both entries firing on every pair, stops sized like
+  over all five fixtures, both entries firing on every pair, stops sized like
   real price distances (the check that catches a pip size applied to the wrong
   quote currency, which on a yen cross is a factor of 100), and the
   backtest's causality on top of the detector's.
@@ -571,36 +571,38 @@ detector and the same `ticketLevels()` the live trade-plan card shows.
 The first rule is the honest version rather than a kinder one. Entry used to be
 a resting limit at an EMA, which meant deciding whether each touch bar had
 actually reached the line: a third had not, and filling them anyway was worth
-**+0.23R a trade across 1105 trades** of pure fiction (on GBP/JPY the fillable
-trades totalled −9R while the unfillable ones "made" +34R, with entries up to
-4.8 pips better than the bar's own extreme). A market order at the close
+**+0.23R a trade across 1105 trades** of pure fiction (on the worst pair the
+fillable trades totalled −9R while the unfillable ones "made" +34R, with
+entries up to 4.8 pips better than the bar's own extreme). A market order at the close
 cannot be flattered that way.
 
 Signal count and trade count are far apart, and the page says so: **one
 position at a time**, so most signals are crowded out by a trade already
-running. Across six pairs, 4344 signals produce 466 trades — 89% crowded out,
-because structural stops are wide and a 2:1 target on a 46-pip stop takes a
-long time to resolve.
+running. Across the five pairs, 3646 signals produce 407 trades — 89% crowded
+out, because structural stops are wide and a 2:1 target on a 43-pip stop takes
+a long time to resolve.
 
 ### What it says, at 1 pip of cost
 
-Six pairs, 5000 1H bars each, 3 Dec 2025 – 23 Sep 2026. **These numbers are
-all new**: structural stops replaced range-sized ones, which changes every
-trade in the book.
+The five traded pairs, 5000 1H bars each, 3 Dec 2025 – 23 Sep 2026. **These
+numbers are all new**: structural stops replaced range-sized ones, which
+changes every trade in the book.
 
 | Entry | Trades | Win | Average | 95% interval | Avg stop |
 |---|---|---|---|---|---|
-| Pullback | 252 | 29.8% | −4.42 pips | −14.17 … +5.33 | 44.0 pips |
-| Kumo breakout | 209 | 34.0% | −10.23 pips | −20.76 … +0.30 | 48.6 pips |
-| **Both (live)** | **461** | **31.7%** | **−7.05 pips** | **−14.21 … +0.10** | **46.1 pips** |
+| Pullback | 224 | 29.9% | −3.20 pips | −12.89 … +6.49 | 40.6 pips |
+| Kumo breakout | 183 | 35.0% | −7.53 pips | −17.73 … +2.68 | 44.9 pips |
+| **Both (live)** | **407** | **32.2%** | **−5.15 pips** | **−12.17 … +1.88** | **42.5 pips** |
 
-A 2:1 target needs **33.3%** to break even. It gets 31.7%.
+A 2:1 target needs **33.3%** to break even. It gets 32.2%.
 
-These are all **six** checked-in fixtures. `/backtest` offers only the **five**
-pairs the app actually trades — GBP/JPY has candles but is not in the scanner's
-list — and on those five it reads **−5.15 pips over 407 trades**. The two do
-not disagree: GBP/JPY is the worst pair in the set at −21.4 pips a trade, and
-including it is the more conservative figure, which is why this table does.
+Every fixture is a pair the scanner trades, so this table and `/backtest`
+report the same thing. That was not true until recently: a GBP/JPY fixture
+left over from an earlier strategy sat in the directory, and because the
+page's pair list came from the directory rather than from `config/pairs.ts`,
+it was published alongside pairs that are actually traded. It has been
+deleted and `useBacktest.test.ts` now fails if a fixture and the scanner's
+list ever diverge again.
 
 The interval still spans zero, so this is not a proof of a losing strategy
 either — but the point estimate is a loss, and unlike the previous version of
@@ -608,11 +610,11 @@ this section it does not improve under scrutiny:
 
 | Period | Trades | Win | Average |
 |---|---|---|---|
-| First half | 323 | 31.9% | −6.95 pips |
-| Second half | 138 | 31.2% | −7.29 pips |
+| First half | 280 | 32.1% | −5.73 pips |
+| Second half | 127 | 32.3% | −3.85 pips |
 
 **The sign holds in both halves.** The earlier strategy's "good on easy data"
-pattern is absent here; both periods lose about the same.
+pattern is absent here; both periods lose, and the win rate barely moves.
 
 #### Is it the entries or our exit?
 
@@ -623,18 +625,21 @@ nothing is crowded out.
 
 | Entry | n | 1 bar | 4 bars | 12 bars | 26 bars | 52 bars | 104 bars |
 |---|---|---|---|---|---|---|---|
-| Pullback | 3337 | +0.12 | +0.29 | −0.30 | −1.17 | −0.01 | +0.41 |
-| Kumo breakout | 1005 | −0.35 | +0.08 | −0.32 | −0.21 | −4.83 | −8.72 |
+| Pullback | 2815 | +0.06 | +0.05 | −0.20 | −0.73 | −0.14 | +0.56 |
+| Kumo breakout | 831 | −0.03 | +0.33 | −0.30 | +1.18 | −2.97 | −4.15 |
 
-At 4 bars the pullback's 95% interval is **[−0.53, +1.10] pips** and the
-breakout's **[−1.50, +1.66]**. Both are indistinguishable from zero, and the
-upper bound on the better of them is roughly one spread.
+At 4 bars the pullback's 95% interval is **[−0.73, +0.83] pips** and the
+breakout's **[−1.31, +1.96]**. Both are indistinguishable from zero, and the
+upper bound on the better of them is roughly one spread. The breakout's
+positive 26-bar figure is inside an interval that spans zero several times
+over; it decays to −4.15 by 104 bars, which is the shape of an entry taken
+after the move rather than before it.
 
 **So it is not the exit.** The entries carry no detectable directional edge on
 this data, and no stop or target can manufacture one. Sweeping the reward
-multiple confirms it — the edge over break-even is within ±0.5 points at
-R=0.5, 1 and 1.5, and negative at 2, 3 and 5 — and sweeping the stop buffer
-only makes it worse as stops widen.
+multiple confirms it — the edge over break-even is under a point at R=0.5, 1
+and 1.5 (+0.4, +0.6, +0.6) and negative at 2, 3 and 5 — and sweeping the stop
+buffer only makes it worse as stops widen.
 
 **None of this says OANDA's rules are bad.** It says that on 1H majors over
 nine months, implemented as faithfully as I can read the article, they did not
@@ -652,7 +657,7 @@ contradicts the pure-Ichimoku rule and would fail the purity test.
   for the timeframe actually traded.
 - **One period.** Dec 2025 – Sep 2026 is nine months of one regime.
 - **The pairs are correlated.** EUR/USD, GBP/USD and AUD/USD are largely the
-  same dollar trade, so 461 trades are worth fewer than 461 independent
+  same dollar trade, so 407 trades are worth fewer than 407 independent
   observations and the interval is narrower than it should be.
 - **89% of signals are crowded out**, so the walk-forward measures a thin
   slice of the rule. The forward-return table above is the wider test, and it

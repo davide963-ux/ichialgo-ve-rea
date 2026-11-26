@@ -18,7 +18,6 @@
 import { describe, expect, it } from 'vitest';
 import audusd from '../../../fixtures/market/AUDUSD_1H.csv?raw';
 import eurusd from '../../../fixtures/market/EURUSD_1H.csv?raw';
-import gbpjpy from '../../../fixtures/market/GBPJPY_1H.csv?raw';
 import gbpusd from '../../../fixtures/market/GBPUSD_1H.csv?raw';
 import usdcad from '../../../fixtures/market/USDCAD_1H.csv?raw';
 import usdjpy from '../../../fixtures/market/USDJPY_1H.csv?raw';
@@ -37,7 +36,6 @@ const PAIRS = [
   [usdjpy, 'USD/JPY'],
   [audusd, 'AUD/USD'],
   [usdcad, 'USD/CAD'],
-  [gbpjpy, 'GBP/JPY'],
 ] as const;
 
 /** "t,o,h,l,c" rows, one per bar, oldest first. */
@@ -52,7 +50,13 @@ function loadCandles(csv: string): Candle[] {
     });
 }
 
-describe('the system on real OANDA candles, every pair', () => {
+/**
+ * Every fixture here is a pair the scanner actually trades. That is not a
+ * coincidence to rely on: `useBacktest.test.ts` asserts the two lists match,
+ * because a fixture for an untraded pair once reached the published results
+ * and made the strategy look worse than the thing being run.
+ */
+describe('the system on real OANDA candles, every traded pair', () => {
   for (const [csv, symbol] of PAIRS) {
     describe(symbol, () => {
       const candles = loadCandles(csv);
