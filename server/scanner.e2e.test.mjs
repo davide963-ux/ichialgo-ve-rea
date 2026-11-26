@@ -147,7 +147,14 @@ run('runScan end to end', () => {
     expect(out.ok).toBe(true);
     expect(out.errors).toEqual([]);
     expect(out.scanned).toBe(1);
-    expect(out.recorded).toBeGreaterThan(10);
+    /**
+     * A handful, not a heap. This bound used to be 10 and the scanner
+     * comfortably cleared it by writing every signal in its window as a
+     * separate open trade — which is the bug one-trade-per-pair fixed. A
+     * 300-bar window now yields single figures, because the pair is silent
+     * between a signal and its stop or target.
+     */
+    expect(out.recorded).toBeGreaterThan(2);
 
     const rows = await recentSignals({ limit: 1000 }, env);
     expect(rows.length).toBe(out.recorded);
@@ -228,7 +235,7 @@ run('runScan end to end', () => {
     const first = await runScan({ env });
     const second = await runScan({ env });
 
-    expect(first.recorded).toBeGreaterThan(10);
+    expect(first.recorded).toBeGreaterThan(2);
     expect(second.recorded).toBe(0);
     expect((await recentSignals({ limit: 1000 }, env)).length).toBe(first.recorded);
   });

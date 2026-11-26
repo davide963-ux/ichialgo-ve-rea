@@ -280,20 +280,27 @@ describe('the scanner and the backtest reach the same verdict', () => {
   });
 
   /**
-   * The scanner records EVERY recent signal; the backtest trades one position
-   * at a time. So the scanner is a superset, and the thing worth pinning is
-   * that it never DROPS one the backtest took — the old version of this test
-   * pinned the mirror image (that both refused the same fills), which no
-   * longer exists now that every signal fills.
+   * The scanner and the backtest now see the SAME trades, exactly.
+   *
+   * This test used to assert a superset: the scanner recorded every signal in
+   * its window while the backtest traded one position at a time, so the
+   * stored history was always larger than the measured result. That gap was
+   * not a design, it was a bug — one pair could hold eight simultaneous open
+   * trades in the database while the backtest reported one, and the two were
+   * measuring different strategies with nothing saying which was right.
+   *
+   * One trade per pair now lives in the detector, so both sides inherit it
+   * and the sets are identical. Equality is a far stronger property than
+   * containment, and it is the one that makes the stored history and the
+   * published backtest comparable at all.
    */
-  it('records every signal the backtest traded, and more besides', () => {
+  it('records exactly the trades the backtest takes — no more, no fewer', () => {
     const bt = backtest(candles, 'EUR/USD', '1H', { costPips: 0 });
     const { signals } = analyseIchimoku(candles, 'EUR/USD', '1H');
-    const recorded = new Set(signals.map((s) => signalRow(s, 0)).filter(Boolean).map((r) => r.id));
+    const recorded = signals.map((s) => signalRow(s, 0)).filter(Boolean).map((r) => r.id);
 
-    for (const t of bt.trades) {
-      expect(recorded.has(t.id), `${t.id} was traded but would not be recorded`).toBe(true);
-    }
-    expect(recorded.size, 'the scanner must record more than the backtest trades').toBeGreaterThan(bt.trades.length);
+    expect(bt.trades.length, 'the fixture must produce trades').toBeGreaterThan(20);
+    expect([...recorded].sort()).toEqual(bt.trades.map((t) => t.id).sort());
+    expect(bt.skippedWhileOpen, 'nothing should be crowded out any more').toBe(0);
   });
 });

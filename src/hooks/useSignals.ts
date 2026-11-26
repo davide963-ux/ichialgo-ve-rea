@@ -45,8 +45,10 @@ function startOfToday(now: number): number {
 }
 
 export interface SignalSummary {
-  /** Pairs sitting in the Kijun band right now, with a trend to trade. */
+  /** Pairs with a part-formed setup, waiting on the event that completes it. */
   active: number;
+  /** Pairs holding a trade, and therefore silent until it stops out or targets. */
+  inTrade: number;
   /** Signals detected since local midnight. */
   today: number;
   /** Most recent signal, whatever its age. */
@@ -66,8 +68,15 @@ export function useSignalSummary(): SignalSummary {
      * this counts `pending` rather than "price is somewhere near a line".
      */
     const active = Object.values(levels).filter((l) => l.pending !== null && l.updatedAt >= cutoff).length;
+    /**
+     * Pairs holding a trade, which is now the commonest reason one is quiet.
+     * Without this the dashboard shows a pair with no setup and no signal and
+     * gives no hint that it is quiet on purpose.
+     */
+    const inTrade = Object.values(levels).filter((l) => l.openTrade !== null && l.updatedAt >= cutoff).length;
     return {
       active,
+      inTrade,
       today: signals.filter((s) => signalTimeMs(s) >= dayStart).length,
       latest: signals[0] ?? null,
     };

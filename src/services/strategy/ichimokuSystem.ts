@@ -68,7 +68,7 @@ import type { Timeframe } from '../../config/timeframes';
 import type { IchimokuSeries } from '../../lib/indicators';
 import type { Candle } from '../marketData';
 import { bearishCandle, bullishCandle, ichimokuContext, minBarsFor, px, rangeOver, type BarFacts } from './ichimokuBars';
-import { buildSignal, signalId, signalTimeMs } from './signalTicket';
+import { buildSignal, resolveBar, signalId, signalTimeMs } from './signalTicket';
 import type { Direction, IchimokuLevel, IchimokuSignal, SignalCheck } from './types';
 
 export const STRATEGY = 'ichimoku' as const;
@@ -150,6 +150,40 @@ function stopFor(f: BarFacts, entry: EntryType, long: boolean, config: IchimokuC
   return { stop: long ? level - buffer : level + buffer, level };
 }
 
+/**
+ * A position this pair is holding, and the reason it stays quiet.
+ *
+ * ONE TRADE PER PAIR, AND THE DETECTOR IS WHERE THAT LIVES
+ * ───────────────────────────────────────────────────────
+ * A signal is an instruction to open a trade. While that trade is running,
+ * another signal on the same pair is not a second opportunity — it is the
+ * same money, already committed. So the pair goes quiet from the moment a
+ * signal fires until price touches its stop or its target.
+ *
+ * This belongs HERE rather than in each consumer, and that is the whole
+ * point. The backtest enforced it (`skippedWhileOpen`) and the live scanner
+ * did not: it wrote every signal in its lookback window as a separate open
+ * trade, so one pair could hold eight at once. The two then measured
+ * different strategies — the backtest reporting one trade where the stored
+ * history reported eight — and nothing in the code said which was right.
+ * With the rule inside the detector, every caller gets it by construction:
+ * the backtest, the live engine in the browser, and the scanner that writes
+ * the database all run this same function.
+ *
+ * It costs signal volume, and a lot of it: around 89% of what the raw rules
+ * produced was a signal the account could not have acted on.
+ */
+interface OpenPosition {
+  direction: Direction;
+  entry: number;
+  stop: number;
+  target: number;
+  /** Bar index of the fill, so the entry bar itself cannot close the trade. */
+  at: number;
+  barTime: number;
+  kind: EntryType;
+}
+
 /** What the detector is waiting for between the two bars of a setup. */
 interface Pending {
   kind: EntryType;
@@ -159,6 +193,63 @@ interface Pending {
   price: number;
   line?: 'tenkan' | 'kijun';
   cloudPips?: number;
+}
+
+/**
+ * The pair's current state, as the dashboard and the pair page read it.
+ *
+ * Built in two places — a bar the detector worked through, and a bar it
+ * skipped because a trade was running — so it is a function rather than a
+ * literal. The two differ only in what is passed for `pending` and
+ * `position`, and a pair cannot be both: a setup is what you have before a
+ * trade, a position is what you have after it.
+ */
+function levelAt(
+  f: BarFacts,
+  symbol: string,
+  timeframe: Timeframe,
+  detectedAt: number,
+  clear: boolean,
+  long: boolean,
+  pending: Pending | null,
+  position: OpenPosition | null,
+): IchimokuLevel {
+  return {
+    symbol,
+    timeframe,
+    kijun: f.kijun,
+    tenkan: f.tenkan,
+    band: f.tenkan === null ? Math.abs(f.senkouA - f.senkouB) : Math.abs(f.tenkan - f.kijun),
+    range: f.range,
+    direction: clear ? (long ? 'LONG' : 'SHORT') : null,
+    side: f.side,
+    // Armed means "able to take a setup": not already in one, and not
+    // already in a trade.
+    armed: pending === null && position === null,
+    pending: pending?.kind ?? null,
+    inBand: pending !== null,
+    openTrade: position
+      ? {
+          direction: position.direction,
+          entryType: position.kind,
+          entry: position.entry,
+          stop: position.stop,
+          target: position.target,
+          barTime: position.barTime,
+        }
+      : null,
+    barTime: f.bar.time,
+    updatedAt: detectedAt,
+    senkouA: f.senkouA,
+    senkouB: f.senkouB,
+    senkouAheadA: f.aheadA,
+    senkouAheadB: f.aheadB,
+    cloudBullish: f.cloudBullish,
+    tenkanAgrees: f.tenkan === null ? false : long ? f.tenkan > f.kijun : f.tenkan < f.kijun,
+    backHigh: f.back?.high ?? null,
+    backLow: f.back?.low ?? null,
+    backClose: f.back?.close ?? null,
+  };
 }
 
 export function analyseIchimoku(
@@ -176,15 +267,27 @@ export function analyseIchimoku(
 
   const signals: IchimokuSignal[] = [];
   let pending: Pending | null = null;
+  let position: OpenPosition | null = null;
   let prevSide: BarFacts['side'] | null = null;
   let level: IchimokuLevel | null = null;
 
-  const emit = (f: BarFacts, kind: EntryType, direction: Direction, checks: SignalCheck[]) => {
+  /**
+   * Record the signal and return the position it opens, or null if the
+   * ticket is unusable.
+   *
+   * It RETURNS the position rather than assigning it, so the one place a
+   * pair becomes committed is visible at the call site. (TypeScript also
+   * cannot narrow a variable written only inside a closure, so the hidden
+   * version made `position` read as `never` further down — a good sign that
+   * the side effect was in the wrong place.)
+   */
+  const emit = (f: BarFacts, kind: EntryType, direction: Direction, checks: SignalCheck[]): OpenPosition | null => {
     const long = direction === 'LONG';
     const { stop, level: stopLevel } = stopFor(f, kind, long, config);
     const entry = f.bar.close;
     const risk = Math.abs(entry - stop);
-    if (risk <= 0) return false;
+    if (risk <= 0) return null;
+    const target = long ? entry + risk * config.rewardMultiple : entry - risk * config.rewardMultiple;
 
     signals.push(
       buildSignal(
@@ -199,10 +302,11 @@ export function analyseIchimoku(
           entry,
           checks,
         },
-        { stop, target: long ? entry + risk * config.rewardMultiple : entry - risk * config.rewardMultiple, stopLevel, entryType: kind },
+        { stop, target, stopLevel, entryType: kind },
       ),
     );
-    return true;
+    // The pair is now committed, and stays that way until price decides.
+    return { direction, entry, stop, target, at: f.i, barTime: f.bar.time, kind };
   };
 
   for (let i = 1; i < candles.length; i++) {
@@ -215,6 +319,34 @@ export function analyseIchimoku(
     const long = f.side === 'above';
     const short = f.side === 'below';
     const clear = long || short;
+
+    // ── a position in progress holds the pair ────────────────────────────
+    // Checked before anything else, because while a trade is running there
+    // is nothing to arm and nothing to confirm: the next thing that happens
+    // on this pair is its stop or its target.
+    if (position) {
+      // The fill was at the entry bar's CLOSE, so everything that bar did is
+      // already behind the position — letting it resolve the trade would be
+      // deciding it against a bar it never held.
+      if (i > position.at) {
+        const { exit } = resolveBar(f.bar, position.direction, position.stop, position.target);
+        if (exit !== null) position = null;
+      }
+
+      if (position) {
+        /**
+         * prevSide is updated even though this bar is skipped, and that is
+         * load-bearing. Leaving it stale would make the first bar after the
+         * exit compare against the cloud side from BEFORE the trade, and a
+         * pair that crossed the cloud mid-trade would then report a "break"
+         * on a bar where nothing crossed. The break happened while we were
+         * committed elsewhere; it is not ours to take afterwards.
+         */
+        prevSide = f.side;
+        if (last) level = levelAt(f, symbol, timeframe, detectedAt, clear, long, null, position);
+        continue;
+      }
+    }
 
     // ── a cloud break ARMS the breakout setup ────────────────────────────
     // A break is a TRANSITION. Price that has been above the cloud for fifty
@@ -240,32 +372,7 @@ export function analyseIchimoku(
       else if (pending.kind === 'pullback' && !pullbackSetupHolds(f, wantLong)) pending = null;
     }
 
-    if (last) {
-      level = {
-        symbol,
-        timeframe,
-        kijun: f.kijun,
-        tenkan: f.tenkan,
-        band: f.tenkan === null ? Math.abs(f.senkouA - f.senkouB) : Math.abs(f.tenkan - f.kijun),
-        range: f.range,
-        direction: clear ? (long ? 'LONG' : 'SHORT') : null,
-        side: f.side,
-        armed: pending === null,
-        pending: pending?.kind ?? null,
-        inBand: pending !== null,
-        barTime: f.bar.time,
-        updatedAt: detectedAt,
-        senkouA: f.senkouA,
-        senkouB: f.senkouB,
-        senkouAheadA: f.aheadA,
-        senkouAheadB: f.aheadB,
-        cloudBullish: f.cloudBullish,
-        tenkanAgrees: f.tenkan === null ? false : long ? f.tenkan > f.kijun : f.tenkan < f.kijun,
-        backHigh: f.back?.high ?? null,
-        backLow: f.back?.low ?? null,
-        backClose: f.back?.close ?? null,
-      };
-    }
+    if (last) level = levelAt(f, symbol, timeframe, detectedAt, clear, long, pending, position);
 
     if (!clear) continue; // inside the cloud: no trend either to start or resume
     const direction: Direction = long ? 'LONG' : 'SHORT';
@@ -279,7 +386,7 @@ export function analyseIchimoku(
       const twist = twisted(f, long);
       if (twist === true && (chikou === true)) {
         const bars = i - pending.at;
-        const emitted = emit(f, 'breakout', direction, [
+        const opened = emit(f, 'breakout', direction, [
           {
             label: `Price broke ${long ? 'above' : 'below'} the Cloud`,
             pass: true,
@@ -311,7 +418,8 @@ export function analyseIchimoku(
             required: false,
           },
         ]);
-        if (emitted) {
+        if (opened) {
+          position = opened;
           pending = null;
           continue;
         }
@@ -327,7 +435,7 @@ export function analyseIchimoku(
 
         if (closedThrough && candleAgrees && chikouOk) {
           const bars = i - pending.at;
-          const emitted = emit(f, 'pullback', direction, [
+            const opened = emit(f, 'pullback', direction, [
             {
               label: `Price ${long ? 'above' : 'below'} the Cloud`,
               pass: true,
@@ -362,7 +470,8 @@ export function analyseIchimoku(
               required: config.chikouFiltersPullback,
             },
           ]);
-          if (emitted) {
+          if (opened) {
+            position = opened;
             pending = null;
             continue;
           }

@@ -167,6 +167,21 @@ export interface IchimokuLevel {
   armed: boolean;
   /** What the pair is waiting for, if anything. */
   pending: EntryType | null;
+
+  /**
+   * The trade this pair is holding, or null when it is free to take one.
+   *
+   * While it is set the detector reports no new signals for this pair: the
+   * next thing that happens here is a stop or a target, not another entry.
+   */
+  openTrade: {
+    direction: Direction;
+    entryType: EntryType;
+    entry: number;
+    stop: number;
+    target: number;
+    barTime: number;
+  } | null;
   /**
    * Price is in the trigger zone right now.
    *

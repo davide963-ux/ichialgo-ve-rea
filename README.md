@@ -406,7 +406,9 @@ compiled module* (`src/services/strategy/serverEntry.ts`).
 
 ```mermaid
 flowchart TD
-    C["candles the chart already has<br/>(no extra request)"] --> I["Ichimoku: Tenkan, Kijun, Kumo,<br/>Chikou, the cloud 26 ahead"]
+    C["candles the chart already has<br/>(no extra request)"] --> HOLD{"is a trade<br/>already running<br/>on this pair?"}
+    HOLD -- "yes, and this bar<br/>did not reach its<br/>stop or target" --> Q["silent: no arming,<br/>no signal"]
+    HOLD -- "no, or it just resolved" --> I["Ichimoku: Tenkan, Kijun, Kumo,<br/>Chikou, the cloud 26 ahead"]
     I --> K{"where did<br/>the close land?"}
     K -- "inside the Kumo" --> W["no trade: no trend to join"]
     K -- "crossed out of it<br/>this bar" --> ARM["arm a BREAKOUT<br/>(waiting for the span twist)"]
@@ -422,6 +424,7 @@ flowchart TD
     CH2 -- yes --> SP["PULLBACK signal<br/>stop just beyond Kijun"]
     SB --> T["ticket: entry at the close,<br/>target 2× the risk"]
     SP --> T
+    T --> HOLD
 ```
 
 ### What decides what
@@ -434,8 +437,50 @@ flowchart TD
 | **Filter on both** | Chikou against the close 26 bars back |
 | **Stop** | the structure the entry is based on: Kijun, or the far cloud edge |
 | **Target** | 2× the risk — **ours**, the article names none |
+| **Then silence** | one trade per pair: no further signal here until that trade's stop or target |
 
-One position per pair, so the two entries do not stack.
+### One trade per pair, and why it lives in the detector
+
+A signal is an instruction to open a trade. While that trade is running,
+another signal on the same pair is not a second opportunity — it is the same
+money, already committed. So the pair goes **silent** from the bar a signal
+fires until price touches its stop or its target: no arming, no confirming,
+no signal.
+
+**This was a real bug, not a refinement.** The backtest enforced it and the
+live scanner did not. The scanner wrote every signal in its lookback window
+as a separate open trade, so one pair could be holding eight at once in the
+stored history while the backtest reported one. Two systems, two answers, and
+nothing in the code saying which was the strategy — the exact failure this
+project already had scar tissue about from the days when the page computed
+one thing and the server another.
+
+It now lives inside `analyseIchimoku`, so every caller inherits it: the
+browser engine, the backtest, and the scanner that writes the database all
+run that same function. `backtest()` still counts `skippedWhileOpen` and the
+page still shows the column, but it is now a **cross-check** rather than a
+mechanism — it should read zero, and a non-zero value means the detector and
+the harness have drifted apart.
+
+What it costs is signal volume, and a great deal of it: the raw rules
+produced 3646 signals across the five pairs and only 430 of them were ones
+the account could have acted on. **The other 88% were never tradeable**, and
+every published figure that counted them was describing a strategy nobody
+could run.
+
+Two consequences worth knowing:
+
+- **No setting is a filter any more.** Every rule that changes *which*
+  signals fire also changes *when* the pair is occupied, and an occupied pair
+  is silent. Tightening the confirmation window to one bar removes four
+  signals and adds eight. The tests assert that both happen rather than
+  pretending a direction.
+- **`accept` in the backtest is now post-hoc.** It was built to measure a
+  proposed entry rule by freeing the position when it rejected a signal;
+  occupancy is decided in the detector now, so rejecting one removes a row
+  and frees nothing. Measuring a proposed rule means `config`, which re-runs
+  the detector. The field is documented as a subsetting tool and the tests
+  pin that it can only ever remove.
 
 ### The two entries, in the article's words
 
@@ -576,11 +621,15 @@ fillable trades totalled −9R while the unfillable ones "made" +34R, with
 entries up to 4.8 pips better than the bar's own extreme). A market order at the close
 cannot be flattered that way.
 
-Signal count and trade count are far apart, and the page says so: **one
-position at a time**, so most signals are crowded out by a trade already
-running. Across the five pairs, 3646 signals produce 407 trades — 89% crowded
-out, because structural stops are wide and a 2:1 target on a 43-pip stop takes
-a long time to resolve.
+Signal count and trade count are now **the same number**, and that is the
+point of the change described above: the detector only reports a signal the
+pair was free to take. 434 signals, 434 trades, nothing crowded out and
+nothing filtered. The `SKIPPED` column on the page is a cross-check that
+should read zero.
+
+Of those 434, **430 resolved** inside the data and 4 were still running when
+it ended. The results table below counts the 430: an open trade has no result
+to report, and assuming one either way is how a losing run gets hidden.
 
 ### What it says, at 1 pip of cost
 
@@ -590,11 +639,22 @@ changes every trade in the book.
 
 | Entry | Trades | Win | Average | 95% interval | Avg stop |
 |---|---|---|---|---|---|
-| Pullback | 224 | 29.9% | −3.20 pips | −12.89 … +6.49 | 40.6 pips |
-| Kumo breakout | 183 | 35.0% | −7.53 pips | −17.73 … +2.68 | 44.9 pips |
-| **Both (live)** | **407** | **32.2%** | **−5.15 pips** | **−12.17 … +1.88** | **42.5 pips** |
+| Pullback | 243 | 34.2% | −0.67 pips | −9.65 … +8.31 | 39.3 pips |
+| Kumo breakout | 187 | 31.0% | **−13.13 pips** | **−22.35 … −3.91** | 43.1 pips |
+| **Both (live)** | **430** | **32.8%** | **−6.09 pips** | **−12.57 … +0.40** | **40.9 pips** |
 
-A 2:1 target needs **33.3%** to break even. It gets 32.2%.
+A 2:1 target needs **33.3%** to break even. The system as a whole gets 32.8%.
+
+**The breakout's interval does not contain zero.** That is the first
+statistically significant result this project has produced, and it only
+became visible once the un-actionable signals were removed: on 187 trades the
+Kumo breakout loses 13.1 pips each, with an interval from −22.4 to −3.9. The
+pullback over the same period is roughly break-even — it clears the required
+win rate (34.2% against 33.3%) and still gives up two thirds of a pip a trade
+to costs.
+
+So the combined figure is not one weak edge. It is a flat entry and a losing
+one, averaged together.
 
 Every fixture is a pair the scanner trades, so this table and `/backtest`
 report the same thing. That was not true until recently: a GBP/JPY fixture
@@ -610,8 +670,8 @@ this section it does not improve under scrutiny:
 
 | Period | Trades | Win | Average |
 |---|---|---|---|
-| First half | 280 | 32.1% | −5.73 pips |
-| Second half | 127 | 32.3% | −3.85 pips |
+| First half | 280 | 33.6% | −5.57 pips |
+| Second half | 150 | 31.3% | −7.05 pips |
 
 **The sign holds in both halves.** The earlier strategy's "good on easy data"
 pattern is absent here; both periods lose, and the win rate barely moves.
@@ -619,27 +679,32 @@ pattern is absent here; both periods lose, and the win rate barely moves.
 #### Is it the entries or our exit?
 
 Worth separating, because the exit is entirely ours and could be the whole
-problem. So: forward return after every signal, with **no stop, no target and
-no crowding** — the article's rules on their own, 7× the sample because
-nothing is crowded out.
+problem. So: forward return after every signal, with **no stop and no
+target** — where price actually went, with the exit rules taken away.
 
 | Entry | n | 1 bar | 4 bars | 12 bars | 26 bars | 52 bars | 104 bars |
 |---|---|---|---|---|---|---|---|
-| Pullback | 2815 | +0.06 | +0.05 | −0.20 | −0.73 | −0.14 | +0.56 |
-| Kumo breakout | 831 | −0.03 | +0.33 | −0.30 | +1.18 | −2.97 | −4.15 |
+| Pullback | 243 | +0.28 | −0.51 | −3.79 | +1.54 | +1.44 | **+5.91** |
+| Kumo breakout | 187 | −0.94 | −3.18 | −3.66 | −3.15 | −5.41 | **−11.51** |
 
-At 4 bars the pullback's 95% interval is **[−0.73, +0.83] pips** and the
-breakout's **[−1.31, +1.96]**. Both are indistinguishable from zero, and the
-upper bound on the better of them is roughly one spread. The breakout's
-positive 26-bar figure is inside an interval that spans zero several times
-over; it decays to −4.15 by 104 bars, which is the shape of an entry taken
-after the move rather than before it.
+**Read this with the sample size in mind.** It used to run on thousands of
+observations, because the detector emitted every signal whether or not the
+pair was free. It now runs on the trades themselves — a tenth as many — so
+each figure is much noisier: at 4 bars the pullback's 95% interval is
+[−3.20, +2.17] and the breakout's [−6.88, +0.52], neither significant alone.
 
-**So it is not the exit.** The entries carry no detectable directional edge on
-this data, and no stop or target can manufacture one. Sweeping the reward
-multiple confirms it — the edge over break-even is under a point at R=0.5, 1
-and 1.5 (+0.4, +0.6, +0.6) and negative at 2, 3 and 5 — and sweeping the stop
-buffer only makes it worse as stops widen.
+What the row *shapes* say is consistent with the walk-forward. Price drifts
+with the pullback over the following hundred bars and against the breakout,
+steadily, to −11.5 pips. An entry whose result decays the longer it is held
+is an entry taken after the move rather than before it.
+
+**So it is mostly not the exit.** Sweeping the reward multiple never finds a
+setting that works: the edge over break-even is +0.1, +0.8 and +1.5 points at
+R=0.5, 1 and 1.5 and negative at 2, 3 and 5, and the average per trade is
+negative at every one. Widening the stop buffer only makes it worse. The
+nearest thing to a usable setting is **1.5:1**, the one row where the win
+rate beats break-even by more than a point — and it still loses 2.73 pips a
+trade after costs.
 
 **None of this says OANDA's rules are bad.** It says that on 1H majors over
 nine months, implemented as faithfully as I can read the article, they did not
@@ -657,11 +722,12 @@ contradicts the pure-Ichimoku rule and would fail the purity test.
   for the timeframe actually traded.
 - **One period.** Dec 2025 – Sep 2026 is nine months of one regime.
 - **The pairs are correlated.** EUR/USD, GBP/USD and AUD/USD are largely the
-  same dollar trade, so 407 trades are worth fewer than 407 independent
+  same dollar trade, so 430 trades are worth fewer than 430 independent
   observations and the interval is narrower than it should be.
-- **89% of signals are crowded out**, so the walk-forward measures a thin
-  slice of the rule. The forward-return table above is the wider test, and it
-  agrees.
+- **The forward-return table is no longer an independent check.** It used to
+  run on thousands of raw signals; with one trade per pair it runs on the same
+  430 trades, so it corroborates the walk-forward rather than testing it from
+  outside.
 - **Costs are a flat estimate.** Real spreads widen at the open and on news.
   Swap is not modelled.
 

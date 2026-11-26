@@ -277,14 +277,20 @@ describe('backtestIchimoku', () => {
   });
 
   /**
-   * Every signal has to be accounted for. The one that used to go missing was
-   * the crowded-out one — a signal that fired while a position was open —
-   * which made the strategy look as though it traded far more often than the
-   * one-position rule allows.
+   * Every signal has to be accounted for, and the identity below is what
+   * guarantees none goes quietly missing.
+   *
+   * `skippedWhileOpen` is now ZERO, and that is the assertion worth making.
+   * The one-trade-per-pair rule moved into the detector, so it no longer
+   * OFFERS a signal that arrives while a position is running — this counter
+   * is the harness checking the detector's work rather than doing it. A
+   * non-zero value here would mean the two have drifted apart, which is
+   * exactly the failure the move was meant to make impossible.
    */
   it('accounts for every signal as traded, filtered out, or crowded out', () => {
     expect(run.trades.length + run.filtered + run.skippedWhileOpen).toBe(run.signals);
-    expect(run.skippedWhileOpen).toBeGreaterThan(0);
+    expect(run.skippedWhileOpen, 'the detector should never offer an overlapping signal').toBe(0);
+    expect(run.trades.length).toBe(run.signals);
   });
 
   /**
@@ -300,29 +306,27 @@ describe('backtestIchimoku', () => {
    * reading, not a given. Measuring it needs the detector re-run.
    */
   it('re-runs the detector when a rule changes, rather than filtering its output', () => {
-    const literal = backtest(candles, SYMBOL, '1H', {
-      config: { ...ICHIMOKU, chikouFiltersPullback: false },
-    });
-
-    expect(literal.signals).toBeGreaterThan(run.signals);
-    expect(literal.filtered).toBe(0); // nothing filtered: the rule itself changed
-    expect(run.signals).toBe(
-      backtest(candles, SYMBOL, '1H', { config: ICHIMOKU }).signals,
-    ); // the work-together reading is the live default
-
     /**
-     * Note where the difference does NOT show up: the trade count is the
-     * same. One position per pair means the extra signals the literal reading
-     * admits land while a trade is already open, so they are crowded out
-     * rather than traded. That is worth asserting rather than hiding, because
-     * it is the reason "more signals" and "more trades" are different claims
-     * — and the reason a filter measured on signal counts alone would be
-     * reporting an effect the account would never have seen.
+     * The reward multiple is the clearest demonstration available, and it
+     * only became so once one trade per pair was a rule. A nearer target
+     * resolves trades sooner, which frees the pair sooner, which lets the
+     * detector take far more of them — three times as many at 0.5:1 as at
+     * 2:1, from the very same candles.
+     *
+     * No filter applied to a finished list can ADD a trade. So this number
+     * going up is proof the detector ran again, which is the only way to
+     * answer "what would this rule have done" honestly.
      */
-    expect(literal.skippedWhileOpen).toBeGreaterThan(run.skippedWhileOpen);
-    expect(literal.trades.length + literal.skippedWhileOpen).toBeGreaterThan(
-      run.trades.length + run.skippedWhileOpen,
-    );
+    const near = backtest(candles, SYMBOL, '1H', { config: { ...ICHIMOKU, rewardMultiple: 0.5 } });
+    const far = backtest(candles, SYMBOL, '1H', { config: { ...ICHIMOKU, rewardMultiple: 5 } });
+
+    expect(near.signals).toBeGreaterThan(run.signals * 2);
+    expect(far.signals).toBeLessThan(run.signals);
+    expect(near.filtered).toBe(0); // nothing filtered: the rule itself changed
+    expect(near.trades.length).toBeGreaterThan(run.trades.length);
+
+    // The live default is what the page reports.
+    expect(run.signals).toBe(backtest(candles, SYMBOL, '1H', { config: ICHIMOKU }).signals);
   });
 
   it('handles a series too short to produce anything', () => {
@@ -359,13 +363,26 @@ describe('combine', () => {
 });
 
 /**
- * `accept` exists so a PROPOSED entry rule can be measured through the same
- * walk-forward as the real one. The subtlety it is there for: rejecting a
- * signal frees the position, so a later signal the unfiltered run never saw
- * can now be taken. Filtering a finished trade list cannot produce that,
- * which is why rule variants have to be tested here rather than afterwards.
+ * `accept` is a POST-HOC FILTER, and it did not used to be.
+ *
+ * It was built so a proposed entry rule could be measured through the same
+ * walk-forward as the real one, and the subtlety it existed for was this:
+ * rejecting a signal freed the position, so a later signal the unfiltered run
+ * was too busy to take could now be traded. Filtering a finished trade list
+ * cannot produce that.
+ *
+ * One trade per pair moved into the DETECTOR, and that reasoning went with
+ * it. The detector decides occupancy while it walks the bars, so by the time
+ * `accept` sees a signal the alternatives have already not been emitted.
+ * Rejecting one now removes a row and nothing else.
+ *
+ * So: to ask "what would a different entry rule have done", use `config`,
+ * which re-runs the detector — `accept` would silently answer a different and
+ * much weaker question. What `accept` is still good for is subsetting a run
+ * that has already happened ("only the longs", "only thick-cloud breaks"),
+ * where removing rows is exactly what you mean.
  */
-describe('accept — measuring a proposed rule', () => {
+describe('accept — subsetting a finished run', () => {
   const all = backtest(candles, SYMBOL, '1H');
 
   it('runs the rule against every signal and keeps only what it allows', () => {
@@ -380,7 +397,7 @@ describe('accept — measuring a proposed rule', () => {
   });
 
   it('is applied on top of the rule being measured, not instead of it', () => {
-    const config = { ...ICHIMOKU, chikouFiltersPullback: false };
+    const config = { ...ICHIMOKU, rewardMultiple: 0.5 };
     const both = backtest(candles, SYMBOL, '1H', { config, accept: () => true });
     const configOnly = backtest(candles, SYMBOL, '1H', { config });
     expect(both.trades.length).toBe(configOnly.trades.length);
@@ -388,45 +405,39 @@ describe('accept — measuring a proposed rule', () => {
   });
 
   /**
-   * The behaviour that makes post-hoc filtering wrong: with one position at a
-   * time, rejecting a signal lets a DIFFERENT signal trade that the unfiltered
-   * run was too busy to take. Filtering a finished trade list can only ever
-   * remove rows, so it cannot show this, and it would quietly measure the
-   * wrong strategy.
+   * The property that replaces "it opens a trade the unfiltered run never
+   * took", which was true of the old design and is false of this one.
+   * Asserting it directly is what stops someone reaching for `accept` to
+   * measure an entry rule and quietly getting a subset instead of a
+   * counterfactual.
    */
-  it('opens a trade the unfiltered run never took', () => {
-    expect(all.signals, 'the fixture must crowd out signals').toBeGreaterThan(all.trades.length);
+  it('can only ever remove trades, never admit one', () => {
+    const taken = new Set(all.trades.map((t) => t.id));
+    const half = backtest(candles, SYMBOL, '1H', { accept: (s) => s.direction === 'LONG' });
+
+    expect(half.trades.length).toBeGreaterThan(0);
+    expect(half.trades.length).toBeLessThan(all.trades.length);
+    for (const t of half.trades) {
+      expect(taken.has(t.id), `${t.id} was never in the unfiltered run`).toBe(true);
+      expect(t.direction).toBe('LONG');
+    }
+    // And every removed row is accounted for rather than dropped silently.
+    expect(half.trades.length + half.filtered).toBe(half.signals);
+  });
+
+  /**
+   * The same fact from the other side: rejecting the very trade that was
+   * holding the pair does NOT let anything new through, because the detector
+   * had already decided what to offer before `accept` was consulted.
+   */
+  it('rejecting a trade does not free the pair for another', () => {
+    const first = all.trades[0]!;
+    const without = backtest(candles, SYMBOL, '1H', { accept: (s) => s.id !== first.id });
     const taken = new Set(all.trades.map((t) => t.id));
 
-    // Trades holding a signal inside their window — the ones whose removal
-    // frees something.
-    const index = new Map(candles.map((c, i) => [c.time, i]));
-    const signals = analyseIchimoku(candles, SYMBOL, '1H').signals;
-    const blockers = all.trades.filter((t) => {
-      if (t.exitTime === null) return false;
-      const from = index.get(t.entryTime)!;
-      const to = index.get(t.exitTime)!;
-      return signals.some((sig) => {
-        const i = index.get(sig.barTime)!;
-        return i > from && i <= to;
-      });
-    });
-    expect(blockers.length, 'the fixture must contain trades that block a signal').toBeGreaterThan(5);
-
-    /**
-     * Every fill is certain now, so removing a blocker admits the signal it
-     * was sitting on EVERY time — there is no no-fill left to swallow it.
-     * That is stricter than the old assertion, which could only claim it
-     * happened sometimes.
-     */
-    for (const b of blockers.slice(0, 10)) {
-      const without = backtest(candles, SYMBOL, '1H', { accept: (sig) => sig.id !== b.id });
-      expect(without.trades.some((t) => t.id === b.id)).toBe(false);
-      expect(
-        without.trades.some((t) => !taken.has(t.id)),
-        `removing ${b.id} should have admitted a signal the unfiltered run never took`,
-      ).toBe(true);
-    }
+    expect(without.trades.some((t) => t.id === first.id)).toBe(false);
+    expect(without.trades.every((t) => taken.has(t.id))).toBe(true);
+    expect(without.trades.length).toBe(all.trades.length - 1);
   });
 });
 

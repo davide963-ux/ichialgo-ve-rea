@@ -345,6 +345,15 @@ export async function runScan({ env = process.env, now = Date.now(), signal } = 
   let recorded = 0;
   let resolved = 0;
   let scanned = 0;
+  /**
+   * Signals dropped because the database still held an open trade for that
+   * pair. Expected to stay at zero: the detector already refuses to produce
+   * one. A non-zero value means the detector's view and the stored history
+   * have come apart, which is worth seeing in the run log.
+   */
+  let blockedByOpen = 0;
+  /** Trades this run closed, so they no longer block anything. */
+  const closedThisRun = new Set();
   /** Per-run provider state: see fetchCandles for why Yahoo is parked once. */
   const providerState = { yahooParked: null };
 
@@ -368,7 +377,10 @@ export async function runScan({ env = process.env, now = Date.now(), signal } = 
       // ── resolve what is already running ───────────────────────────────
       for (const trade of openBySymbol.get(symbol) ?? []) {
         const outcome = resolveOpenTrade(trade, candles);
-        if (outcome && (await closeTrade({ id: trade.id, ...outcome }, env))) resolved++;
+        if (outcome && (await closeTrade({ id: trade.id, ...outcome }, env))) {
+          resolved++;
+          closedThisRun.add(trade.id);
+        }
       }
 
       // ── record what is new ────────────────────────────────────────────
@@ -380,15 +392,6 @@ export async function runScan({ env = process.env, now = Date.now(), signal } = 
       // backfill the table with history the fixtures already cover.
       const oldest = (newest?.time ?? 0) - cfg.lookbackBars * barSeconds;
 
-      /**
-       * EVERY strategy, on the SAME candles, every run.
-       *
-       * They are recorded together rather than one at a time because the
-       * whole reason for having three is to compare them, and a comparison
-       * across different candle windows compares the windows. Signal ids are
-       * namespaced by strategy, so three rules on one bar are three rows and
-       * never a collision.
-       */
       /**
        * ONE system, both entries, on the SAME candles every run.
        *
@@ -403,6 +406,18 @@ export async function runScan({ env = process.env, now = Date.now(), signal } = 
       if (reason === 'not-enough-bars') {
         errors.push(`${symbol}: only ${candles.length} ${cfg.timeframe} candles, needs ${minBars()}`);
       } else {
+        /**
+         * ONE TRADE PER PAIR IS THE DETECTOR'S JOB, NOT THIS LOOP'S.
+         *
+         * It used to be nobody's. The scanner wrote every signal in its
+         * lookback window as a separate open trade, so a busy pair could
+         * hold eight at once in the stored history while the backtest — which
+         * did enforce one at a time — reported one. Two systems, two answers,
+         * no way to tell which was the strategy.
+         *
+         * `analyseIchimoku` now goes quiet from a signal until its stop or
+         * target, so what arrives here is already non-overlapping.
+         */
         for (const s of signals) {
           if (s.barTime < oldest) continue;
           if (s.barTime >= (newest?.time ?? 0)) continue; // still forming
@@ -411,9 +426,34 @@ export async function runScan({ env = process.env, now = Date.now(), signal } = 
         }
       }
 
-      const added = await recordSignals(rows, env);
+      /**
+       * The storage-level check on that claim.
+       *
+       * The detector simulates positions over the candles IT was given. The
+       * database remembers trades from previous runs, and the two could in
+       * principle disagree — a trade whose entry bar has scrolled out of the
+       * window, a row written under an older build. Rather than trust the
+       * agreement, a signal that would open a second position on a pair is
+       * dropped and COUNTED, so a divergence shows up in the run log instead
+       * of quietly becoming two open trades.
+       */
+      const stillOpen = (openBySymbol.get(symbol) ?? []).filter((t) => !closedThisRun.has(t.id));
+      const blocked = [];
+      const admitted = [];
+      for (const row of rows) {
+        if (stillOpen.some((t) => Number(t.bar_time) < row.bar_time)) blocked.push(row);
+        else admitted.push(row);
+      }
+      if (blocked.length > 0) blockedByOpen += blocked.length;
+
+      const added = await recordSignals(admitted, env);
       recorded += added;
-      perPair[symbol] = { candles: candles.length, considered: rows.length, recorded: added };
+      perPair[symbol] = {
+        candles: candles.length,
+        considered: rows.length,
+        recorded: added,
+        ...(blocked.length > 0 ? { blockedByOpen: blocked.length } : {}),
+      };
     } catch (err) {
       errors.push(`${symbol}: ${err?.message || String(err)}`);
     }
@@ -425,6 +465,7 @@ export async function runScan({ env = process.env, now = Date.now(), signal } = 
     scanned,
     recorded,
     resolved,
+    blockedByOpen,
     errors,
     // Which provider actually served the run, so a silent switch to the
     // metered one is visible in the run log rather than only in the bill.

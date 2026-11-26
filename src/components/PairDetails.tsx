@@ -178,14 +178,23 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
             <span className="panel-sub">
               Two entries, from OANDA's guide: a <strong>Kumo breakout</strong> when price leaves the cloud and the
               cloud ahead turns with it, and a <strong>Tenkan/Kijun pullback</strong> when price already clear of
-              the cloud comes back to the lines and closes through Kijun. Chikou validates both.
+              the cloud comes back to the lines and closes through Kijun. Chikou validates both.{' '}
+              <strong>One trade at a time</strong>: once a signal fires, this pair reports nothing further until
+              price reaches that trade's stop or target.
             </span>
           </div>
-          {level?.pending && (
+          {level?.openTrade ? (
+            <span
+              className="tag"
+              title="One trade per pair. This pair stays quiet until the trade reaches its stop or its target."
+            >
+              IN A TRADE
+            </span>
+          ) : level?.pending ? (
             <span className="tag pos" title="A setup is part-formed on this pair and waiting for its confirmation">
               {level.pending === 'breakout' ? 'BREAK PENDING' : 'PULLBACK PENDING'}
             </span>
-          )}
+          ) : null}
         </div>
 
         {level ? (
@@ -220,19 +229,32 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
                     collapsing them into a single word gets it wrong in both
                     directions. */}
                 <dt>State</dt>
-                <dd className="muted" title="A setup is part-formed and waiting for the event that completes it">
-                  {level.pending === null
-                    ? 'WATCHING'
-                    : level.pending === 'breakout'
-                      ? 'BREAK — waiting for the span twist'
-                      : 'PULLBACK — waiting for a close through Kijun'}
+                <dd
+                  className="muted"
+                  title={
+                    level.openTrade
+                      ? 'One trade per pair: no new signal here until this one hits its stop or target'
+                      : 'A setup is part-formed and waiting for the event that completes it'
+                  }
+                >
+                  {level.openTrade
+                    ? `IN A TRADE — ${level.openTrade.direction}, since the ${formatPrice(symbol, level.openTrade.entry)} close`
+                    : level.pending === null
+                      ? 'WATCHING'
+                      : level.pending === 'breakout'
+                        ? 'BREAK — waiting for the span twist'
+                        : 'PULLBACK — waiting for a close through Kijun'}
                 </dd>
               </div>
             </dl>
             <SignalTable
               signals={analysis.signals.slice().reverse()}
               limit={10}
-              emptyHint={`No breakout or pullback in the last ${candles.length} ${timeframe} candles.`}
+              emptyHint={
+                level.openTrade
+                  ? 'A trade is running on this pair. The next signal comes after it reaches its stop or target.'
+                  : `No breakout or pullback in the last ${candles.length} ${timeframe} candles.`
+              }
             />
           </>
         ) : (

@@ -256,10 +256,6 @@ for (const [csv, symbol] of PAIRS) {
           if (s.direction === 'LONG') expect(s.stop).toBeLessThan(s.kijun);
           else expect(s.stop).toBeGreaterThan(s.kijun);
         }
-        if (breakouts.length > 3) {
-          const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
-          expect(mean(pullbacks.map((s) => s.stopPips))).toBeLessThan(mean(breakouts.map((s) => s.stopPips)));
-        }
       });
     });
 
@@ -313,8 +309,18 @@ for (const [csv, symbol] of PAIRS) {
       expect(level).not.toBeNull();
       expect(level!.range).toBeGreaterThan(0);
       expect(level!.pending === null || level!.pending === 'breakout' || level!.pending === 'pullback').toBe(true);
-      // `armed` and `pending` are two views of one fact and must not disagree.
-      expect(level!.armed).toBe(level!.pending === null);
+
+      /**
+       * `armed` means "able to take a setup", which now needs TWO things to
+       * be true: not already in a setup, and not already in a trade. They
+       * are three views of one state and must not disagree — a pair shown as
+       * armed while it is holding a position is the exact confusion this
+       * rule exists to remove.
+       */
+      expect(level!.armed).toBe(level!.pending === null && level!.openTrade === null);
+
+      // A pair cannot be waiting for a setup and holding a trade at once.
+      if (level!.openTrade !== null) expect(level!.pending).toBeNull();
     });
   });
 }
@@ -325,16 +331,32 @@ describe('the Chikou filter on the pullback', () => {
   /**
    * The article attaches the filter to the breakout and separately says the
    * four approaches work together. Applying it to the pullback as well is the
-   * work-together reading; turning it off is the literal one. Either way it
-   * must only ever REMOVE pullbacks, which is what makes it a filter and not
-   * a different strategy.
+   * work-together reading; turning it off is the literal one.
+   *
+   * WHAT THIS TEST USED TO CLAIM, AND WHY IT WAS WRONG
+   * ─────────────────────────────────────────────────
+   * It asserted the filter could only ever REMOVE pullbacks — the definition
+   * of a filter. That stopped being true the moment one trade per pair
+   * became a rule. Admitting an extra pullback now OCCUPIES the pair, which
+   * suppresses whatever would have fired during that trade; refusing one
+   * leaves the pair free to take something later. So turning the filter off
+   * both adds and removes signals (on these bars: two of each), and no
+   * ordering of the counts is guaranteed.
+   *
+   * What IS guaranteed is what the flag means on each signal, which is what
+   * it is safe to assert.
    */
-  it('removes pullbacks when on, and never invents one', () => {
+  it('makes Chikou a requirement on the pullback, or does not', () => {
     const both = analyseIchimoku(candles, 'EUR/USD', '1H', { ...ICHIMOKU, chikouFiltersPullback: true }, 0);
     const literal = analyseIchimoku(candles, 'EUR/USD', '1H', { ...ICHIMOKU, chikouFiltersPullback: false }, 0);
 
     const p = (r: typeof both) => r.signals.filter((s) => s.entryType === 'pullback');
-    expect(p(literal).length).toBeGreaterThan(p(both).length);
+    expect(p(both).length).toBeGreaterThan(10);
+    expect(p(literal).length).toBeGreaterThan(10);
+
+    // The two are genuinely different signal sets, not the same one twice.
+    const bothIds = new Set(both.signals.map((s) => s.id));
+    expect(literal.signals.some((s) => !bothIds.has(s.id))).toBe(true);
 
     for (const s of p(both)) {
       const c = s.checks.find((x) => x.label.includes('Chikou'))!;
@@ -349,66 +371,158 @@ describe('the Chikou filter on the pullback', () => {
 
 describe('the waiting windows', () => {
   const candles = parseCsv(eurusd);
-  const wide = analyseIchimoku(candles, 'EUR/USD', '1H', ICHIMOKU, 0);
-  const run = (over: Partial<typeof ICHIMOKU>) => analyseIchimoku(candles, 'EUR/USD', '1H', { ...ICHIMOKU, ...over }, 0);
-  const ids = (r: typeof wide) => new Set(r.signals.map((s) => s.id));
+  const run = (over: Partial<typeof ICHIMOKU>) =>
+    analyseIchimoku(candles, 'EUR/USD', '1H', { ...ICHIMOKU, ...over }, 0);
+  const wide = run({});
 
   /**
    * Both windows are OURS. The article sets no limit on how long a setup may
    * wait for its second event, and the shape of its own examples — hours
    * between the USD/JPY dip and its confirming close — is why a limit has to
-   * exist at all. So the question for each is not "is the value right" but
-   * "does the value impose an opinion", and the answer is measured, not
-   * assumed.
+   * exist at all.
    *
-   * THE CONFIRMATION WINDOW IMPOSES NONE. Measured on these bars, the close
-   * that confirms a pullback arrives on the VERY NEXT bar in 537 of 560 cases,
-   * and the longest wait seen on any pair is 6 bars:
+   * NO KNOB IS A FILTER ANY MORE, AND THAT IS THE POINT OF THIS BLOCK
+   * ────────────────────────────────────────────────────────────────
+   * These tests used to assert that tightening a window could only remove
+   * signals. One trade per pair ended that: every rule that changes WHICH
+   * signals fire also changes WHEN the pair is occupied, and an occupied
+   * pair is silent. Suppress one signal and the pair stays free for a
+   * different one later; admit one and it blocks whatever came next.
    *
-   *   lag (bars)   1     2    3    4    6
-   *   EUR/USD      537   21   2    -    -
-   *   USD/JPY      521   24   11   2    1
-   *
-   * At 26 the bound therefore never binds: it is a guard against a stale
-   * pending, not a tuning knob, and the pullback rule is effectively
-   * parameter-free. This test pins that, so if a change ever makes the value
-   * matter, it is not discovered as a mystery difference in the backtest.
+   * So tightening either window both adds and removes — on these bars,
+   * confirm=1 adds 8 and loses 4, twist=3 adds 9 and loses 5. Asserting a
+   * direction would be asserting something untrue, and the useful property
+   * is the one below: the result still depends on the rule rather than on a
+   * filter applied afterwards.
+   */
+  it('change the signal set rather than merely trimming it', () => {
+    const wideIds = new Set(wide.signals.map((s) => s.id));
+    for (const over of [{ confirmWithinBars: 1 }, { twistWithinBars: 3 }]) {
+      const tight = run(over);
+      const added = tight.signals.filter((x) => !wideIds.has(x.id));
+      const lost = wide.signals.filter((x) => !new Set(tight.signals.map((y) => y.id)).has(x.id));
+      expect(added.length, `${JSON.stringify(over)} added nothing`).toBeGreaterThan(0);
+      expect(lost.length, `${JSON.stringify(over)} lost nothing`).toBeGreaterThan(0);
+    }
+  });
+
+  /**
+   * THE CONFIRMATION WINDOW STILL IMPOSES NO OPINION. Measured on these
+   * bars, the close that confirms a pullback arrives on the VERY NEXT bar in
+   * the overwhelming majority of cases and the longest wait seen on any pair
+   * is 6 bars, so at 26 the bound never binds: it is a guard against a stale
+   * setup, not a tuning knob. Identical output at 26, 12 and 7 is what that
+   * claim looks like as an assertion.
    */
   it('the confirmation window never binds at its configured value', () => {
     expect(ICHIMOKU.confirmWithinBars).toBe(26);
     for (const n of [26, 12, 7]) expect(run({ confirmWithinBars: n }).signals).toEqual(wide.signals);
   });
 
-  /** It starts to bite only when it is shorter than the lag itself. */
-  it('the confirmation window is a filter once it is short enough to bite', () => {
-    const tight = run({ confirmWithinBars: 1 });
-    expect(tight.signals.length).toBeLessThan(wide.signals.length);
-    // What it adds is a pullback, never a breakout — see the twist test below
-    // for why releasing a pair can hand the slot to the other entry.
-    const wideIds = ids(wide);
-    for (const s of tight.signals.filter((x) => !wideIds.has(x.id))) expect(s.entryType).toBe('pullback');
+  /**
+   * The reward multiple is not a window, but it belongs here because it is
+   * now the strongest demonstration that configuration RE-RUNS the detector
+   * rather than filtering its output. A nearer target resolves trades sooner,
+   * which frees the pair sooner, which lets it take far more of them: 235
+   * signals at 0.5:1 against 75 at 2:1, from identical candles. No filter
+   * applied to a finished list could ever triple it.
+   */
+  it('a nearer target frees the pair sooner, so the detector finds more', () => {
+    expect(run({ rewardMultiple: 0.5 }).signals.length).toBeGreaterThan(wide.signals.length * 2);
+    expect(run({ rewardMultiple: 5 }).signals.length).toBeLessThan(wide.signals.length);
   });
+});
+
+/**
+ * ONE TRADE PER PAIR.
+ *
+ * A signal is an instruction to open a trade, and while that trade is
+ * running another signal on the same pair is not a second opportunity — it
+ * is the same money, already committed. The detector therefore goes quiet
+ * from the bar a signal fires until price touches its stop or its target.
+ *
+ * This lives in the detector so that every caller inherits it. Before, the
+ * backtest enforced it and the live scanner did not, so one pair could hold
+ * eight simultaneous open trades in the stored history while the backtest
+ * reported one — two systems measuring different strategies with nothing
+ * saying which was right.
+ */
+describe('one trade per pair', () => {
+  for (const [csv, symbol] of PAIRS) {
+    describe(symbol, () => {
+      const candles = parseCsv(csv);
+      const { signals } = analyseIchimoku(candles, symbol, '1H', ICHIMOKU, 0);
+      const index = new Map(candles.map((c, i) => [c.time, i]));
+
+      /** The bar that decides a signal, by the same rule the backtest uses. */
+      const resolvedAt = (s: (typeof signals)[number]): number | null => {
+        const from = index.get(s.barTime)!;
+        for (let i = from + 1; i < candles.length; i++) {
+          const bar = candles[i]!;
+          const hitStop = s.direction === 'LONG' ? bar.low <= s.stop : bar.high >= s.stop;
+          const hitTarget = s.direction === 'LONG' ? bar.high >= s.target : bar.low <= s.target;
+          if (hitStop || hitTarget) return i;
+        }
+        return null;
+      };
+
+      it('never signals again before the one in flight hits its stop or target', () => {
+        expect(signals.length).toBeGreaterThan(20);
+        for (let n = 1; n < signals.length; n++) {
+          const prev = signals[n - 1]!;
+          const next = signals[n]!;
+          const decided = resolvedAt(prev);
+          expect(decided, `${prev.id} never resolved, yet ${next.id} followed it`).not.toBeNull();
+          // The resolving bar may itself start the next trade, which is what
+          // the backtest's `entryTime >= exitTime` allows; anything earlier
+          // would be two positions open at once.
+          expect(
+            index.get(next.barTime)!,
+            `${next.id} opened while ${prev.id} was still running`,
+          ).toBeGreaterThanOrEqual(decided!);
+        }
+      });
+
+      /**
+       * The last signal may still be running, and if it is, the level has to
+       * say so — that is what tells the dashboard why a pair has gone quiet.
+       */
+      it('reports the trade it is holding on the last bar, or none', () => {
+        const { level } = analyseIchimoku(candles, symbol, '1H', ICHIMOKU, 0);
+        const last = signals.at(-1)!;
+        const stillRunning = resolvedAt(last) === null;
+
+        if (stillRunning) {
+          expect(level!.openTrade, 'a running trade must be reported').not.toBeNull();
+          expect(level!.openTrade!.barTime).toBe(last.barTime);
+          expect(level!.openTrade!.stop).toBeCloseTo(last.stop, 10);
+          expect(level!.openTrade!.target).toBeCloseTo(last.target, 10);
+          expect(level!.armed).toBe(false);
+        } else {
+          expect(level!.openTrade).toBeNull();
+        }
+      });
+    });
+  }
 
   /**
-   * A shorter TWIST window produces a handful of signals the wide run does
-   * not have, and the reason is worth stating because it reads as a bug. A
-   * breakout waiting for its span twist HOLDS the pair — one position per
-   * pair, so the pullback entry cannot arm underneath it. Expiring that wait
-   * sooner releases the pair, and a pullback it was sitting on top of fires
-   * instead. So what a shorter twist window adds is always a pullback: on the
-   * breakout itself, waiting less can only ever remove.
+   * The aggregate the per-pair structural tests cannot make: pooled over
+   * every pair, a pullback risks less than a breakout, because Kijun sits
+   * nearer the price than the far edge of the cloud does. It is a TENDENCY,
+   * not a law — on GBP/USD the two are within a pip of each other — so it is
+   * asserted on the pool rather than pair by pair, where it would be a
+   * coincidence masquerading as a rule.
    */
-  it('a shorter twist window trades one entry for the other', () => {
-    const tight = run({ twistWithinBars: 3 });
-    expect(tight.signals.length).toBeLessThan(wide.signals.length);
-
-    const wideIds = ids(wide);
-    const added = tight.signals.filter((s) => !wideIds.has(s.id));
-    expect(added.length, 'the trade-off must occur, or this test proves nothing').toBeGreaterThan(0);
-    for (const s of added) expect(s.entryType, `${s.id} was added`).toBe('pullback');
-
-    const tightIds = ids(tight);
-    const lost = wide.signals.filter((s) => s.entryType === 'breakout' && !tightIds.has(s.id));
-    expect(lost.length, 'and it must cost more breakouts than it gains pullbacks').toBeGreaterThan(added.length);
+  it('risks less on a pullback than on a breakout, pooled across pairs', () => {
+    const stops = { pullback: [] as number[], breakout: [] as number[] };
+    for (const [csv, symbol] of PAIRS) {
+      for (const s of analyseIchimoku(parseCsv(csv), symbol, '1H', ICHIMOKU, 0).signals) {
+        stops[s.entryType].push(s.stopPips);
+      }
+    }
+    const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    expect(stops.pullback.length).toBeGreaterThan(50);
+    expect(stops.breakout.length).toBeGreaterThan(50);
+    expect(mean(stops.pullback)).toBeLessThan(mean(stops.breakout));
   });
 });

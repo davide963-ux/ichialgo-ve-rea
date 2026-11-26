@@ -82,6 +82,15 @@ export function Dashboard() {
           hint={strategyStatus === 'READY' ? 'Setups part-formed, waiting to complete' : strategyHint}
           accent={summary.active > 0}
         />
+        <MetricCard
+          label="In a trade"
+          value={summary.inTrade}
+          hint={
+            strategyStatus === 'READY'
+              ? 'One trade per pair — these are silent until it resolves'
+              : strategyHint
+          }
+        />
         <MetricCard label="Signals today" value={summary.today} hint={strategyHint} />
         <MetricCard label="Connection" value={<MarketStatus />} hint={`${modeLabel}, synced ${formatAgo(lastContact, now)}`} />
         <MetricCard

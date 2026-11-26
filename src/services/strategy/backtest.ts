@@ -80,8 +80,21 @@ import type { Candle } from '../marketData/types';
 import { pipSize } from '../../lib/pips';
 import { ICHIMOKU, type IchimokuConfig } from '../../config/ichimokuStrategy';
 import { analyseIchimoku } from './ichimokuSystem';
+import { resolveBar } from './signalTicket';
 import { ticketLevels } from './tradePlan';
 import type { Direction, EntryType, IchimokuSignal } from './types';
+
+/**
+ * Re-exported from its new home in signalTicket.ts.
+ *
+ * It moved because the DETECTOR now needs it: a pair holding an open
+ * position must not produce another signal until that position hits its stop
+ * or target, and answering "has it?" is exactly this function. This module
+ * already imports the detector, so the dependency had to go the other way.
+ * The export stays here because the scanner and the strategy bundle import
+ * it from this path.
+ */
+export { resolveBar } from './signalTicket';
 
 export type BacktestExit = 'tp' | 'sl' | 'open';
 
@@ -138,14 +151,19 @@ export interface BacktestFilters {
    */
   config?: IchimokuConfig;
   /**
-   * An arbitrary extra rule, applied after the two above.
+   * An arbitrary extra rule, applied after the two above. A POST-HOC FILTER:
+   * it can only remove trades.
    *
-   * Exists so a proposed entry rule can be measured through the SAME
-   * walk-forward — with the same fill rule, the same one-position-at-a-time
-   * accounting and the same pessimistic exits — instead of by filtering the
-   * finished trade list. Those are not the same thing: rejecting a trade
-   * frees the position for a later touch that the unfiltered run never took,
-   * so post-hoc filtering answers a question nobody asked.
+   * DO NOT use it to measure a proposed ENTRY rule — use `config`, which
+   * re-runs the detector. This field used to be the right tool for that, and
+   * is no longer, because one trade per pair moved into the detector:
+   * occupancy is decided while the bars are walked, so by the time `accept`
+   * is consulted the alternatives have already not been emitted. Rejecting a
+   * signal here removes a row and frees nothing.
+   *
+   * It is still the right tool for subsetting a run that has happened —
+   * "only the longs", "only thick-cloud breaks" — where removing rows is
+   * exactly what is meant.
    */
   accept?: (signal: IchimokuSignal) => boolean;
 }
@@ -209,28 +227,6 @@ export interface BacktestResult {
   equity: { time: number; pips: number }[];
 }
 
-/**
- * Does this bar close the position, and at what price? Stop checked first.
- *
- * Exported because the LIVE trade resolver calls this exact function. A
- * separate "did it hit TP or SL" check written for live trades would be a
- * second set of rules, and the first thing to diverge would be the same-bar
- * ambiguity below — which is precisely the decision that flatters a backtest.
- * One function, one answer, both places.
- */
-export function resolveBar(
-  bar: Candle,
-  direction: 'LONG' | 'SHORT',
-  stop: number,
-  target: number,
-): { exit: 'tp' | 'sl' | null; price: number } {
-  const long = direction === 'LONG';
-  // Pessimistic: a bar covering both is read as the stop, because OHLC cannot
-  // order the two.
-  if (long ? bar.low <= stop : bar.high >= stop) return { exit: 'sl', price: stop };
-  if (long ? bar.high >= target : bar.low <= target) return { exit: 'tp', price: target };
-  return { exit: null, price: bar.close };
-}
 
 /**
  * Net pips from the levels actually recorded, less the cost of doing the trade.
@@ -278,6 +274,8 @@ export function backtest(
   const eligible = analysis.signals.filter((s) => passesFilters(s, filters));
   const trades: BacktestTrade[] = [];
   let skippedWhileOpen = 0;
+  /** Signals consumed but untradeable: see the ticketLevels branch below. */
+  let unusableTicket = 0;
 
   let open: (BacktestTrade & { entryIndex: number }) | null = null;
   let next = 0; // index into `eligible`
@@ -318,9 +316,18 @@ export function backtest(
         const signal = eligible[next]!;
         next++;
         const levels = ticketLevels(signal);
-        // A market order at the close always fills — the close is a price the
-        // bar traded at, by definition. The only way to get nothing here is
-        // levels that round to an unusable ticket.
+        /**
+         * A market order at the close always fills — the close is a price the
+         * bar traded at, by definition. The only way to get nothing here is a
+         * ticket whose levels round to something unusable.
+         *
+         * It counts as FILTERED when that happens. It never has on these
+         * fixtures, but an uncounted `continue` is how a signal goes quietly
+         * missing, and the accounting identity below is only worth asserting
+         * if it holds in every branch rather than in the ones that happen to
+         * run today.
+         */
+        if (!levels) unusableTicket++;
         if (levels) {
           open = {
             id: signal.id,
@@ -362,7 +369,7 @@ export function backtest(
     timeframe,
     bars: candles.length,
     signals: analysis.signals.length,
-    filtered: analysis.signals.length - eligible.length,
+    filtered: analysis.signals.length - eligible.length + unusableTicket,
     skippedWhileOpen,
     trades,
     metrics: measure(trades),

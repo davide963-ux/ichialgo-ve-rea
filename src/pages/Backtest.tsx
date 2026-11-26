@@ -167,7 +167,8 @@ export function Backtest() {
           <p className="page-sub">
             OANDA's Ichimoku system replayed over real OANDA candles — a Kumo breakout and a Tenkan/Kijun pullback,
             both validated by Chikou, entry at the signal bar's close, stop beyond the structure the entry relied
-            on, target {ICHIMOKU.rewardMultiple}× the risk.
+            on, target {ICHIMOKU.rewardMultiple}× the risk. One trade per pair: after a signal the pair is silent
+            until price reaches that trade's stop or target.
             {span && ` ${day(span.from)} – ${day(span.to)}, 1H.`}
           </p>
         </div>
@@ -253,10 +254,13 @@ export function Backtest() {
             <div className="panel-body">
               <p className={`verdict ${v.tone}`}>{v.text}</p>
               <p className="panel-sub">
-                {metrics.trades} trades from {totals.signals} signals — {totals.filtered} filtered out and{' '}
-                {totals.skipped} skipped because a position was already open. Entry is the signal bar's close, so
-                every trade taken filled. Win rate {pct(metrics.winRatePct)} against the{' '}
-                {pct(metrics.breakEvenWinRatePct)} this payoff needs to break even.
+                {metrics.trades} trades from {totals.signals} signals
+                {totals.filtered > 0 && <> — {totals.filtered} filtered out</>}
+                {totals.skipped > 0 && <> — {totals.skipped} skipped because a position was already open</>}. One
+                trade per pair, applied by the detector, so a signal only exists when the pair was free to take
+                it. Entry is the signal bar's close, so every trade taken filled. Win rate{' '}
+                {pct(metrics.winRatePct)} against the {pct(metrics.breakEvenWinRatePct)} this payoff needs to
+                break even.
               </p>
             </div>
           </section>
@@ -362,7 +366,9 @@ export function Backtest() {
                   <tr>
                     <th>PAIR</th>
                     <th className="num">SIGNALS</th>
-                    <th className="num">SKIPPED</th>
+                    <th className="num" title="Signals the harness had to skip because a trade was already running. The detector should never produce one, so this is a cross-check and should read 0.">
+                      SKIPPED
+                    </th>
                     <th className="num">TRADES</th>
                     <th className="num">WIN</th>
                     <th className="num">AVG PIPS</th>

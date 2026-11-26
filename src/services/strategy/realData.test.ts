@@ -142,11 +142,23 @@ describe('the system on real OANDA candles, every traded pair', () => {
        * third of its touches for want of a fill; this asserts the opposite —
        * every signal not crowded out became a trade.
        */
-      it('turns no signal away for want of a fill', () => {
+      /**
+       * Entry is the signal bar's close, so there is no fill to miss, and the
+       * detector no longer offers a signal while a trade is running. Every
+       * signal therefore becomes a trade — on EVERY pair, which is the part
+       * worth checking here. The identity held on EUR/USD alone for a while
+       * before this ran across the set, and "it balances on the pair I looked
+       * at" is exactly how an accounting hole survives.
+       */
+      it('turns every signal into a trade, with nothing unaccounted for', () => {
         const result = backtest(candles, symbol, '1H');
         expect(result.trades.length).toBeGreaterThan(10);
         expect(result.trades.length + result.filtered + result.skippedWhileOpen).toBe(result.signals);
         expect(result.filtered).toBe(0);
+        expect(result.skippedWhileOpen).toBe(0);
+        expect(result.trades.length).toBe(result.signals);
+        // Rows split cleanly into resolved and still-running; nothing else.
+        expect(result.metrics.trades + result.metrics.stillOpen).toBe(result.trades.length);
       });
 
       it('enters at a price the entry bar traded, on every trade', () => {

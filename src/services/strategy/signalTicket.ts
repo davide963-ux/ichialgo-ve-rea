@@ -15,6 +15,7 @@
  */
 import type { EntryType } from '../../config/ichimokuStrategy';
 import type { Timeframe } from '../../config/timeframes';
+import type { Candle } from '../marketData/types';
 import type { BarFacts } from './ichimokuBars';
 import type { Direction, IchimokuSignal, SignalCheck, StrategyId } from './types';
 
@@ -96,3 +97,26 @@ export function buildSignal(d: SignalDraft, ticket: Ticket): IchimokuSignal {
 /** True when every check the strategy marked `required` passed. */
 export const requiredPassed = (checks: readonly SignalCheck[]): boolean =>
   checks.every((c) => !c.required || c.pass === true);
+
+/**
+ * Does this bar close the position, and at what price? Stop checked first.
+ *
+ * Exported because the LIVE trade resolver calls this exact function. A
+ * separate "did it hit TP or SL" check written for live trades would be a
+ * second set of rules, and the first thing to diverge would be the same-bar
+ * ambiguity below — which is precisely the decision that flatters a backtest.
+ * One function, one answer, both places.
+ */
+export function resolveBar(
+  bar: Candle,
+  direction: 'LONG' | 'SHORT',
+  stop: number,
+  target: number,
+): { exit: 'tp' | 'sl' | null; price: number } {
+  const long = direction === 'LONG';
+  // Pessimistic: a bar covering both is read as the stop, because OHLC cannot
+  // order the two.
+  if (long ? bar.low <= stop : bar.high >= stop) return { exit: 'sl', price: stop };
+  if (long ? bar.high >= target : bar.low <= target) return { exit: 'tp', price: target };
+  return { exit: null, price: bar.close };
+}
