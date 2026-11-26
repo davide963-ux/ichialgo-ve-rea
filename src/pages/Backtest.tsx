@@ -57,7 +57,7 @@ import { useMemo, useState } from 'react';
 import { EquityCurve, type EquityPoint } from '../components/EquityCurve';
 import { MetricCard } from '../components/MetricCard';
 import { ICHIMOKU } from '../config/ichimokuStrategy';
-import { FIXTURE_PAIRS, UNTESTED_PAIRS, useBacktest } from '../hooks/useBacktest';
+import { BARS_PER_FIXTURE, FIXTURE_PAIRS, UNTESTED_PAIRS, useBacktest } from '../hooks/useBacktest';
 import { formatNumber } from '../lib/format';
 import type { BacktestFilters, BacktestMetrics, EntryType } from '../services/strategy';
 
@@ -239,7 +239,11 @@ export function Backtest() {
 
       {status === 'LOADING' && (
         <section className="panel">
-          <p className="panel-body muted">Loading 30,000 candles…</p>
+          {/* Counted, not written down: a hardcoded total is exactly what
+              went stale when a pair's fixture was deleted. */}
+          <p className="panel-body muted">
+            Loading {formatNumber(FIXTURE_PAIRS.length * BARS_PER_FIXTURE, 0)} candles…
+          </p>
         </section>
       )}
 

@@ -60,6 +60,14 @@ export const UNUSED_FIXTURES: string[] = Object.keys(FIXTURES).filter(
   (symbol) => !PAIRS.some((p) => p.symbol === symbol),
 );
 
+/**
+ * Bars in each checked-in fixture. Every CSV is the same length by
+ * construction — they were pulled in one go — and the page multiplies this by
+ * the pair count rather than quoting a total, so deleting a fixture cannot
+ * leave the figure wrong.
+ */
+export const BARS_PER_FIXTURE = 5000;
+
 export type FixtureSymbol = string;
 
 /** "t,o,h,l,c" rows, oldest first. */

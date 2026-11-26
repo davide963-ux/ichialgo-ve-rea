@@ -21,6 +21,7 @@ import eurusd from '../../../fixtures/market/EURUSD_1H.csv?raw';
 import gbpusd from '../../../fixtures/market/GBPUSD_1H.csv?raw';
 import usdcad from '../../../fixtures/market/USDCAD_1H.csv?raw';
 import usdjpy from '../../../fixtures/market/USDJPY_1H.csv?raw';
+import { BARS_PER_FIXTURE } from '../../hooks/useBacktest';
 import { pipSize } from '../../lib/pips';
 import type { Candle } from '../marketData';
 import { analyseIchimoku } from './ichimokuSystem';
@@ -62,8 +63,14 @@ describe('the system on real OANDA candles, every traded pair', () => {
       const candles = loadCandles(csv);
       const analysis = analyseIchimoku(candles, symbol, '1H');
 
+      /**
+       * Exactly BARS_PER_FIXTURE, not merely "a lot": the backtest page shows
+       * a candle count by multiplying that constant by the number of pairs,
+       * so if a fixture is ever replaced with a shorter one the page would
+       * quietly overstate how much data is behind its numbers.
+       */
       it('loads the fixture it claims to (so this cannot pass on an empty file)', () => {
-        expect(candles.length).toBeGreaterThan(4000);
+        expect(candles.length).toBe(BARS_PER_FIXTURE);
         expect(candles.every((c) => c.high >= c.low && c.high >= c.open && c.high >= c.close)).toBe(true);
       });
 
