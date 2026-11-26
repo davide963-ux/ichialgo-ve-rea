@@ -290,6 +290,9 @@ export async function migrate(files, env = process.env) {
   return ran;
 }
 
+/** The strategy whose rows this app reads. See recentSignals for why. */
+export const STRATEGY = 'ichimoku-kijun';
+
 // ── writing ───────────────────────────────────────────────────────────────
 
 /**
@@ -315,32 +318,28 @@ export async function recordSignals(rows, env = process.env) {
   const inserted = await q`
     insert into signals (
       id, strategy, symbol, timeframe, bar_time, detected_at, source,
-      price, ema, atr, tolerance_pips, distance_pips,
-      approach, outcome, trend, bias, counter_trend,
-      ichimoku, ichimoku_score,
+      kumo, kijun, tenkan, senkou_a, senkou_b, distance_pips, range_pips,
+      score, cloud_bullish, future_cloud_bullish, chikou_free, tenkan_agrees,
       direction, entry, stop_loss, take_profit, stop_pips,
       result, exit_price, exit_at, bars_held, result_pips
     )
     select
       x.id, x.strategy, x.symbol, x.timeframe,
       to_timestamp(x.bar_time), to_timestamp(x.detected_at), x.source,
-      x.price, x.ema, x.atr, x.tolerance_pips, x.distance_pips,
-      x.approach, x.outcome, x.trend, x.bias, x.counter_trend,
-      x.ichimoku, x.ichimoku_score,
+      x.kumo, x.kijun, x.tenkan, x.senkou_a, x.senkou_b, x.distance_pips, x.range_pips,
+      x.score, x.cloud_bullish, x.future_cloud_bullish, x.chikou_free, x.tenkan_agrees,
       x.direction, x.entry, x.stop_loss, x.take_profit, x.stop_pips,
-      x.result,
-      -- A trade stopped out on its own entry bar arrives already closed, so
-      -- its outcome comes in with the insert rather than through closeTrade.
-      x.exit_price,
+      x.result, x.exit_price,
       case when x.exit_at is null then null else to_timestamp(x.exit_at) end,
       x.bars_held, x.result_pips
     from jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) as x(
       id text, strategy text, symbol text, timeframe text,
       bar_time double precision, detected_at double precision, source text,
-      price double precision, ema double precision, atr double precision,
-      tolerance_pips double precision, distance_pips double precision,
-      approach text, outcome text, trend text, bias text, counter_trend boolean,
-      ichimoku jsonb, ichimoku_score smallint,
+      kumo text, kijun double precision, tenkan double precision,
+      senkou_a double precision, senkou_b double precision,
+      distance_pips double precision, range_pips double precision,
+      score smallint, cloud_bullish boolean, future_cloud_bullish boolean,
+      chikou_free boolean, tenkan_agrees boolean,
       direction text, entry double precision, stop_loss double precision,
       take_profit double precision, stop_pips double precision,
       result text, exit_price double precision, exit_at double precision,
@@ -351,7 +350,14 @@ export async function recordSignals(rows, env = process.env) {
   return inserted.length;
 }
 
-/** Trades still running, oldest first, so the resolver works in order. */
+/**
+ * Trades still running, oldest first, so the resolver works in order.
+ *
+ * Not filtered by strategy, deliberately. A trade opened by the retired
+ * strategy still has a real stop and target, and leaving it at 'open' for
+ * ever would make the open count a lie. The resolver only needs the ticket,
+ * which every row has whatever produced it.
+ */
 export async function openTrades(env = process.env) {
   const q = sql(env);
   return q`
@@ -386,22 +392,34 @@ export async function closeTrade({ id, result, exitPrice, exitAt, barsHeld, resu
 
 // ── reading ───────────────────────────────────────────────────────────────
 
-/** Newest first, for the history page. `symbol` null means every pair. */
-export async function recentSignals({ limit = 200, symbol = null } = {}, env = process.env) {
+/**
+ * Newest first, for the history page. `symbol` null means every pair.
+ *
+ * `strategy` has a default but is not optional in spirit: the table holds
+ * rows from the retired EMA50-touch strategy, whose indicator columns 0002
+ * dropped. Returning them alongside Ichimoku rows would put nulls in every
+ * Ichimoku column and invite the page to read them as "Ichimoku had nothing
+ * to say" rather than "this is a different strategy".
+ */
+export async function recentSignals(
+  { limit = 200, symbol = null, strategy = STRATEGY } = {},
+  env = process.env,
+) {
   const q = sql(env);
   const capped = Math.min(Math.max(1, Number(limit) || 200), 1000);
   return q`
     select id, strategy, symbol, timeframe,
            extract(epoch from bar_time)::double precision   as bar_time,
            extract(epoch from detected_at)::double precision as detected_at,
-           source, price, ema, atr, tolerance_pips, distance_pips,
-           approach, outcome, trend, bias, counter_trend, ichimoku, ichimoku_score,
+           source, kumo, kijun, tenkan, senkou_a, senkou_b, distance_pips, range_pips,
+           score, cloud_bullish, future_cloud_bullish, chikou_free, tenkan_agrees,
            direction, entry, stop_loss, take_profit, stop_pips,
            result, exit_price,
            extract(epoch from exit_at)::double precision     as exit_at,
            bars_held, result_pips
     from signals
-    where (${symbol}::text is null or symbol = ${symbol})
+    where strategy = ${strategy}
+      and (${symbol}::text is null or symbol = ${symbol})
     order by bar_time desc
     limit ${capped}`;
 }
@@ -413,7 +431,7 @@ export async function recentSignals({ limit = 200, symbol = null } = {}, env = p
  * EUR/USD pip is adding unlike things — the same reason the backtest page
  * flags a mixed selection instead of printing one total.
  */
-export async function signalStats(env = process.env) {
+export async function signalStats(env = process.env, strategy = STRATEGY) {
   const q = sql(env);
   return q`
     select symbol,
@@ -421,10 +439,11 @@ export async function signalStats(env = process.env) {
            count(*) filter (where result = 'open')              as open,
            count(*) filter (where result = 'tp')                as tp,
            count(*) filter (where result = 'sl')                as sl,
-           count(*) filter (where result = 'nofill')            as nofill,
+           count(*) filter (where result = 'expired')           as expired,
            sum(result_pips) filter (where result in ('tp','sl')) as net_pips,
            avg(stop_pips)   filter (where result in ('tp','sl')) as avg_stop_pips
     from signals
+    where strategy = ${strategy}
     group by symbol
     order by symbol`;
 }

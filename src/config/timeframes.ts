@@ -1,10 +1,11 @@
 /**
  * Timeframes the app offers.
  *
- * 1M/5M/15M were dropped: the EMA50 + Ichimoku setup needs 78 bars of warm-up
- * before it says anything, so on fast charts it spends most of its credits
- * re-reading noise, and a touch resolves before you could act on it. These
- * four also cost far less — a 30M chart refreshes half as often as a 15M one.
+ * 1M/5M/15M were dropped: Ichimoku needs 104 bars of warm-up before it says
+ * anything (Senkou B's 52, the 26-bar displacement and 26 more for the range
+ * around Kijun), so on fast charts it spends most of its credits re-reading
+ * noise, and a pullback resolves before you could act on it. These four also
+ * cost far less — a 30M chart refreshes half as often as a 15M one.
  */
 export const TIMEFRAMES = ['30M', '1H', '4H', '1D'] as const;
 export type Timeframe = (typeof TIMEFRAMES)[number];

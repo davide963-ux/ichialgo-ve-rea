@@ -1,23 +1,24 @@
 import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { ICHIMOKU_SIGNAL_CHECKS } from '../config/ichimokuStrategy';
 import { pairToSlug } from '../config/pairs';
 import { formatMoney, formatNumber, formatPrice } from '../lib/format';
 import type { RateLookup } from '../lib/positionSize';
 import { formatStamp } from '../lib/time';
-import { planFromTouch, touchTimeMs, type TouchSignal } from '../services/strategy';
+import { planFromSignal, signalTimeMs, type IchimokuSignal } from '../services/strategy';
 import { useAccount } from '../state/accountStore';
 import { useMarketStore } from '../state/marketStore';
 import { EmptyState } from './EmptyState';
-import { IchimokuTag } from './IchimokuTag';
-import { OutcomeTag, SignalBadge } from './SignalBadge';
+import { ScoreTag } from './ScoreTag';
+import { SignalBadge, SourceTag } from './SignalBadge';
 
 interface Props {
-  signals: TouchSignal[];
+  signals: IchimokuSignal[];
   limit?: number;
   emptyHint?: string;
 }
 
-/** The EMA50 touch log. Rows open the pair on the timeframe it fired on. */
+/** The signal log. Rows open the pair on the timeframe it fired on. */
 export function SignalTable({ signals, limit, emptyHint }: Props) {
   const navigate = useNavigate();
   const balance = useAccount((a) => a.balance);
@@ -29,38 +30,43 @@ export function SignalTable({ signals, limit, emptyHint }: Props) {
   // pure arithmetic over data already in memory.
   const plans = useMemo(() => {
     const lookup: RateLookup = (sym) => quotes[sym]?.price ?? null;
-    return new Map(rows.map((s) => [s.id, planFromTouch(s, { balance, riskPct }, lookup)]));
+    return new Map(rows.map((s) => [s.id, planFromSignal(s, { balance, riskPct }, lookup)]));
   }, [rows, balance, riskPct, quotes]);
 
   if (rows.length === 0) {
     return (
-      <EmptyState title="No EMA50 touches yet" compact>
-        {emptyHint ?? 'Signals appear the moment a pair reaches its EMA50 on the scanner timeframe.'}
+      <EmptyState title="No Kijun pullbacks yet" compact>
+        {emptyHint ?? 'A signal appears when price, already clear of the Kumo, pulls back to Kijun-sen.'}
       </EmptyState>
     );
   }
 
+  const open = (s: IchimokuSignal) => navigate(`/pair/${pairToSlug(s.symbol)}?tf=${s.timeframe}`);
+
   return (
     <div className="table-wrap">
       <table className="table">
-        <caption className="sr-only">EMA50 touch signals, newest first.</caption>
+        <caption className="sr-only">Ichimoku Kijun pullback signals, newest first.</caption>
         <thead>
           <tr>
             <th scope="col">
-              <abbr title="When the touch happened: the bar's time for a closed bar, the tick's time for a live touch">TIME</abbr>
+              <abbr title="When it happened: the bar's time for a closed bar, the tick's time for a live signal">TIME</abbr>
             </th>
             <th scope="col">PAIR</th>
             <th scope="col">TF</th>
             <th scope="col">EVENT</th>
-            <th scope="col"><abbr title="Direction implied by the touch and the EMA's own trend">BIAS</abbr></th>
-            <th scope="col"><abbr title="What the bar did after touching">RESULT</abbr></th>
+            <th scope="col"><abbr title="Direction, taken from which side of the Kumo price is on">SIDE</abbr></th>
+            <th scope="col"><abbr title="Closed bar, or a live tick inside an unfinished bar">SOURCE</abbr></th>
             <th scope="col">
-              <abbr title="How many of the 5 Ichimoku checks agree with this touch's direction. Hover a score for the breakdown.">ICHIMOKU</abbr>
+              <abbr title={`How many of the ${ICHIMOKU_SIGNAL_CHECKS} Ichimoku confirmations agree. This is a gate: a lower score produces no signal. Hover for the breakdown.`}>
+                SCORE
+              </abbr>
             </th>
-            <th scope="col"><abbr title="Distance from the EMA at contact">DIST</abbr></th>
-            <th scope="col">EMA50</th>
+            <th scope="col"><abbr title="Distance from Kijun-sen at entry">DIST</abbr></th>
+            <th scope="col">KIJUN</th>
+            <th scope="col"><abbr title="Stop distance: 0.4 × the 26-bar high-low range">STOP</abbr></th>
             <th scope="col">
-              <abbr title="Lot size that risks your configured % over an ATR-based stop. Set the account on the Calculator page.">SIZE</abbr>
+              <abbr title="Lot size that risks your configured % over this stop. Set the account on the Calculator page.">SIZE</abbr>
             </th>
           </tr>
         </thead>
@@ -72,31 +78,24 @@ export function SignalTable({ signals, limit, emptyHint }: Props) {
               tabIndex={0}
               role="link"
               aria-label={`Open ${s.symbol} on ${s.timeframe}`}
-              onClick={() => navigate(`/pair/${pairToSlug(s.symbol)}?tf=${s.timeframe}`)}
+              onClick={() => open(s)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
-                  navigate(`/pair/${pairToSlug(s.symbol)}?tf=${s.timeframe}`);
+                  open(s);
                 }
               }}
             >
-              <td className="num muted">{formatStamp(touchTimeMs(s))}</td>
+              <td className="num muted">{formatStamp(signalTimeMs(s))}</td>
               <td><span className="pair-name">{s.symbol}</span></td>
               <td><span className="tag tf-tag">{s.timeframe}</span></td>
-              <td><SignalBadge signal={s} /></td>
-              <td>
-                {s.counterTrend ? (
-                  <span className="tag warn" title="Touch against the EMA's trend">COUNTER</span>
-                ) : s.bias === 'neutral' ? (
-                  <span className="muted">—</span>
-                ) : (
-                  <span className={s.bias === 'long' ? 'pos' : 'neg'}>{s.bias.toUpperCase()}</span>
-                )}
-              </td>
-              <td><OutcomeTag outcome={s.outcome} /></td>
-              <td><IchimokuTag signal={s} ctx={s.ichimoku} /></td>
+              <td><SignalBadge signal={s} compact /></td>
+              <td><span className={s.direction === 'LONG' ? 'pos' : 'neg'}>{s.direction}</span></td>
+              <td><SourceTag source={s.source} /></td>
+              <td><ScoreTag signal={s} /></td>
               <td className="num">{formatNumber(s.distancePips, 1)}</td>
-              <td className="num muted">{formatPrice(s.symbol, s.ema)}</td>
+              <td className="num muted">{formatPrice(s.symbol, s.kijun)}</td>
+              <td className="num muted">{formatNumber(s.stopPips, 1)}</td>
               <td className="num">
                 {(() => {
                   const plan = plans.get(s.id);

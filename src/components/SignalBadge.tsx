@@ -1,47 +1,41 @@
-import type { TouchSignal } from '../services/strategy';
+import type { IchimokuSignal } from '../services/strategy';
 
 /**
- * Compact signal chip used in the scanner row and the signal table.
+ * Compact signal chip for the scanner row and the signal table.
  *
- *   ▲ EMA50  — pullback from above (potential long), trend agrees
- *   ▼ EMA50  — rally from below (potential short), trend agrees
- *   greyed   — counter-trend or undecided touch
+ *   ▲ KIJUN  — price above the Kumo, caught at Kijun: a long
+ *   ▼ KIJUN  — price below the Kumo, caught at Kijun: a short
+ *   greyed   — fired from a live tick inside an unfinished bar
+ *
+ * The arrow is the TRADE's direction, which is the cloud's. It no longer
+ * encodes which side price approached from, because that is exactly the thing
+ * the old strategy got wrong: a pullback inside a downtrend is still a short.
  */
-export function SignalBadge({ signal, compact = false }: { signal: TouchSignal; compact?: boolean }) {
-  const tone = signal.counterTrend || signal.bias === 'neutral' ? '' : signal.bias === 'long' ? ' pos' : ' neg';
-  const arrow = signal.approach === 'above' ? '▲' : '▼';
+export function SignalBadge({ signal, compact = false }: { signal: IchimokuSignal; compact?: boolean }) {
+  const long = signal.direction === 'LONG';
+  const tone = signal.source === 'live' ? '' : long ? ' pos' : ' neg';
   const title =
-    `EMA50 touched on the ${signal.timeframe} chart — price came from ${signal.approach}, ` +
-    `${signal.distancePips.toFixed(1)} pips from the line (band ±${signal.tolerancePips.toFixed(1)}). ` +
-    `EMA trend: ${signal.trend}. ${signal.counterTrend ? 'Against the trend.' : `Bias: ${signal.bias}.`}`;
+    `${signal.direction} on the ${signal.timeframe} chart: price is ${signal.kumo} the Kumo and pulled back ` +
+    `to Kijun-sen, ${signal.distancePips.toFixed(1)} pips from the line. ` +
+    `${signal.source === 'live' ? 'Fired from a live tick inside an unfinished bar.' : ''}`;
 
   return (
-    <span className={`tag signal-tag${tone}`} title={title}>
-      <span aria-hidden="true">{arrow}</span>
-      {compact ? 'EMA50' : `EMA50 ${signal.approach === 'above' ? 'from above' : 'from below'}`}
+    <span className={`tag signal-tag${tone}`} title={title.trim()}>
+      <span aria-hidden="true">{long ? '▲' : '▼'}</span>
+      {compact ? 'KIJUN' : `Kijun pullback, ${signal.kumo} cloud`}
     </span>
   );
 }
 
-const OUTCOME_LABEL: Record<TouchSignal['outcome'], string> = {
-  bounce: 'BOUNCE',
-  cross: 'CROSS',
-  inside: 'INSIDE',
-  pending: 'FORMING',
-};
-
-const OUTCOME_HINT: Record<TouchSignal['outcome'], string> = {
-  bounce: 'The bar closed back on the side it came from — the EMA held',
-  cross: 'The bar closed through the EMA — the level broke',
-  inside: 'The bar closed inside the tolerance band — undecided',
-  pending: 'The bar is still forming, or the touch came from a live tick',
-};
-
-export function OutcomeTag({ outcome }: { outcome: TouchSignal['outcome'] }) {
-  const tone = outcome === 'bounce' ? ' pos' : outcome === 'cross' ? ' neg' : '';
-  return (
-    <span className={`tag${tone}`} title={OUTCOME_HINT[outcome]}>
-      {OUTCOME_LABEL[outcome]}
+/** Where the signal came from: a closed bar, or a tick between scans. */
+export function SourceTag({ source }: { source: IchimokuSignal['source'] }) {
+  return source === 'live' ? (
+    <span className="tag" title="Fired from a live quote inside a bar that had not closed yet">
+      LIVE
+    </span>
+  ) : (
+    <span className="tag pos" title="Found on a closed bar, so the entry is that bar's close">
+      CLOSED
     </span>
   );
 }

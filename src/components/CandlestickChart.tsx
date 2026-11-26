@@ -11,8 +11,6 @@
  * follows responsive layout changes.
  *
  * Overlays (optional props, all index-aligned with `candles`):
- *   ema      — the EMA50 line. Nulls before the average is defined are
- *              dropped, so the line simply starts later; never drawn at 0.
  *   markers  — arrows on individual bars. Deliberately a plain {time, side}
  *              shape rather than a strategy's signal type: the chart draws
  *              what it is handed and knows nothing about why.
@@ -64,10 +62,6 @@ interface Props {
   symbol: string;
   timeframe: Timeframe;
   candles: Candle[];
-  /** Moving-average values, index-aligned with `candles`. */
-  ema?: (number | null)[];
-  /** Legend name for the `ema` line. */
-  emaLabel?: string;
   /** Arrows to draw on individual bars. */
   markers?: ChartMarker[];
   /** Ichimoku overlay; omit (or pass showIchimoku=false) to hide it. */
@@ -76,7 +70,6 @@ interface Props {
 }
 
 const VISIBLE_BARS = 120;
-const EMA_COLOR = '#E9B949';
 const MARKER_UP = '#67E3AE';
 const MARKER_DOWN = '#F0616D';
 const ICHIMOKU = {
@@ -101,8 +94,6 @@ export function CandlestickChart({
   symbol,
   timeframe,
   candles,
-  ema,
-  emaLabel = 'EMA',
   markers: barMarkers,
   ichimoku,
   showIchimoku = true,
@@ -110,7 +101,6 @@ export function CandlestickChart({
   const el = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
   const series = useRef<ISeriesApi<'Candlestick'> | null>(null);
-  const emaSeries = useRef<ISeriesApi<'Line'> | null>(null);
   const ichi = useRef<{
     tenkan: ISeriesApi<'Line'>;
     kijun: ISeriesApi<'Line'>;
@@ -154,14 +144,6 @@ export function CandlestickChart({
       wickUpColor: '#67E3AE',
       wickDownColor: '#F0616D',
     });
-    emaSeries.current = c.addSeries(LineSeries, {
-      color: EMA_COLOR,
-      lineWidth: 2,
-      priceLineVisible: false,
-      lastValueVisible: true,
-      crosshairMarkerVisible: false,
-      title: emaLabel,
-    });
     // Ichimoku, added before the markers so the cloud sits underneath.
     const thin = { lineWidth: 1 as const, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false };
     const spanA = c.addSeries(LineSeries, { ...thin, color: ICHIMOKU.spanA, title: 'Senkou A' });
@@ -183,7 +165,6 @@ export function CandlestickChart({
       c.remove();
       chart.current = null;
       series.current = null;
-      emaSeries.current = null;
       ichi.current = null;
       markers.current = null;
       shown.current = { key: '', candles: [] };
@@ -195,7 +176,6 @@ export function CandlestickChart({
     const digits = getPair(symbol).digits;
     const priceFormat = { type: 'price', precision: digits, minMove: 1 / 10 ** digits } as const;
     series.current?.applyOptions({ priceFormat });
-    emaSeries.current?.applyOptions({ priceFormat });
     if (ichi.current) {
       for (const line of [ichi.current.tenkan, ichi.current.kijun, ichi.current.spanA, ichi.current.spanB, ichi.current.chikou]) {
         line.applyOptions({ priceFormat });
@@ -238,24 +218,6 @@ export function CandlestickChart({
     }
     shown.current = { key, candles };
   }, [candles, symbol, timeframe]);
-
-  // EMA overlay. Nulls (before the average exists) are skipped rather than
-  // plotted, so the line starts where the EMA becomes valid.
-  useEffect(() => {
-    const line = emaSeries.current;
-    if (!line) return;
-    if (!ema || ema.length === 0) {
-      line.setData([]);
-      return;
-    }
-    const points: LineData<UTCTimestamp>[] = [];
-    for (let i = 0; i < candles.length && i < ema.length; i++) {
-      const v = ema[i];
-      if (v === null || v === undefined || !Number.isFinite(v)) continue;
-      points.push({ time: candles[i]!.time as UTCTimestamp, value: v });
-    }
-    line.setData(points);
-  }, [ema, candles]);
 
   // Ichimoku overlay. Tenkan/Kijun sit over the candles; both Senkou spans
   // continue `displacement` bars past the last candle — those extra points are

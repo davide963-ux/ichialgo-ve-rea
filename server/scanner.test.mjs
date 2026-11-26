@@ -11,76 +11,96 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { resolveOpenTrade, scannerConfig, signalRow } from './scanner.mjs';
-import { TIMEFRAME_SECONDS, analyseEma50Touch, pipSize, ticketLevels } from './strategy.bundle.mjs';
-import { backtestTouches } from '../src/services/strategy/backtest';
+import { TIMEFRAME_SECONDS, analyseIchimoku, pipSize, ticketLevels } from './strategy.bundle.mjs';
+import { backtestIchimoku } from '../src/services/strategy/backtest';
 
 const bar = (time, o, h, l, c) => ({ time, open: o, high: h, low: l, close: c, volume: null, complete: true });
 
-/** A touch the ticket builder will accept: EUR/USD, ATR gives a ~15-pip stop. */
-const touch = (over = {}) => ({
-  id: 'ema50-touch|EUR/USD|30M|1000',
-  strategy: 'ema50-touch',
+/** A signal the ticket builder will accept: EUR/USD, a 30-pip stop. */
+const signal = (over = {}) => ({
+  id: 'ichimoku-kijun|EUR/USD|30M|1000',
+  strategy: 'ichimoku-kijun',
   symbol: 'EUR/USD',
   timeframe: '30M',
   barTime: 1000,
   detectedAt: 0,
   source: 'candle',
-  price: 1.1,
-  ema: 1.1,
-  tolerancePips: 2,
-  atr: 0.001,
-  distancePips: 0.5,
-  approach: 'above',
-  outcome: 'bounce',
-  trend: 'up',
-  bias: 'long',
-  counterTrend: false,
-  ichimoku: null,
+  direction: 'LONG',
+  kumo: 'above',
+  entry: 1.1,
+  stop: 1.097,
+  target: 1.106,
+  stopPips: 30,
+  rangePips: 75,
+  tenkan: 1.1005,
+  kijun: 1.0998,
+  senkouA: 1.097,
+  senkouB: 1.096,
+  distancePips: 2,
+  cloudBullish: true,
+  futureCloudBullish: true,
+  chikouFree: true,
+  tenkanAgrees: true,
+  score: 4,
   ...over,
 });
 
-describe('signalRow — rule 1, the entry must be a price that traded', () => {
-  it('records a touch that never reached the entry as nofill, not as a trade', () => {
-    const s = touch();
-    const { entry } = ticketLevels(s);
-    // The bar's whole range sits above the entry: a resting limit there never
-    // filled. The touch is real (the BAND was entered); the trade is not.
-    const row = signalRow(s, bar(1000, entry + 0.002, entry + 0.003, entry + 0.001, entry + 0.002), 0);
-    expect(row.result).toBe('nofill');
-  });
-
-  it('opens a trade when the bar traded through the entry', () => {
-    const s = touch();
-    const { entry } = ticketLevels(s);
-    const row = signalRow(s, bar(1000, entry + 0.001, entry + 0.002, entry - 0.0001, entry + 0.001), 0);
+/**
+ * There is no fill rule and no entry-bar resolution to test any more, which is
+ * why the two describe blocks that used to be here are gone. Entry is the
+ * signal bar's close, so the fill is certain and the bar is over; the first
+ * candle that can decide anything is the next one, which is `resolveOpenTrade`
+ * below. What is left to pin on `signalRow` is that it stores the levels and
+ * the confirmations faithfully and always opens the trade.
+ */
+describe('signalRow', () => {
+  it('stores the ticket the trade-plan card would show, and opens it', () => {
+    const s = signal();
+    const { entry, stop, target } = ticketLevels(s);
+    const row = signalRow(s, 0);
     expect(row.result).toBe('open');
     expect(row.entry).toBe(entry);
-    expect(row.stop_pips).toBeCloseTo(Math.abs(entry - row.stop_loss) / pipSize('EUR/USD'), 6);
-  });
-});
-
-describe('signalRow — rule 2, the entry bar can lose but cannot win', () => {
-  it('stops the trade out on its own bar when that bar covered the stop', () => {
-    const s = touch();
-    const { entry, stop } = ticketLevels(s);
-    const row = signalRow(s, bar(1000, entry, entry + 0.0005, stop - 0.0001, entry), 0);
-    expect(row.result).toBe('sl');
+    expect(row.stop_loss).toBe(stop);
+    expect(row.take_profit).toBe(target);
+    expect(row.stop_pips).toBeCloseTo(Math.abs(entry - stop) / pipSize('EUR/USD'), 6);
+    // Nothing is resolved at insert time: the entry bar is already behind it.
+    expect(row.exit_price).toBeNull();
+    expect(row.exit_at).toBeNull();
+    expect(row.bars_held).toBeNull();
+    expect(row.result_pips).toBeNull();
   });
 
-  it('does NOT credit the target on the entry bar, because OHLC cannot order it', () => {
-    const s = touch();
-    const { entry, target } = ticketLevels(s);
-    // The bar reaches the target, but nothing says the high came after the
-    // fill. Crediting it would invent a win out of bar geometry.
-    const row = signalRow(s, bar(1000, entry, target + 0.0005, entry - 0.0001, target), 0);
-    expect(row.result).toBe('open');
+  it('stores the lines and every confirmation, not just the total', () => {
+    const row = signalRow(signal({ chikouFree: null, score: 3 }), 0);
+    expect(row.kumo).toBe('above');
+    expect(row.kijun).toBe(1.0998);
+    expect(row.tenkan).toBe(1.1005);
+    expect(row.senkou_a).toBe(1.097);
+    expect(row.senkou_b).toBe(1.096);
+    expect(row.range_pips).toBe(75);
+    expect(row.score).toBe(3);
+    expect(row.cloud_bullish).toBe(true);
+    expect(row.future_cloud_bullish).toBe(true);
+    // An unknown check is stored as null, never flattened to false: the
+    // history has to be able to say "not knowable" as well as "failed".
+    expect(row.chikou_free).toBeNull();
+    expect(row.tenkan_agrees).toBe(true);
   });
 
-  it('prefers the stop when the entry bar covers both', () => {
-    const s = touch();
-    const { entry, stop, target } = ticketLevels(s);
-    const row = signalRow(s, bar(1000, entry, target + 0.001, stop - 0.001, entry), 0);
-    expect(row.result).toBe('sl');
+  it('mirrors the ticket for a short', () => {
+    const row = signalRow(signal({ direction: 'SHORT', kumo: 'below', stop: 1.103, target: 1.094 }), 0);
+    expect(row.direction).toBe('SHORT');
+    expect(row.stop_loss).toBeGreaterThan(row.entry);
+    expect(row.take_profit).toBeLessThan(row.entry);
+  });
+
+  it('refuses a signal with no usable ticket rather than storing an unmeasurable row', () => {
+    expect(signalRow(signal({ entry: Number.NaN }), 0)).toBeNull();
+    expect(signalRow(signal({ stop: 0 }), 0)).toBeNull();
+  });
+
+  it('records the detection time in whole seconds, as the column expects', () => {
+    expect(signalRow(signal(), 1_763_208_123_456).detected_at).toBe(1_763_208_123);
   });
 });
 
@@ -130,7 +150,7 @@ describe('resolveOpenTrade', () => {
     expect(resolveOpenTrade(openTrade(), candles)).toBeNull();
   });
 
-  it('skips the entry bar, which already had its one chance', () => {
+  it('skips the entry bar, whose range is already behind the fill', () => {
     const { entry, take_profit } = { entry: 1.1, take_profit: 1.102 };
     // The ENTRY bar reaches the target. It must not close the trade here.
     const candles = [bar(1000, entry, take_profit + 0.001, entry, entry), bar(2000, entry, entry, entry, entry)];
@@ -196,8 +216,8 @@ describe('resolveOpenTrade', () => {
  *
  * Replay a real fixture through the backtest, then through the scanner's own
  * two functions, and require the same verdict on every trade the backtest
- * took. This is the test that would fail if someone "fixed" one of the three
- * rules in one place and not the other.
+ * took. This is the test that would fail if someone "fixed" one of the rules
+ * in one place and not the other.
  */
 describe('the scanner and the backtest reach the same verdict', () => {
   const csv = readFileSync(new URL('../fixtures/market/EURUSD_1H.csv', import.meta.url), 'utf8');
@@ -213,17 +233,16 @@ describe('the scanner and the backtest reach the same verdict', () => {
   it('agrees on outcome and pips for every trade the backtest opened', () => {
     // No spread on either side: the scanner records raw pips, so the
     // comparison has to ask the backtest for raw pips too.
-    const bt = backtestTouches(candles, 'EUR/USD', '1H', { costPips: 0 });
+    const bt = backtestIchimoku(candles, 'EUR/USD', '1H', { costPips: 0 });
     const byId = new Map(bt.trades.map((t) => [t.id, t]));
 
-    const { signals } = analyseEma50Touch(candles, 'EUR/USD', '1H');
-    const byTime = new Map(candles.map((c) => [c.time, c]));
+    const { signals } = analyseIchimoku(candles, 'EUR/USD', '1H');
 
     let compared = 0;
     for (const s of signals) {
       const trade = byId.get(s.id);
       if (!trade) continue; // the backtest was already in a position: not comparable
-      const row = signalRow(s, byTime.get(s.barTime), 0);
+      const row = signalRow(s, 0);
       expect(row, `no ticket for ${s.id}`).not.toBeNull();
 
       // Same levels, to the stored precision.
@@ -232,33 +251,33 @@ describe('the scanner and the backtest reach the same verdict', () => {
       expect(row.take_profit).toBeCloseTo(trade.target, 10);
       expect(row.stop_pips).toBeCloseTo(trade.stopPips, 8);
 
-      const outcome = row.result === 'open' ? resolveOpenTrade({ ...row, bar_time: s.barTime }, candles) : null;
-      const scannerExit = row.result === 'open' ? (outcome?.result ?? 'open') : row.result;
-      const scannerPips = row.result === 'sl' ? -row.stop_pips : (outcome?.resultPips ?? null);
-
-      expect(scannerExit, `exit disagrees on ${s.id}`).toBe(trade.exit);
-      if (trade.pips !== null) expect(scannerPips, `pips disagree on ${s.id}`).toBeCloseTo(trade.pips, 6);
+      const outcome = resolveOpenTrade({ ...row, bar_time: s.barTime }, candles);
+      expect(outcome?.result ?? 'open', `exit disagrees on ${s.id}`).toBe(trade.exit);
+      if (trade.pips !== null) {
+        expect(outcome?.resultPips ?? null, `pips disagree on ${s.id}`).toBeCloseTo(trade.pips, 6);
+      }
       compared++;
     }
 
     // Guard the guard: a comparison that silently compared nothing would pass.
-    expect(compared, 'the fixture must produce comparable trades').toBeGreaterThan(50);
+    expect(compared, 'the fixture must produce comparable trades').toBeGreaterThan(20);
   });
 
-  it('refuses the same fills the backtest refuses', () => {
-    const bt = backtestTouches(candles, 'EUR/USD', '1H', { costPips: 0 });
-    const traded = new Set(bt.trades.map((t) => t.id));
-    const { signals } = analyseEma50Touch(candles, 'EUR/USD', '1H');
-    const byTime = new Map(candles.map((c) => [c.time, c]));
+  /**
+   * The scanner records EVERY recent signal; the backtest trades one position
+   * at a time. So the scanner is a superset, and the thing worth pinning is
+   * that it never DROPS one the backtest took — the old version of this test
+   * pinned the mirror image (that both refused the same fills), which no
+   * longer exists now that every signal fills.
+   */
+  it('records every signal the backtest traded, and more besides', () => {
+    const bt = backtestIchimoku(candles, 'EUR/USD', '1H', { costPips: 0 });
+    const { signals } = analyseIchimoku(candles, 'EUR/USD', '1H');
+    const recorded = new Set(signals.map((s) => signalRow(s, 0)).filter(Boolean).map((r) => r.id));
 
-    let nofill = 0;
-    for (const s of signals) {
-      const row = signalRow(s, byTime.get(s.barTime), 0);
-      if (row?.result !== 'nofill') continue;
-      nofill++;
-      // A bar the scanner calls a no-fill must never appear as a backtest trade.
-      expect(traded.has(s.id), `${s.id} was a no-fill here but a trade there`).toBe(false);
+    for (const t of bt.trades) {
+      expect(recorded.has(t.id), `${t.id} was traded but would not be recorded`).toBe(true);
     }
-    expect(nofill, 'the fixture must contain no-fills').toBeGreaterThan(10);
+    expect(recorded.size, 'the scanner must record more than the backtest trades').toBeGreaterThan(bt.trades.length);
   });
 });

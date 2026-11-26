@@ -1,16 +1,16 @@
 /**
  * Server-side scanner: the thing that makes the signal history exist.
  *
- *   trigger (GitHub Actions, every 15 min)
+ *   trigger (GitHub Actions, on a schedule)
  *        │  POST /api/scan   Authorization: Bearer SCANNER_TOKEN
  *        ▼
  *   runScan()
  *        │
- *        ├── per pair ─▶ Yahoo candles ─▶ analyseEma50Touch()   (the bundle:
+ *        ├── per pair ─▶ Yahoo candles ─▶ analyseIchimoku()     (the bundle:
  *        │                                                       the browser's
  *        │                                                       own code)
  *        │                     │
- *        │                     ├─▶ recent closed bars ─▶ ticket ─▶ fill rule
+ *        │                     ├─▶ recent closed bars ─▶ ticket
  *        │                     │        └─▶ insert (on conflict do nothing)
  *        │                     │
  *        │                     └─▶ bars after an OPEN trade ─▶ resolveBar()
@@ -33,18 +33,19 @@
  * schedule (see .github/workflows/scan.yml) which this route simply answers.
  * Nothing here depends on the trigger being punctual — see the lookback below.
  *
- * THE THREE RULES IT SHARES WITH THE BACKTEST
- * ───────────────────────────────────────────
+ * THE RULES IT SHARES WITH THE BACKTEST
+ * ─────────────────────────────────────
  * These are not re-implemented here. They are imported, so there is one
  * answer and not two:
  *
- *   1. ENTRY MUST BE A PRICE THAT TRADED. A resting limit at the EMA fills
- *      only if the touch bar's range covered it. The band is wider than the
- *      line, so many touches never reach it. Those are recorded as 'nofill',
- *      not as trades. Counting them was worth about a fifth of the stop per
- *      trade of fiction when the backtest did it.
- *   2. THE ENTRY BAR CAN STOP YOU OUT, but cannot take profit — OHLC cannot
- *      say whether the high came before or after the fill.
+ *   1. ENTRY IS THE SIGNAL BAR'S CLOSE — a price that traded by definition,
+ *      so there is no fill rule and no 'nofill' outcome. The previous
+ *      strategy rested a limit at the EMA and had to decide whether each bar
+ *      had reached it; a third had not, and filling them anyway was worth
+ *      about a fifth of the stop per trade of fiction.
+ *   2. THE TRADE IS LIVE FROM THE NEXT BAR. The fill is at the signal bar's
+ *      close, so nothing in that bar can decide the trade in either
+ *      direction.
  *   3. SAME-BAR AMBIGUITY GOES TO THE STOP. `resolveBar` decides this, and it
  *      is the backtest's own function.
  *
@@ -61,7 +62,8 @@ import {
   PAIRS,
   STRATEGY_CONFIG,
   TIMEFRAME_SECONDS,
-  analyseEma50Touch,
+  analyseIchimoku,
+  minBars,
   parseTdSeries,
   parseYahooChart,
   pipSize,
@@ -75,7 +77,14 @@ import { YAHOO_REST_DEFAULT, YAHOO_UA } from './yahoo.mjs';
 import { readConfig } from './api.mjs';
 import { closeTrade, finishRun, openTrades, recordSignals, startRun } from './db.mjs';
 
-/** Bars to fetch per pair. Enough for EMA50 + Ichimoku's 52-period span. */
+/**
+ * Bars to fetch per pair.
+ *
+ * Ichimoku needs 104 before it reports anything (Senkou B's 52, the 26-bar
+ * displacement, and 26 more for the range around Kijun), so 300 leaves
+ * roughly two hundred bars of signals inside every window — far more than
+ * `lookbackBars` ever reconsiders.
+ */
 const CANDLE_COUNT = 300;
 
 export function scannerConfig(env = process.env) {
@@ -200,42 +209,25 @@ async function fetchCandles(symbol, timeframe, cfg, state, signal) {
 }
 
 /**
- * Turn a detected touch into the row the database stores.
+ * Turn a detected signal into the row the database stores.
  *
- * Returns null when the touch produces no usable ticket — an ATR that yields
- * a zero stop distance, for instance. A signal with no ticket cannot be
- * measured, and a history of unmeasurable rows is a log, not a record.
+ * Returns null when the signal produces no usable ticket — levels that round
+ * to a zero stop distance on a 2-digit pair, for instance. A signal with no
+ * ticket cannot be measured, and a history of unmeasurable rows is a log, not
+ * a record.
+ *
+ * Every row starts at 'open'. Under the previous strategy this function also
+ * had to decide whether the entry filled and whether the entry bar stopped
+ * the trade out on the spot; both questions are gone with the resting limit.
+ * The fill is the bar's close, so the bar is over, and the first candle that
+ * can decide anything is the next one — which `resolveOpenTrade` handles on
+ * this run or a later one.
  */
-export function signalRow(signal, touchBar, detectedAt) {
+export function signalRow(signal, detectedAt) {
   const levels = ticketLevels(signal);
   if (!levels) return null;
 
   const { direction, entry, stop, target } = levels;
-  const stopPips = Math.abs(entry - stop) / pipSize(signal.symbol);
-
-  // Rule 1: the limit at the EMA fills only if the bar traded there.
-  const filled = touchBar.low <= entry && entry <= touchBar.high;
-
-  // Rule 2: if it filled, the rest of that bar is live, and can only lose.
-  const onEntryBar = filled ? resolveBar(touchBar, direction, stop, target) : null;
-  const stoppedOnEntryBar = onEntryBar?.exit === 'sl';
-
-  /**
-   * A trade stopped on its own bar is CLOSED, so it has to be written with
-   * its outcome, not just its verdict. Recording the 'sl' without the pips
-   * left those losses out of every total — which makes the strategy look
-   * better than it is, since the entry-bar stop is the fastest loss there is.
-   * Caught by scanner.e2e.test.mjs.
-   */
-  const exit = stoppedOnEntryBar
-    ? {
-        exit_price: onEntryBar.price,
-        exit_at: touchBar.time,
-        bars_held: 0,
-        // Raw pips, before spread, like every other result the scanner stores.
-        result_pips: pipsOf(signal.symbol, direction, entry, stop, onEntryBar.price, 0),
-      }
-    : { exit_price: null, exit_at: null, bars_held: null, result_pips: null };
 
   return {
     id: signal.id,
@@ -246,27 +238,34 @@ export function signalRow(signal, touchBar, detectedAt) {
     detected_at: Math.floor(detectedAt / 1000),
     source: signal.source,
 
-    price: signal.price,
-    ema: signal.ema,
-    atr: signal.atr,
-    tolerance_pips: signal.tolerancePips,
+    // The lines as they stood on the signal bar, and the range the stop came
+    // from. Stored rather than recomputed: a later candle window would give
+    // different numbers and answer a different question.
+    kumo: signal.kumo,
+    kijun: signal.kijun,
+    tenkan: signal.tenkan,
+    senkou_a: signal.senkouA,
+    senkou_b: signal.senkouB,
     distance_pips: signal.distancePips,
-    approach: signal.approach,
-    outcome: signal.outcome,
-    trend: signal.trend,
-    bias: signal.bias,
-    counter_trend: signal.counterTrend,
-    ichimoku: signal.ichimoku ?? null,
-    ichimoku_score: signal.ichimoku?.score ?? null,
+    range_pips: signal.rangePips,
+
+    score: signal.score,
+    cloud_bullish: signal.cloudBullish,
+    future_cloud_bullish: signal.futureCloudBullish,
+    chikou_free: signal.chikouFree,
+    tenkan_agrees: signal.tenkanAgrees,
 
     direction,
     entry,
     stop_loss: stop,
     take_profit: target,
-    stop_pips: stopPips,
+    stop_pips: Math.abs(entry - stop) / pipSize(signal.symbol),
 
-    result: !filled ? 'nofill' : stoppedOnEntryBar ? 'sl' : 'open',
-    ...exit,
+    result: 'open',
+    exit_price: null,
+    exit_at: null,
+    bars_held: null,
+    result_pips: null,
   };
 }
 
@@ -274,8 +273,9 @@ export function signalRow(signal, touchBar, detectedAt) {
  * Walk the bars after an open trade's entry and see whether price decided.
  *
  * Pure: candles and the trade in, an outcome or null out. The entry bar is
- * skipped because `signalRow` already gave it its one chance to stop the
- * trade out, and crediting its high as a target would be rule 2 in reverse.
+ * skipped because the fill happened at its close: everything that bar did is
+ * already in the past when the position opens, so crediting its high or
+ * debiting its low would be resolving a trade against bars it never held.
  */
 export function resolveOpenTrade(trade, candles) {
   const barTime = Math.round(Number(trade.bar_time));
@@ -366,26 +366,23 @@ export async function runScan({ env = process.env, now = Date.now(), signal } = 
       // ── record what is new ────────────────────────────────────────────
       if (!cfg.symbols.includes(symbol)) continue; // open trade only; not scanned
 
-      const { signals, reason } = analyseEma50Touch(candles, symbol, cfg.timeframe);
+      const { signals, reason } = analyseIchimoku(candles, symbol, cfg.timeframe);
       if (reason === 'not-enough-bars') {
-        errors.push(`${symbol}: only ${candles.length} ${cfg.timeframe} candles`);
+        errors.push(`${symbol}: only ${candles.length} ${cfg.timeframe} candles, needs ${minBars()}`);
         continue;
       }
 
-      const byTime = new Map(candles.map((c) => [c.time, c]));
       const newest = candles.at(-1);
       // Only bars that have CLOSED, and only recent ones. The detector reports
-      // every touch in 300 bars of history; writing all of them would backfill
-      // the table with history the fixtures already cover.
+      // every signal in 300 bars of history; writing all of them would
+      // backfill the table with history the fixtures already cover.
       const oldest = (newest?.time ?? 0) - cfg.lookbackBars * barSeconds;
 
       const rows = [];
       for (const s of signals) {
         if (s.barTime < oldest) continue;
         if (s.barTime >= (newest?.time ?? 0)) continue; // still forming
-        const bar = byTime.get(s.barTime);
-        if (!bar) continue;
-        const row = signalRow(s, bar, now);
+        const row = signalRow(s, now);
         if (row) rows.push(row);
       }
 

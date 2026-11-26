@@ -1,20 +1,20 @@
 /**
- * Touches, as arrows a chart can draw.
+ * Signals, as arrows a chart can draw.
  *
  * This lives in the strategy layer rather than in the chart because the chart
  * is deliberately strategy-agnostic: it takes {time, side, color} and knows
- * nothing about EMAs or touches. Coupling the two is what once made removing
- * a strategy break the price chart.
+ * nothing about clouds or pullbacks. Coupling the two is what once made
+ * removing a strategy break the price chart.
  *
- * The arrow sits on the side price came FROM, so it points at the candle:
- * a pullback from above gets an up arrow below the bar.
+ * The arrow points the way the trade does, because the trade's direction is
+ * the cloud's and no longer depends on which side price arrived from.
  */
-import type { TouchSignal } from './types';
+import type { IchimokuSignal } from './types';
 
-/** Greyed out: a counter-trend touch is a worse trade, not an impossible one. */
-const COUNTER_TREND = '#7F9189';
-const SHORT = '#F0616D';
 const LONG = '#E9B949';
+const SHORT = '#F0616D';
+/** Greyed out: a signal that fired mid-bar is real but less settled. */
+const LIVE = '#7F9189';
 
 export interface TouchMarker {
   time: number;
@@ -22,12 +22,16 @@ export interface TouchMarker {
   color?: string;
 }
 
-export function touchMarkers(signals: readonly TouchSignal[], symbol: string, timeframe: string): TouchMarker[] {
+export function signalMarkers(
+  signals: readonly IchimokuSignal[],
+  symbol: string,
+  timeframe: string,
+): TouchMarker[] {
   return signals
     .filter((s) => s.symbol === symbol && s.timeframe === timeframe)
     .map((s) => ({
       time: s.barTime,
-      side: s.approach === 'above' ? ('up' as const) : ('down' as const),
-      color: s.counterTrend ? COUNTER_TREND : s.bias === 'short' ? SHORT : LONG,
+      side: s.direction === 'LONG' ? ('up' as const) : ('down' as const),
+      color: s.source === 'live' ? LIVE : s.direction === 'LONG' ? LONG : SHORT,
     }));
 }

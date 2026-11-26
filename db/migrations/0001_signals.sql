@@ -1,4 +1,5 @@
--- Signal history for the EMA50-touch strategy.
+-- Signal history. Written for the EMA50-touch strategy; see 0002, which
+-- retires its columns in favour of Ichimoku's and explains why the rows stay.
 --
 -- WHAT A ROW IS
 -- ─────────────

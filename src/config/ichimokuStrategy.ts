@@ -51,10 +51,17 @@ export interface IchimokuStrategyConfig {
   /**
    * Confirmations required, out of 4, before a signal is tradeable.
    *
-   * Measured on the fixtures, raising this is the only knob that reliably
-   * improves the result: on the harder half of the data the same setup goes
-   * from −4.60 pips at 2 to +0.33 at 4. It is a gate, not a label — which is
-   * the mistake the previous strategy made with its Ichimoku score.
+   * A GATE, not a label. The previous strategy produced a setup and scored it
+   * afterwards, which meant the score decided nothing; here a pullback below
+   * this threshold is not emitted at all.
+   *
+   * It is the one setting with measured evidence behind it, and the evidence
+   * is narrower than it looks. Over the whole fixture set at one pip of cost
+   * the result improves monotonically with the gate — +0.33, +1.15, +1.43,
+   * +3.89 pips at 1, 2, 3 and 4 — but the gain sits almost entirely in the
+   * HARD half of the data: on the older 60% it turns −4.00 into +0.66, while
+   * on the kinder last 40% it is a wash and slightly negative (+11.26 at 2,
+   * +10.68 at 4). Four is chosen for the first of those, not the second.
    */
   minScore: number;
 }

@@ -1,12 +1,12 @@
 /**
- * StrategyEngine — runs the EMA-50 touch strategy across every scanner pair.
+ * StrategyEngine — runs the Ichimoku pullback across every scanner pair.
  *
  *   start(tf)
  *     │
  *     ├─ scan()  ── per symbol ──▶ marketDataService.getCandles()   ← cached & de-duped
- *     │                             └─▶ analyseEma50Touch()
- *     │                                   ├─ historical touches ─▶ signal log
- *     │                                   └─ current level ──────▶ live watch list
+ *     │                             └─▶ analyseIchimoku()
+ *     │                                   ├─ past pullbacks ─▶ signal log
+ *     │                                   └─ Kijun band ────▶ live watch list
  *     │
  *     ├─ every scanTickMs ─▶ re-check which pairs are DUE (arithmetic only)
  *     │                        └─▶ fetch only those whose bar has closed
@@ -40,7 +40,8 @@
  *
  * Signals are keyed by (symbol, timeframe, bar), so re-scanning the same bar
  * never duplicates one — and a 'candle' result upgrades the 'live' signal
- * fired earlier on that bar, because the closed bar knows the outcome.
+ * fired earlier on that bar, because the closed bar has the real close to
+ * enter at rather than a mid-bar quote.
  */
 import { STRATEGY_CONFIG } from '../../config/strategy';
 import { TIMEFRAME_SECONDS, type Timeframe } from '../../config/timeframes';
@@ -49,12 +50,12 @@ import { marketDataService } from '../marketData';
 import { toProviderError, type Quote } from '../marketData/types';
 import { marketStore } from '../../state/marketStore';
 import { signalStore } from '../../state/signalStore';
-import { analyseEma50Touch, checkLiveTouch, touchTimeMs } from './ema50Touch';
-import type { TouchSignal, WatchLevel } from './types';
+import { analyseIchimoku, checkLiveTouch, minBars, signalTimeMs } from './ichimokuSignal';
+import type { IchimokuLevel, IchimokuSignal } from './types';
 
 /** Newest first, de-duplicated by id; a candle result replaces a live one. */
-export function mergeSignals(existing: readonly TouchSignal[], incoming: readonly TouchSignal[], cap: number): TouchSignal[] {
-  if (incoming.length === 0) return existing as TouchSignal[];
+export function mergeSignals(existing: readonly IchimokuSignal[], incoming: readonly IchimokuSignal[], cap: number): IchimokuSignal[] {
+  if (incoming.length === 0) return existing as IchimokuSignal[];
   const byId = new Map(existing.map((s) => [s.id, s]));
   let changed = false;
   for (const s of incoming) {
@@ -63,10 +64,10 @@ export function mergeSignals(existing: readonly TouchSignal[], incoming: readonl
     byId.set(s.id, prev ? { ...s, detectedAt: prev.detectedAt } : s);
     changed = true;
   }
-  if (!changed) return existing as TouchSignal[];
-  // Newest touch first, by market time — a fresh live tick outranks a bar
+  if (!changed) return existing as IchimokuSignal[];
+  // Newest signal first, by market time — a fresh live tick outranks a bar
   // that closed an hour ago, whichever order the scan happened to find them.
-  return [...byId.values()].sort((a, b) => touchTimeMs(b) - touchTimeMs(a) || b.barTime - a.barTime).slice(0, cap);
+  return [...byId.values()].sort((a, b) => signalTimeMs(b) - signalTimeMs(a) || b.barTime - a.barTime).slice(0, cap);
 }
 
 /** What the engine remembers about one pair between ticks. */
@@ -111,7 +112,7 @@ export class StrategyEngine {
   private session = 0;
   private timer?: ReturnType<typeof setInterval>;
   private unsubscribe?: () => void;
-  private levels = new Map<string, WatchLevel>();
+  private levels = new Map<string, IchimokuLevel>();
   /** Per pair: the newest bar we hold and when we got it. Drives the schedule. */
   private pairs = new Map<string, PairState>();
   /** Kept across ticks, because a tick only touches the pairs it refetched. */
@@ -169,7 +170,7 @@ export class StrategyEngine {
     // The scanner's symbol list, published by MarketDataService.
     const symbols = marketStore.get().symbols;
     const barSeconds = TIMEFRAME_SECONDS[this.timeframe];
-    const found: TouchSignal[] = [];
+    const found: IchimokuSignal[] = [];
     let fetched = 0;
     let failures = 0;
     let changed = false;
@@ -186,14 +187,14 @@ export class StrategyEngine {
         // cache would otherwise hand back a copy taken before it did.
         const candles = await marketDataService.getCandles(symbol, this.timeframe, APP_CONFIG.chartCandleCount, { force: true });
         if (session !== this.session) return;
-        const { signals, level, reason } = analyseEma50Touch(candles, symbol, this.timeframe);
+        const { signals, level, reason } = analyseIchimoku(candles, symbol, this.timeframe);
         changed = true;
 
         const newest = candles.at(-1);
         if (newest) this.pairs.set(symbol, { newestBarTime: newest.time, fetchedAt: Date.now() });
 
         if (reason === 'not-enough-bars') {
-          this.notices.set(symbol, `Needs ${STRATEGY_CONFIG.ema50Touch.minBars} ${this.timeframe} candles, got ${candles.length}`);
+          this.notices.set(symbol, `Needs ${minBars()} ${this.timeframe} candles, got ${candles.length}`);
           this.levels.delete(symbol);
           continue;
         }
@@ -226,10 +227,10 @@ export class StrategyEngine {
     }));
   }
 
-  /** Live path: a tick that reaches the band signals immediately. */
+  /** Live path: a tick that reaches the Kijun band signals immediately. */
   private onQuotes(quotes: Quote[]): void {
     if (quotes.length === 0) return;
-    const fired: TouchSignal[] = [];
+    const fired: IchimokuSignal[] = [];
     let levelsChanged = false;
 
     for (const quote of quotes) {

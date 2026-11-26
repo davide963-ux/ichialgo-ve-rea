@@ -1,5 +1,5 @@
 /**
- * Backtest — what the EMA50 touch strategy did on real candles.
+ * Backtest — what the Ichimoku Kijun pullback did on real candles.
  *
  * THE ORDER IS THE ARGUMENT
  * ─────────────────────────
@@ -25,19 +25,28 @@
  * EVERY NUMBER IS IN PIPS, AND THE AVERAGE STOP IS SHOWN NEXT TO IT
  * ─────────────────────────────────────────────────────────────────
  * Pips are checkable against the chart, which is why they are here. But the
- * stop is ATR-based, so trades risk different amounts and the pip average is
- * an average over unequal bets — and across JPY and non-JPY pairs it adds two
- * different pip values outright. Neither is hidden: the average stop sits
- * beside the average result, and `portfolio.mixesPipValues` drives a note
- * above the totals whenever the selection spans both kinds of pair.
+ * stop is a fraction of the 26-bar range, so trades risk different amounts
+ * and the pip average is an average over unequal bets — and across JPY and
+ * non-JPY pairs it adds two different pip values outright. Neither is hidden:
+ * the average stop sits beside the average result, and
+ * `portfolio.mixesPipValues` drives a note above the totals whenever the
+ * selection spans both kinds of pair.
+ *
+ * THE CONFIRMATION CONTROL RE-RUNS THE RULE, IT DOES NOT FILTER THE OUTPUT
+ * ───────────────────────────────────────────────────────────────────────
+ * The gate lives inside the detector: a pullback below `minScore` is never
+ * emitted, so a filter applied afterwards could only ever tighten it. Moving
+ * this control runs the DETECTOR again at that threshold, which is what makes
+ * "what would 2 of 4 have done?" an answerable question — and the evidence
+ * for the default sitting at 4.
  */
 import { useMemo, useState } from 'react';
 import { EquityCurve, type EquityPoint } from '../components/EquityCurve';
 import { MetricCard } from '../components/MetricCard';
-import { EMA50_TOUCH, ICHIMOKU_CONFLUENCE, TRADE_PLAN } from '../config/strategy';
+import { ICHIMOKU_SIGNAL_CHECKS, ICHIMOKU_STRATEGY } from '../config/ichimokuStrategy';
 import { FIXTURE_PAIRS, UNTESTED_PAIRS, useBacktest } from '../hooks/useBacktest';
 import { formatNumber } from '../lib/format';
-import { ICHIMOKU_CHECKS, type BacktestFilters, type BacktestMetrics } from '../services/strategy';
+import type { BacktestFilters, BacktestMetrics } from '../services/strategy';
 
 const DEFAULT_COST_PIPS = 1;
 const TRADE_ROWS = 60;
@@ -82,14 +91,13 @@ function verdict(m: BacktestMetrics): { text: string; tone: 'pos' | 'neg' | 'mut
 
 export function Backtest() {
   const [symbols, setSymbols] = useState<string[]>(FIXTURE_PAIRS.map((p) => p.symbol));
-  const [minIchimoku, setMinIchimoku] = useState(0);
-  const [skipCounterTrend, setSkipCounterTrend] = useState(false);
+  const [minScore, setMinScore] = useState(ICHIMOKU_STRATEGY.minScore);
   const [costPips, setCostPips] = useState(DEFAULT_COST_PIPS);
   const [showAll, setShowAll] = useState(false);
 
   const filters = useMemo<BacktestFilters>(
-    () => ({ minIchimoku, skipCounterTrend, costPips }),
-    [minIchimoku, skipCounterTrend, costPips],
+    () => ({ costPips, config: { ...ICHIMOKU_STRATEGY, minScore } }),
+    [minScore, costPips],
   );
   const { status, error, results, portfolio, span } = useBacktest(symbols, filters);
 
@@ -111,8 +119,12 @@ export function Backtest() {
     setSymbols((prev) => (prev.includes(symbol) ? prev.filter((s) => s !== symbol) : [...prev, symbol]));
 
   const totals = results.reduce(
-    (acc, res) => ({ touches: acc.touches + res.touches, noFill: acc.noFill + res.noFill, filtered: acc.filtered + res.filtered }),
-    { touches: 0, noFill: 0, filtered: 0 },
+    (acc, res) => ({
+      signals: acc.signals + res.signals,
+      skipped: acc.skipped + res.skippedWhileOpen,
+      filtered: acc.filtered + res.filtered,
+    }),
+    { signals: 0, skipped: 0, filtered: 0 },
   );
 
   const shown = portfolio ? (showAll ? portfolio.trades : portfolio.trades.slice(0, TRADE_ROWS)) : [];
@@ -124,9 +136,9 @@ export function Backtest() {
         <div>
           <h1>Backtest</h1>
           <p className="page-sub">
-            The EMA{EMA50_TOUCH.period} touch strategy replayed over real OANDA candles — entry at the EMA, stop{' '}
-            {TRADE_PLAN.stopAtrMultiple}× ATR beyond it, target {TRADE_PLAN.rewardMultiple}× the stop distance.
-            {span && ` ${day(span.from)} – ${day(span.to)}, 1H.`}
+            The Ichimoku Kijun pullback replayed over real OANDA candles — entry at the pullback bar's close, stop{' '}
+            {ICHIMOKU_STRATEGY.stopRange} × the 26-bar range, target {ICHIMOKU_STRATEGY.rewardMultiple}× the stop
+            distance.{span && ` ${day(span.from)} – ${day(span.to)}, 1H.`}
           </p>
         </div>
       </div>
@@ -138,7 +150,8 @@ export function Backtest() {
           <div>
             <h2 className="panel-title">Settings</h2>
             <span className="panel-sub">
-              Same detector and same ticket levels the live page uses — there is no backtest-only version of the rules.
+              Same detector and same ticket levels the live page uses — there is no backtest-only version of the
+              rules.
             </span>
           </div>
         </div>
@@ -156,16 +169,20 @@ export function Backtest() {
           </fieldset>
 
           <fieldset className="control-group">
-            <legend>Ichimoku agreement</legend>
+            <legend>Confirmations required</legend>
             <div className="chip-row">
-              {[0, 2, 3, 4, 5].map((n) => (
-                <label key={n} className={`chip${minIchimoku === n ? ' on' : ''}`}>
-                  <input type="radio" name="ichi" checked={minIchimoku === n} onChange={() => setMinIchimoku(n)} />
-                  {n === 0 ? 'any' : `≥ ${n}/${ICHIMOKU_CHECKS}`}
+              {[1, 2, 3, 4].map((n) => (
+                <label key={n} className={`chip${minScore === n ? ' on' : ''}`}>
+                  <input type="radio" name="score" checked={minScore === n} onChange={() => setMinScore(n)} />
+                  {n}/{ICHIMOKU_SIGNAL_CHECKS}
+                  {n === ICHIMOKU_STRATEGY.minScore ? ' ·' : ''}
                 </label>
               ))}
             </div>
-            <span className="panel-sub">Live default is {ICHIMOKU_CONFLUENCE.agreeThreshold}/{ICHIMOKU_CHECKS}.</span>
+            <span className="panel-sub">
+              Re-runs the detector at that gate rather than filtering its output, so a weaker setting really does
+              produce the weaker signals. The live default is marked.
+            </span>
           </fieldset>
 
           <fieldset className="control-group">
@@ -179,18 +196,11 @@ export function Backtest() {
               ))}
             </div>
             <span className="panel-sub">
-              Spread, taken straight off the result. The stop is ~10 pips, so each pip of spread is about a tenth
-              of the bet.
+              Spread, taken straight off the result. The stop averages around ten pips, so each pip of spread is
+              roughly a tenth of the bet.
             </span>
           </fieldset>
 
-          <fieldset className="control-group">
-            <legend>Direction</legend>
-            <label className="overlay-toggle">
-              <input type="checkbox" checked={skipCounterTrend} onChange={(e) => setSkipCounterTrend(e.target.checked)} />
-              Skip touches against the EMA trend
-            </label>
-          </fieldset>
         </div>
       </section>
 
@@ -206,10 +216,10 @@ export function Backtest() {
             <div className="panel-body">
               <p className={`verdict ${v.tone}`}>{v.text}</p>
               <p className="panel-sub">
-                {metrics.trades} trades from {totals.touches} touches — {totals.filtered} filtered out,{' '}
-                {totals.noFill} never reached the entry, and a touch arriving while a position was already open is
-                skipped. Win rate {pct(metrics.winRatePct)} against the {pct(metrics.breakEvenWinRatePct)} this payoff
-                needs to break even.
+                {metrics.trades} trades from {totals.signals} signals — {totals.filtered} filtered out and{' '}
+                {totals.skipped} skipped because a position was already open. Entry is the signal bar's close, so
+                every trade taken filled. Win rate {pct(metrics.winRatePct)} against the{' '}
+                {pct(metrics.breakEvenWinRatePct)} this payoff needs to break even.
               </p>
             </div>
           </section>
@@ -271,8 +281,8 @@ export function Backtest() {
                 <thead>
                   <tr>
                     <th>PAIR</th>
-                    <th className="num">TOUCHES</th>
-                    <th className="num">NO FILL</th>
+                    <th className="num">SIGNALS</th>
+                    <th className="num">SKIPPED</th>
                     <th className="num">TRADES</th>
                     <th className="num">WIN</th>
                     <th className="num">AVG PIPS</th>
@@ -285,8 +295,8 @@ export function Backtest() {
                   {results.map((res) => (
                     <tr key={res.symbol}>
                       <td>{res.symbol}</td>
-                      <td className="num muted">{res.touches}</td>
-                      <td className="num muted">{res.noFill}</td>
+                      <td className="num muted">{res.signals}</td>
+                      <td className="num muted">{res.skippedWhileOpen}</td>
                       <td className="num">{res.metrics.trades}</td>
                       <td className="num">{pct(res.metrics.winRatePct)}</td>
                       <td className={`num ${(res.metrics.averagePips ?? 0) > 0 ? 'pos' : (res.metrics.averagePips ?? 0) < 0 ? 'neg' : ''}`}>
@@ -328,7 +338,7 @@ export function Backtest() {
                     <th className="num">ENTRY</th>
                     <th className="num">STOP</th>
                     <th className="num">TARGET</th>
-                    <th className="num">ICHI</th>
+                    <th className="num">SCORE</th>
                     <th className="num">BARS</th>
                     <th>EXIT</th>
                     <th className="num">STOP PIPS</th>
@@ -342,12 +352,11 @@ export function Backtest() {
                       <td>{t.symbol}</td>
                       <td>
                         <span className={`tag ${t.direction === 'LONG' ? 'pos' : 'neg'}`}>{t.direction}</span>
-                        {t.counterTrend && <span className="tag warn" title="Against the EMA trend">COUNTER</span>}
                       </td>
                       <td className="num">{formatNumber(t.entry, 5)}</td>
                       <td className="num muted">{formatNumber(t.stop, 5)}</td>
                       <td className="num muted">{formatNumber(t.target, 5)}</td>
-                      <td className="num muted">{t.ichimokuScore === null ? '—' : `${t.ichimokuScore}/${ICHIMOKU_CHECKS}`}</td>
+                      <td className="num muted">{t.score}/{ICHIMOKU_SIGNAL_CHECKS}</td>
                       <td className="num muted">{t.exit === 'open' ? '—' : t.barsHeld}</td>
                       <td>
                         <span className={`tag ${t.exit === 'tp' ? 'pos' : t.exit === 'sl' ? 'neg' : ''}`}>
@@ -396,7 +405,7 @@ export function Backtest() {
               </li>
               <li>
                 <strong>Costs are a flat estimate.</strong> Real spreads widen at the open, on news and overnight,
-                exactly when the EMA tends to get touched. Swap on positions held overnight is not modelled at all.
+                exactly when Kijun tends to get retested. Swap on positions held overnight is not modelled at all.
               </li>
             </ul>
           </section>

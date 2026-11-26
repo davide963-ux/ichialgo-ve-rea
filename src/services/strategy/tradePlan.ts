@@ -1,113 +1,99 @@
 /**
- * Turns an EMA50 touch into an order ticket.
+ * Turns a signal into an order ticket.
  *
- *   entry = the EMA itself (the level a limit order would fill at)
- *   stop  = entry ∓ stopAtrMultiple × ATR, floored at minStopPips
- *   target= entry ± rewardMultiple × (stop distance)
+ * The three prices are NOT computed here. They come off the signal, where the
+ * detector put them, because they are Ichimoku's own numbers:
  *
- *                        ┌──── target  (entry + 2R)
+ *   entry  = the close that completed the pullback (where a market order fills)
+ *   stop   = entry ∓ stopRange × the 26-bar range
+ *   target = entry ± rewardMultiple × (stop distance)
+ *
+ *                        ┌──── target  (entry + 2 × risk)
  *          LONG          │
- *          (touch from   │
- *           above, EMA   ●──── entry = EMA50
- *           rising)      │
- *                        └──── stop   (entry − 1.5 × ATR)
+ *          (price above  │
+ *           the Kumo,    ●──── entry = the pullback close
+ *           caught at    │
+ *           Kijun)       └──── stop   (entry − 0.4 × the 26-bar range)
  *
- * The stop is ATR-based rather than a fixed pip count for the same reason the
- * touch band is: the wick that tagged the EMA is itself roughly one ATR long,
- * so a fixed stop would be taken out by ordinary noise in a fast market and
- * be needlessly wide in a quiet one.
+ * This file does two things to them and nothing else: rounds them to prices a
+ * broker will accept, and sizes the position. The stop used to be built here
+ * from an average true range, with a pip floor underneath it; both are gone,
+ * and with them the possibility of the ticket and the backtest disagreeing
+ * about what was risked.
  *
  * Sizing is delegated to lib/positionSize.ts — the same tested math the
- * calculator uses. Prices are rounded to the pair's own precision BEFORE
- * sizing: you cannot place an order at 1.1015183, and sizing off the raw
- * float would make the plan disagree with the calculator it prefills.
+ * calculator uses. Prices are rounded BEFORE sizing: you cannot place an
+ * order at 1.1015183, and sizing off the raw float would make the plan
+ * disagree with the calculator it prefills.
  */
+import { ICHIMOKU_SIGNAL_CHECKS } from '../../config/ichimokuStrategy';
 import { getPair } from '../../config/pairs';
-import { TRADE_PLAN, type TradePlanConfig } from '../../config/strategy';
 import { pipSize } from '../../lib/pips';
 import { calculatePosition, type RateLookup } from '../../lib/positionSize';
 import type { AccountState } from '../../state/accountStore';
-import type { TouchSignal } from './types';
+import type { Direction, IchimokuSignal } from './types';
 
 export interface TradePlan {
-  direction: 'LONG' | 'SHORT';
+  direction: Direction;
   entry: number;
   stop: number;
   target: number;
   stopPips: number;
   targetPips: number;
+  /** Target distance ÷ stop distance, from the rounded prices actually used. */
   riskReward: number;
-  atrPips: number;
+  /** The 26-bar range in pips — what the stop is a fraction of. */
+  rangePips: number;
   /** Null when the position cannot be sized (missing USD rate, sub-minimum lot). */
   lots: number | null;
   units: number | null;
   riskAmount: number | null;
   potentialLoss: number | null;
   potentialProfit: number | null;
-  /** Reasons to hesitate: counter-trend touch, sizing warnings, stop at the floor. */
+  /** Reasons to hesitate: sizing warnings, a confirmation that is unknown. */
   warnings: string[];
 }
 
 /**
- * Direction implied by a touch.
+ * The three prices a broker would accept, rounded to the pair's precision.
  *
- * A touch from ABOVE is a pullback — the trade is a long off the level.
- * A touch from BELOW is a rally into resistance — the trade is a short.
- * `bias` is not used here: it encodes trend AGREEMENT, and a counter-trend
- * touch still has a direction, it is just a worse trade (and is flagged).
- */
-export const directionOf = (signal: Pick<TouchSignal, 'approach'>): 'LONG' | 'SHORT' =>
-  signal.approach === 'above' ? 'LONG' : 'SHORT';
-
-/**
- * The three prices of a ticket, with no sizing.
- *
- * Split out so the BACKTEST uses this and nothing of its own: a backtested
- * trade and a live ticket then come from one implementation, and there is no
- * "backtest version" of the levels that could quietly drift from the ones
- * actually being traded. Sizing needs an account balance; R multiples do not,
- * which is the whole reason a backtest measures in R.
+ * Split out because the server-side scanner uses this and nothing of its own,
+ * so a recorded trade and a displayed ticket come from one implementation.
+ * Returns null when the levels are unusable — a zero stop distance after
+ * rounding, which a pair with 2 digits and a very quiet range can produce.
  */
 export interface TicketLevels {
-  direction: 'LONG' | 'SHORT';
+  direction: Direction;
   entry: number;
   stop: number;
   target: number;
-  /** True when the ATR was small enough that the pip floor set the stop. */
-  atStopFloor: boolean;
 }
 
-export function ticketLevels(signal: TouchSignal, config: TradePlanConfig = TRADE_PLAN): TicketLevels | null {
-  if (!Number.isFinite(signal.ema) || signal.ema <= 0) return null;
+export function ticketLevels(signal: IchimokuSignal): TicketLevels | null {
+  const digits = getPair(signal.symbol).digits;
+  const round = (v: number) => Number(v.toFixed(digits));
+  if (![signal.entry, signal.stop, signal.target].every((v) => Number.isFinite(v) && v > 0)) return null;
 
-  const pip = pipSize(signal.symbol);
-  const round = (v: number) => Number(v.toFixed(getPair(signal.symbol).digits));
-  const direction = directionOf(signal);
-  const entry = round(signal.ema);
+  const entry = round(signal.entry);
+  const stop = round(signal.stop);
+  const target = round(signal.target);
+  if (stop <= 0 || stop === entry || target === entry) return null;
 
-  const rawStopDistance = Math.max(signal.atr * config.stopAtrMultiple, config.minStopPips * pip);
-  const stop = round(direction === 'LONG' ? entry - rawStopDistance : entry + rawStopDistance);
-  if (stop <= 0 || stop === entry) return null;
-  const stopDistance = Math.abs(entry - stop);
-  const target = round(
-    direction === 'LONG' ? entry + stopDistance * config.rewardMultiple : entry - stopDistance * config.rewardMultiple,
-  );
-
-  return { direction, entry, stop, target, atStopFloor: rawStopDistance <= config.minStopPips * pip };
+  return { direction: signal.direction, entry, stop, target };
 }
 
-export function planFromTouch(
-  signal: TouchSignal,
+export function planFromSignal(
+  signal: IchimokuSignal,
   account: AccountState,
   lookup: RateLookup = () => null,
-  config: TradePlanConfig = TRADE_PLAN,
 ): TradePlan | null {
-  const levels = ticketLevels(signal, config);
+  const levels = ticketLevels(signal);
   if (!levels) return null;
 
   const pip = pipSize(signal.symbol);
   const { direction, entry, stop, target } = levels;
   const stopDistance = Math.abs(entry - stop);
+  const targetDistance = Math.abs(target - entry);
 
   const sized = calculatePosition(
     { balance: account.balance, riskPct: account.riskPct, symbol: signal.symbol, entry, stopLoss: stop, takeProfit: target },
@@ -115,9 +101,16 @@ export function planFromTouch(
   );
 
   const warnings = [...sized.warnings, ...sized.errors];
-  if (signal.counterTrend) warnings.unshift('Touch is against the EMA trend — the weaker case.');
-  if (levels.atStopFloor) {
-    warnings.push(`ATR is small: the stop is at the ${config.minStopPips}-pip floor, not ${config.stopAtrMultiple}×ATR.`);
+  if (signal.score < ICHIMOKU_SIGNAL_CHECKS) {
+    warnings.unshift(
+      `${signal.score} of ${ICHIMOKU_SIGNAL_CHECKS} Ichimoku confirmations — above the gate, but not unanimous.`,
+    );
+  }
+  if (signal.chikouFree === null) {
+    warnings.push('Chikou could not be checked: there are fewer than 26 bars behind this signal.');
+  }
+  if (signal.source === 'live') {
+    warnings.push('Fired from a live tick inside an unfinished bar — the cloud is read from the last closed one.');
   }
 
   return {
@@ -126,9 +119,9 @@ export function planFromTouch(
     stop,
     target,
     stopPips: stopDistance / pip,
-    targetPips: Math.abs(target - entry) / pip,
-    riskReward: config.rewardMultiple,
-    atrPips: signal.atr / pip,
+    targetPips: targetDistance / pip,
+    riskReward: stopDistance > 0 ? targetDistance / stopDistance : 0,
+    rangePips: signal.rangePips,
     lots: sized.ok ? sized.lots : null,
     units: sized.ok ? sized.units : null,
     riskAmount: sized.riskAmount,

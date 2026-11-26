@@ -4,11 +4,20 @@
  * Every test here is about a decision that changes the headline number: which
  * bar can close a trade, what happens when one bar covers both exits, whether
  * an unfinished trade is counted. Those are the ways a backtest lies.
+ *
+ * The walk-forward tests run on the REAL fixture rather than a hand-built
+ * series, and that is not laziness. Ichimoku needs 104 bars before it reports
+ * anything and a cloud it is clear of; a synthetic series shaped to produce
+ * one signal would be shaped by whatever the detector happens to do, which is
+ * the thing under test. The fixture also crowds out signals, which is the
+ * case the one-position rule exists for and a toy series cannot show.
  */
 import { describe, expect, it } from 'vitest';
+import { ICHIMOKU_SIGNAL_CHECKS, ICHIMOKU_STRATEGY } from '../../config/ichimokuStrategy';
 import type { Candle } from '../marketData/types';
-import { backtestTouches, combine, equityCurve, measure, pipsOf, type BacktestTrade } from './backtest';
-import { analyseEma50Touch } from './ema50Touch';
+import { backtestIchimoku, combine, equityCurve, measure, pipsOf, type BacktestResult, type BacktestTrade } from './backtest';
+import { analyseIchimoku } from './ichimokuSignal';
+import { ticketLevels } from './tradePlan';
 import eurusd from '../../../fixtures/market/EURUSD_1H.csv?raw';
 
 const bar = (time: number, o: number, h: number, l: number, c: number): Candle => ({
@@ -33,9 +42,12 @@ function parseCsv(csv: string): Candle[] {
     });
 }
 
+const candles = parseCsv(eurusd);
+const SYMBOL = 'EUR/USD';
+
 const trade = (over: Partial<BacktestTrade> = {}): BacktestTrade => ({
   id: 't',
-  symbol: 'EUR/USD',
+  symbol: SYMBOL,
   timeframe: '1H',
   direction: 'LONG',
   entryTime: 0,
@@ -48,18 +60,29 @@ const trade = (over: Partial<BacktestTrade> = {}): BacktestTrade => ({
   barsHeld: 1,
   pips: 200,
   stopPips: 100,
-  ichimokuScore: 3,
-  counterTrend: false,
-  touchOutcome: 'bounce',
+  score: ICHIMOKU_SIGNAL_CHECKS,
+  rangePips: 250,
   ...over,
+});
+
+const result = (symbol: string, exitTime: number, pips: number): BacktestResult => ({
+  symbol,
+  timeframe: '1H',
+  bars: 0,
+  signals: 0,
+  filtered: 0,
+  skippedWhileOpen: 0,
+  trades: [trade({ symbol, exitTime, pips })],
+  metrics: measure([]),
+  equity: [],
 });
 
 describe('pipsOf', () => {
   it('measures a win and a loss in pips, both directions', () => {
-    expect(pipsOf('EUR/USD', 'LONG', 1.1, 1.09, 1.12)).toBeCloseTo(200, 6);
-    expect(pipsOf('EUR/USD', 'LONG', 1.1, 1.09, 1.09)).toBeCloseTo(-100, 6);
-    expect(pipsOf('EUR/USD', 'SHORT', 1.1, 1.11, 1.08)).toBeCloseTo(200, 6);
-    expect(pipsOf('EUR/USD', 'SHORT', 1.1, 1.11, 1.11)).toBeCloseTo(-100, 6);
+    expect(pipsOf(SYMBOL, 'LONG', 1.1, 1.09, 1.12)).toBeCloseTo(200, 6);
+    expect(pipsOf(SYMBOL, 'LONG', 1.1, 1.09, 1.09)).toBeCloseTo(-100, 6);
+    expect(pipsOf(SYMBOL, 'SHORT', 1.1, 1.11, 1.08)).toBeCloseTo(200, 6);
+    expect(pipsOf(SYMBOL, 'SHORT', 1.1, 1.11, 1.11)).toBeCloseTo(-100, 6);
   });
 
   /**
@@ -67,21 +90,21 @@ describe('pipsOf', () => {
    * different number of pips on a JPY pair, and getting this wrong would
    * inflate every JPY result by a hundred times.
    */
-  it('uses the pair\'s own pip size, so a JPY pip is 0.01', () => {
+  it("uses the pair's own pip size, so a JPY pip is 0.01", () => {
     expect(pipsOf('USD/JPY', 'LONG', 150.0, 149.0, 152.0)).toBeCloseTo(200, 6);
-    expect(pipsOf('EUR/USD', 'LONG', 1.1, 1.0999, 1.1002)).toBeCloseTo(2, 6);
+    expect(pipsOf(SYMBOL, 'LONG', 1.1, 1.0999, 1.1002)).toBeCloseTo(2, 6);
   });
 
   /** Cost is a price distance, so it must be charged before the pip division. */
   it('charges the cost in price units, not in pips', () => {
     // 1 pip of EUR/USD = 0.0001: a +200-pip win becomes +199.
-    expect(pipsOf('EUR/USD', 'LONG', 1.1, 1.09, 1.12, 0.0001)).toBeCloseTo(199, 6);
+    expect(pipsOf(SYMBOL, 'LONG', 1.1, 1.09, 1.12, 0.0001)).toBeCloseTo(199, 6);
     // 1 pip of USD/JPY = 0.01, a hundred times the price distance.
     expect(pipsOf('USD/JPY', 'LONG', 150.0, 149.0, 152.0, 0.01)).toBeCloseTo(199, 6);
   });
 
   it('refuses a zero-risk trade rather than reporting a result for it', () => {
-    expect(pipsOf('EUR/USD', 'LONG', 1.1, 1.1, 1.2)).toBeNull();
+    expect(pipsOf(SYMBOL, 'LONG', 1.1, 1.1, 1.2)).toBeNull();
   });
 });
 
@@ -170,73 +193,61 @@ describe('equityCurve', () => {
 
 // ── the walk-forward rules ────────────────────────────────────────────────
 
-/**
- * A series that pulls back to its own EMA and then resolves the way the test
- * needs. Built by hand so the exit bar is unambiguous.
- */
-function seriesWithTouch(after: Candle[]): { candles: Candle[]; symbol: string } {
-  const symbol = 'EUR/USD';
-  const candles: Candle[] = [];
-  let t = 1_700_000_000;
-  // A long, gentle uptrend: enough bars for EMA50 + ATR14 to exist.
-  let price = 1.1;
-  for (let i = 0; i < 80; i++) {
-    const open = price;
-    price += 0.0004;
-    candles.push(bar(t, open, price + 0.0002, open - 0.0002, price));
-    t += 3600;
-  }
-  // A pullback that reaches back down into the EMA.
-  for (let i = 0; i < 12; i++) {
-    const open = price;
-    price -= 0.0011;
-    candles.push(bar(t, open, open + 0.0002, price - 0.0002, price));
-    t += 3600;
-  }
-  for (const c of after) candles.push({ ...c, time: t, ...(t += 3600, {}) });
-  return { candles, symbol };
-}
+describe('backtestIchimoku', () => {
+  const run = backtestIchimoku(candles, SYMBOL, '1H');
 
-describe('backtestTouches', () => {
-  const symbol = 'EUR/USD';
+  it('produces trades from the fixture at all', () => {
+    expect(run.signals).toBeGreaterThan(50);
+    expect(run.trades.length).toBeGreaterThan(20);
+  });
 
   /**
-   * The touch bar's range mostly happened BEFORE the touch — its extremes sit
-   * where the move began. Letting it also close the trade books a target the
-   * trade never had a chance to reach.
+   * Rule 1. A market order at the close fills at the close, which is the one
+   * price in the bar that cannot be argued about. The previous strategy
+   * entered on a resting limit and had to decide whether each bar reached it.
+   */
+  it("enters at the signal bar's close, so every trade is fillable by construction", () => {
+    const byTime = new Map(candles.map((c) => [c.time, c]));
+    const signals = new Map(analyseIchimoku(candles, SYMBOL, '1H').signals.map((s) => [s.id, s]));
+    for (const t of run.trades) {
+      const entryBar = byTime.get(t.entryTime)!;
+      expect(t.entry).toBeGreaterThanOrEqual(entryBar.low);
+      expect(t.entry).toBeLessThanOrEqual(entryBar.high);
+      // And it is the close specifically, not merely inside the bar.
+      expect(t.entry).toBe(ticketLevels(signals.get(t.id)!)!.entry);
+    }
+  });
+
+  /**
+   * Rule 2. The fill is at the signal bar's CLOSE, so everything that bar did
+   * is already behind the position. Letting it close the trade would resolve
+   * a trade against bars it never held — in either direction.
    */
   it('never closes a trade on the bar that opened it', () => {
-    const { candles } = seriesWithTouch([]);
-    const result = backtestTouches(candles, symbol, '1H');
-    for (const t of result.trades) {
+    for (const t of run.trades) {
       if (t.exitTime !== null) expect(t.exitTime).toBeGreaterThan(t.entryTime);
-      expect(t.barsHeld === 0 ? t.exit : 'ok').not.toBe('tp');
+      if (t.exit !== 'open') expect(t.barsHeld).toBeGreaterThanOrEqual(1);
     }
   });
 
   it('takes the stop when one bar covers both the stop and the target', () => {
-    const { candles } = seriesWithTouch([]);
-    const base = backtestTouches(candles, symbol, '1H');
-    const first = base.trades[0];
-    expect(first, 'the fixture must produce a trade').toBeTruthy();
-
+    const first = run.trades[0]!;
     // Replace everything after entry with one bar that engulfs both levels.
-    const entryIndex = candles.findIndex((c) => c.time === first!.entryTime);
+    const entryIndex = candles.findIndex((c) => c.time === first.entryTime);
     const wide = candles.slice(0, entryIndex + 1);
-    const lo = Math.min(first!.stop, first!.target) - 0.005;
-    const hi = Math.max(first!.stop, first!.target) + 0.005;
-    wide.push(bar(candles[entryIndex]!.time + 3600, first!.entry, hi, lo, first!.entry));
+    const lo = Math.min(first.stop, first.target) - 0.005;
+    const hi = Math.max(first.stop, first.target) + 0.005;
+    wide.push(bar(candles[entryIndex]!.time + 3600, first.entry, hi, lo, first.entry));
 
-    const result = backtestTouches(wide, symbol, '1H');
-    expect(result.trades[0]!.exit).toBe('sl');
+    const engulfed = backtestIchimoku(wide, SYMBOL, '1H');
+    const same = engulfed.trades.find((t) => t.id === first.id)!;
+    expect(same.exit).toBe('sl');
     // Stopped out: the loss is exactly the stop distance it recorded.
-    expect(result.trades[0]!.pips).toBeCloseTo(-result.trades[0]!.stopPips, 6);
+    expect(same.pips).toBeCloseTo(-same.stopPips, 6);
   });
 
   it('holds at most one position at a time', () => {
-    const { candles } = seriesWithTouch([]);
-    const result = backtestTouches(candles, symbol, '1H');
-    const sorted = [...result.trades].sort((a, b) => a.entryTime - b.entryTime);
+    const sorted = [...run.trades].sort((a, b) => a.entryTime - b.entryTime);
     for (let i = 1; i < sorted.length; i++) {
       const prev = sorted[i - 1]!;
       expect(prev.exitTime, 'a trade opened while another was still open').not.toBeNull();
@@ -245,23 +256,16 @@ describe('backtestTouches', () => {
   });
 
   it('leaves an unfinished trade uncounted rather than guessing its result', () => {
-    const { candles } = seriesWithTouch([]);
-    const result = backtestTouches(candles, symbol, '1H');
-    for (const t of result.trades) {
+    for (const t of run.trades) {
       if (t.exit === 'open') expect(t.pips).toBeNull();
     }
-    expect(result.metrics.trades + result.metrics.stillOpen).toBe(result.trades.length);
+    expect(run.metrics.trades + run.metrics.stillOpen).toBe(run.trades.length);
   });
 
-  it('uses the same levels the live trade-plan card shows', async () => {
-    const { ticketLevels } = await import('./tradePlan');
-    const { candles } = seriesWithTouch([]);
-    const analysis = analyseEma50Touch(candles, symbol, '1H');
-    const result = backtestTouches(candles, symbol, '1H');
-
-    for (const t of result.trades) {
-      const signal = analysis.signals.find((s) => s.id === t.id)!;
-      const levels = ticketLevels(signal)!;
+  it('uses the same levels the live trade-plan card shows', () => {
+    const signals = new Map(analyseIchimoku(candles, SYMBOL, '1H').signals.map((s) => [s.id, s]));
+    for (const t of run.trades) {
+      const levels = ticketLevels(signals.get(t.id)!)!;
       expect({ entry: t.entry, stop: t.stop, target: t.target }).toEqual({
         entry: levels.entry,
         stop: levels.stop,
@@ -270,39 +274,46 @@ describe('backtestTouches', () => {
     }
   });
 
-  it('skips the touches the filters exclude, and says how many', () => {
-    const { candles } = seriesWithTouch([]);
-    const all = backtestTouches(candles, symbol, '1H');
-    const strict = backtestTouches(candles, symbol, '1H', { minIchimoku: 5 });
+  /**
+   * Every signal has to be accounted for. The one that used to go missing was
+   * the crowded-out one — a signal that fired while a position was open —
+   * which made the strategy look as though it traded far more often than the
+   * one-position rule allows.
+   */
+  it('accounts for every signal as traded, filtered out, or crowded out', () => {
+    expect(run.trades.length + run.filtered + run.skippedWhileOpen).toBe(run.signals);
+    expect(run.skippedWhileOpen).toBeGreaterThan(0);
+  });
 
-    expect(strict.touches).toBe(all.touches);
-    expect(strict.filtered).toBeGreaterThanOrEqual(all.filtered);
-    expect(strict.trades.length).toBeLessThanOrEqual(all.trades.length);
+  /**
+   * The gate is inside the detector, so moving it has to change how many
+   * SIGNALS exist — not how many of a fixed set survive a filter. A control
+   * that only filtered the output could never show what a weaker rule does,
+   * because the weaker rule's signals were never generated.
+   */
+  it('re-runs the detector when the gate moves, rather than filtering its output', () => {
+    const loose = backtestIchimoku(candles, SYMBOL, '1H', { config: { ...ICHIMOKU_STRATEGY, minScore: 1 } });
+    const strict = backtestIchimoku(candles, SYMBOL, '1H', { config: { ...ICHIMOKU_STRATEGY, minScore: 4 } });
+
+    expect(loose.signals).toBeGreaterThan(strict.signals);
+    expect(loose.filtered).toBe(0); // nothing filtered: the rule itself changed
+    expect(strict.signals).toBe(run.signals); // 4 is the live default
+    expect(loose.trades.length).toBeGreaterThan(strict.trades.length);
   });
 
   it('handles a series too short to produce anything', () => {
-    const result = backtestTouches([bar(0, 1.1, 1.1, 1.1, 1.1)], symbol, '1H');
-    expect(result.trades).toEqual([]);
-    expect(result.metrics.trades).toBe(0);
-    expect(result.metrics.averagePips).toBeNull();
+    const short = backtestIchimoku([bar(0, 1.1, 1.1, 1.1, 1.1)], SYMBOL, '1H');
+    expect(short.trades).toEqual([]);
+    expect(short.signals).toBe(0);
+    expect(short.metrics.trades).toBe(0);
+    expect(short.metrics.averagePips).toBeNull();
   });
 });
 
 describe('combine', () => {
   it('orders trades across pairs by when they closed', () => {
-    const mk = (symbol: string, exitTime: number, pips: number) => ({
-      symbol,
-      timeframe: '1H' as const,
-      bars: 0,
-      touches: 0,
-      filtered: 0,
-      noFill: 0,
-      trades: [trade({ symbol, exitTime, pips })],
-      metrics: measure([]),
-      equity: [],
-    });
-    const merged = combine([mk('EUR/USD', 300, 200), mk('GBP/USD', 100, -100)]);
-    expect(merged.trades.map((t) => t.symbol)).toEqual(['GBP/USD', 'EUR/USD']);
+    const merged = combine([result(SYMBOL, 300, 200), result('GBP/USD', 100, -100)]);
+    expect(merged.trades.map((t) => t.symbol)).toEqual(['GBP/USD', SYMBOL]);
     expect(merged.equity).toEqual([
       { time: 100, pips: -100 },
       { time: 300, pips: 100 },
@@ -315,21 +326,9 @@ describe('combine', () => {
    * the flag belongs next to the trades rather than re-derived by each caller.
    */
   it('flags a selection that mixes JPY and non-JPY pips, and leaves a single-unit one unflagged', () => {
-    const mk = (symbol: string, exitTime: number, pips: number) => ({
-      symbol,
-      timeframe: '1H' as const,
-      bars: 0,
-      touches: 0,
-      filtered: 0,
-      noFill: 0,
-      trades: [trade({ symbol, exitTime, pips })],
-      metrics: measure([]),
-      equity: [],
-    });
-
-    expect(combine([mk('EUR/USD', 100, 10), mk('GBP/USD', 200, 10)]).mixesPipValues).toBe(false);
-    expect(combine([mk('EUR/USD', 100, 10), mk('USD/JPY', 200, 10)]).mixesPipValues).toBe(true);
-    expect(combine([mk('USD/JPY', 100, 10), mk('GBP/JPY', 200, 10)]).mixesPipValues).toBe(false);
+    expect(combine([result(SYMBOL, 100, 10), result('GBP/USD', 200, 10)]).mixesPipValues).toBe(false);
+    expect(combine([result(SYMBOL, 100, 10), result('USD/JPY', 200, 10)]).mixesPipValues).toBe(true);
+    expect(combine([result('USD/JPY', 100, 10), result('GBP/JPY', 200, 10)]).mixesPipValues).toBe(false);
     // Nothing to mix.
     expect(combine([]).mixesPipValues).toBe(false);
   });
@@ -338,122 +337,90 @@ describe('combine', () => {
 /**
  * `accept` exists so a PROPOSED entry rule can be measured through the same
  * walk-forward as the real one. The subtlety it is there for: rejecting a
- * touch frees the position, so a later touch the unfiltered run never saw can
- * now be taken. Filtering a finished trade list cannot produce that, which is
- * why rule variants have to be tested here rather than afterwards.
+ * signal frees the position, so a later signal the unfiltered run never saw
+ * can now be taken. Filtering a finished trade list cannot produce that,
+ * which is why rule variants have to be tested here rather than afterwards.
  */
 describe('accept — measuring a proposed rule', () => {
-  it('runs the rule against every touch and keeps only what it allows', () => {
-    const { candles, symbol } = seriesWithTouch([]);
-    const all = backtestTouches(candles, symbol, '1H');
-    const none = backtestTouches(candles, symbol, '1H', { accept: () => false });
-    const every = backtestTouches(candles, symbol, '1H', { accept: () => true });
+  const all = backtestIchimoku(candles, SYMBOL, '1H');
+
+  it('runs the rule against every signal and keeps only what it allows', () => {
+    const none = backtestIchimoku(candles, SYMBOL, '1H', { accept: () => false });
+    const every = backtestIchimoku(candles, SYMBOL, '1H', { accept: () => true });
 
     expect(none.trades).toEqual([]);
-    expect(none.filtered).toBe(all.touches);
+    expect(none.filtered).toBe(all.signals);
     // Accepting everything must be identical to no filter at all.
     expect(every.trades.length).toBe(all.trades.length);
     expect(every.metrics.totalPips).toBeCloseTo(all.metrics.totalPips, 9);
   });
 
-  it('is applied on top of the built-in filters, not instead of them', () => {
-    const { candles, symbol } = seriesWithTouch([]);
-    const both = backtestTouches(candles, symbol, '1H', {
-      minIchimoku: 5,
-      accept: () => true,
-    });
-    const ichiOnly = backtestTouches(candles, symbol, '1H', { minIchimoku: 5 });
-    expect(both.trades.length).toBe(ichiOnly.trades.length);
+  it('is applied on top of the rule being measured, not instead of it', () => {
+    const config = { ...ICHIMOKU_STRATEGY, minScore: 2 };
+    const both = backtestIchimoku(candles, SYMBOL, '1H', { config, accept: () => true });
+    const configOnly = backtestIchimoku(candles, SYMBOL, '1H', { config });
+    expect(both.trades.length).toBe(configOnly.trades.length);
+    expect(configOnly.signals).toBeGreaterThan(all.signals);
   });
 
   /**
    * The behaviour that makes post-hoc filtering wrong: with one position at a
-   * time, rejecting a touch lets a DIFFERENT touch trade that the unfiltered
+   * time, rejecting a signal lets a DIFFERENT signal trade that the unfiltered
    * run was too busy to take. Filtering a finished trade list can only ever
    * remove rows, so it cannot show this, and it would quietly measure the
    * wrong strategy.
-   *
-   * Needs REAL candles: the hand-built fixture above has too few touches for
-   * any of them to be crowded out, so it cannot demonstrate this at all.
-   * Over 5000 bars of EUR/USD the detector finds far more touches than the
-   * one-position rule can trade, which is exactly the crowded case.
    */
-  it('can open a trade the unfiltered run never took', () => {
-    const candles = parseCsv(eurusd);
-    const all = backtestTouches(candles, 'EUR/USD', '1H');
-    expect(all.touches, 'the fixture must crowd out touches').toBeGreaterThan(all.trades.length * 2);
+  it('opens a trade the unfiltered run never took', () => {
+    expect(all.signals, 'the fixture must crowd out signals').toBeGreaterThan(all.trades.length);
     const taken = new Set(all.trades.map((t) => t.id));
 
-    // Trades that hold a touch inside their window — the ones whose removal
-    // frees something. 123 of this fixture's 167 trades qualify.
+    // Trades holding a signal inside their window — the ones whose removal
+    // frees something.
     const index = new Map(candles.map((c, i) => [c.time, i]));
-    const touches = analyseEma50Touch(candles, 'EUR/USD', '1H').signals;
+    const signals = analyseIchimoku(candles, SYMBOL, '1H').signals;
     const blockers = all.trades.filter((t) => {
       if (t.exitTime === null) return false;
       const from = index.get(t.entryTime)!;
       const to = index.get(t.exitTime)!;
-      return touches.some((sig) => {
+      return signals.some((sig) => {
         const i = index.get(sig.barTime)!;
         return i > from && i <= to;
       });
     });
-    expect(blockers.length, 'the fixture must contain trades that block a touch').toBeGreaterThan(10);
+    expect(blockers.length, 'the fixture must contain trades that block a signal').toBeGreaterThan(5);
 
-    // Removing a blocker usually admits the touch it was sitting on — but not
-    // always, because that touch may itself be a no-fill. The claim is that it
-    // CAN happen, which post-hoc filtering could never show, so it is enough
-    // that one of a handful does it. (Measured: 12 of the first 15.)
-    const admitted = blockers.slice(0, 15).filter((b) => {
-      const without = backtestTouches(candles, 'EUR/USD', '1H', { accept: (sig) => sig.id !== b.id });
+    /**
+     * Every fill is certain now, so removing a blocker admits the signal it
+     * was sitting on EVERY time — there is no no-fill left to swallow it.
+     * That is stricter than the old assertion, which could only claim it
+     * happened sometimes.
+     */
+    for (const b of blockers.slice(0, 10)) {
+      const without = backtestIchimoku(candles, SYMBOL, '1H', { accept: (sig) => sig.id !== b.id });
       expect(without.trades.some((t) => t.id === b.id)).toBe(false);
-      return without.trades.some((t) => !taken.has(t.id));
-    });
-    expect(admitted.length, 'freeing a position should admit touches the unfiltered run never took').toBeGreaterThan(5);
+      expect(
+        without.trades.some((t) => !taken.has(t.id)),
+        `removing ${b.id} should have admitted a signal the unfiltered run never took`,
+      ).toBe(true);
+    }
   });
 });
 
 describe('trading costs', () => {
   it('takes the cost straight off the pip result, both directions', () => {
     // 10-pip stop on EUR/USD, 20-pip target. A 1-pip spread costs one pip.
-    expect(pipsOf('EUR/USD', 'LONG', 1.1, 1.099, 1.102, 0.0001)).toBeCloseTo(19, 9);
-    expect(pipsOf('EUR/USD', 'LONG', 1.1, 1.099, 1.099, 0.0001)).toBeCloseTo(-11, 9);
+    expect(pipsOf(SYMBOL, 'LONG', 1.1, 1.099, 1.102, 0.0001)).toBeCloseTo(19, 9);
+    expect(pipsOf(SYMBOL, 'LONG', 1.1, 1.099, 1.099, 0.0001)).toBeCloseTo(-11, 9);
     // A short pays it the same way round.
-    expect(pipsOf('EUR/USD', 'SHORT', 1.1, 1.101, 1.098, 0.0001)).toBeCloseTo(19, 9);
+    expect(pipsOf(SYMBOL, 'SHORT', 1.1, 1.101, 1.098, 0.0001)).toBeCloseTo(19, 9);
   });
 
   it('makes every trade worse, and never changes how many there are', () => {
-    const { candles } = seriesWithTouch([]);
-    const free = backtestTouches(candles, 'EUR/USD', '1H');
-    const paid = backtestTouches(candles, 'EUR/USD', '1H', { costPips: 1 });
+    const free = backtestIchimoku(candles, SYMBOL, '1H');
+    const paid = backtestIchimoku(candles, SYMBOL, '1H', { costPips: 1 });
 
     expect(paid.trades.length).toBe(free.trades.length);
     expect(paid.metrics.trades).toBe(free.metrics.trades);
     expect(paid.metrics.totalPips).toBeLessThan(free.metrics.totalPips);
-  });
-});
-
-describe('fills', () => {
-  /**
-   * The touch band is wider than the EMA line, so a bar can touch without
-   * ever trading at the entry. Filling those anyway was worth +0.23R a trade
-   * across 1105 trades — pure fiction. See backtest.ts, rule 1.
-   */
-  it('accounts for every touch as a trade, a no-fill or a filtered-out', () => {
-    const { candles } = seriesWithTouch([]);
-    const result = backtestTouches(candles, 'EUR/USD', '1H');
-    // Nothing may vanish: a touch is taken, skipped by a filter, skipped for
-    // want of a fill, or crowded out by a position already open.
-    expect(result.trades.length + result.noFill + result.filtered).toBeLessThanOrEqual(result.touches);
-    expect(result.touches).toBeGreaterThan(0);
-  });
-
-  it('never fills outside the entry bar, whichever way the touch came', () => {
-    const { candles } = seriesWithTouch([]);
-    const byTime = new Map(candles.map((c) => [c.time, c]));
-    for (const t of backtestTouches(candles, 'EUR/USD', '1H').trades) {
-      const bar = byTime.get(t.entryTime)!;
-      expect(t.entry).toBeGreaterThanOrEqual(bar.low);
-      expect(t.entry).toBeLessThanOrEqual(bar.high);
-    }
   });
 });

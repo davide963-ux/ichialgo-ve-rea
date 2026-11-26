@@ -1,27 +1,33 @@
 import { describe, expect, it } from 'vitest';
 import { STRATEGY_CONFIG } from '../../config/strategy';
 import { candlesAreDue, mergeSignals, type PairState } from './StrategyEngine';
-import type { TouchSignal } from './types';
+import type { IchimokuSignal } from './types';
 
-const signal = (over: Partial<TouchSignal> = {}): TouchSignal => ({
-  id: 'ema50-touch|EUR/USD|30M|1000',
-  strategy: 'ema50-touch',
+const signal = (over: Partial<IchimokuSignal> = {}): IchimokuSignal => ({
+  id: 'ichimoku-kijun|EUR/USD|30M|1000',
+  strategy: 'ichimoku-kijun',
   symbol: 'EUR/USD',
   timeframe: '30M',
   barTime: 1000,
   detectedAt: 10,
   source: 'candle',
-  price: 1.1,
-  ema: 1.1,
-  tolerancePips: 2,
-  atr: 0.0008,
-  distancePips: 0.4,
-  approach: 'above',
-  outcome: 'bounce',
-  trend: 'up',
-  bias: 'long',
-  counterTrend: false,
-  ichimoku: null,
+  direction: 'LONG',
+  kumo: 'above',
+  entry: 1.1,
+  stop: 1.097,
+  target: 1.106,
+  stopPips: 30,
+  rangePips: 75,
+  tenkan: 1.1005,
+  kijun: 1.0998,
+  senkouA: 1.097,
+  senkouB: 1.096,
+  distancePips: 2,
+  cloudBullish: true,
+  futureCloudBullish: true,
+  chikouFree: true,
+  tenkanAgrees: true,
+  score: 4,
   ...over,
 });
 
@@ -45,20 +51,30 @@ describe('mergeSignals', () => {
     expect(second).toBe(first); // same reference → no re-render
   });
 
-  it('upgrades a live touch with the closed-bar result, keeping the original time', () => {
-    const live = mergeSignals([], [signal({ source: 'live', outcome: 'pending', detectedAt: 5 })], 10);
-    const closed = mergeSignals(live, [signal({ source: 'candle', outcome: 'cross', detectedAt: 90 })], 10);
+  /**
+   * A live signal and the closed-bar signal for the same bar share an id, and
+   * the closed one must win: its entry is the bar's real close rather than
+   * whatever the quote happened to be mid-bar. The detection TIME stays the
+   * live one, because that is when the user actually saw it.
+   *
+   * This used to be stated in terms of `outcome` — 'pending' upgrading to
+   * 'cross' — which was the old strategy's verdict on what the bar did after
+   * the touch. There is no such field now; the entry is what differs.
+   */
+  it('upgrades a live signal with the closed bar\u2019s entry, keeping the original time', () => {
+    const live = mergeSignals([], [signal({ source: 'live', entry: 1.0995, detectedAt: 5 })], 10);
+    const closed = mergeSignals(live, [signal({ source: 'candle', entry: 1.1012, detectedAt: 90 })], 10);
 
     expect(closed).toHaveLength(1);
     expect(closed[0]!.source).toBe('candle');
-    expect(closed[0]!.outcome).toBe('cross');
+    expect(closed[0]!.entry).toBe(1.1012);
     expect(closed[0]!.detectedAt).toBe(5); // when the user actually saw it
   });
 
-  it('does not let a later live tick overwrite a resolved bar', () => {
-    const closed = mergeSignals([], [signal({ outcome: 'bounce' })], 10);
-    const after = mergeSignals(closed, [signal({ source: 'live', outcome: 'pending', detectedAt: 99 })], 10);
-    expect(after[0]!.outcome).toBe('bounce');
+  it('does not let a later live tick overwrite a closed bar', () => {
+    const closed = mergeSignals([], [signal({ entry: 1.1012 })], 10);
+    const after = mergeSignals(closed, [signal({ source: 'live', entry: 1.0995, detectedAt: 99 })], 10);
+    expect(after[0]!.entry).toBe(1.1012);
     expect(after).toBe(closed);
   });
 

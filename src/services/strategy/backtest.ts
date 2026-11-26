@@ -1,17 +1,17 @@
 /**
- * Backtest harness for the EMA50 touch strategy — plumbing, not strategy.
+ * Backtest harness for the Ichimoku pullback — plumbing, not strategy.
  *
- * It replays candles through the SAME `analyseEma50Touch` the live engine
- * calls and the SAME `ticketLevels` the trade-plan card shows, so a
- * backtested trade and a live signal come from one implementation. There is
- * no "backtest version" of the rules that could quietly diverge from the ones
- * actually being traded.
+ * It replays candles through the SAME `analyseIchimoku` the live engine calls
+ * and the SAME `ticketLevels` the trade-plan card shows, so a backtested trade
+ * and a live signal come from one implementation. There is no "backtest
+ * version" of the rules that could quietly diverge from the ones actually
+ * being traded.
  *
- *   touch at bar i ──▶ ticketLevels() ──▶ open at the EMA
- *                                          │
- *                        bars i+1, i+2, … ─┴─▶ stop hit?  ──▶ −stopPips
- *                                             target hit? ──▶ +2 × stopPips
- *                                             neither     ──▶ keep holding
+ *   signal at bar i ──▶ ticketLevels() ──▶ buy the close of bar i
+ *                                           │
+ *                         bars i+1, i+2, … ─┴─▶ stop hit?  ──▶ −stopPips
+ *                                              target hit? ──▶ +2 × stopPips
+ *                                              neither     ──▶ keep holding
  *
  * EVERYTHING IS MEASURED IN PIPS
  * ─────────────────────────────
@@ -20,11 +20,11 @@
  * ⇒ −10 pips, and nothing has been divided by anything.
  *
  * The cost of that choice is worth stating, because the page states it too.
- * The stop is ATR-based, so each trade risks a DIFFERENT number of pips — a
- * quiet EUR/USD touch might risk 8, a volatile one 22. Averaging their pip
- * results therefore averages outcomes of unequal bets. And a JPY pip is a
- * different amount of money from a EUR/USD pip, and typically travels further,
- * so a total that adds the two mixes units outright.
+ * The stop is a fraction of the 26-bar range, so each trade risks a DIFFERENT
+ * number of pips — a quiet EUR/USD pullback might risk 8, a volatile one 22.
+ * Averaging their pip results therefore averages outcomes of unequal bets.
+ * And a JPY pip is a different amount of money from a EUR/USD pip, and
+ * typically travels further, so a total that adds the two mixes units outright.
  *
  * `stopPips` is recorded on every trade for exactly that reason: it is the
  * size of the bet, and the pip result means little without it.
@@ -35,28 +35,21 @@
  * number somebody may risk money on, and the only safe way to be wrong about
  * it is downwards.
  *
- *  1. THE ENTRY MUST BE A PRICE THAT TRADED. Entry is a resting limit at the
- *     EMA, so it fills only if the bar actually reached the EMA — `low <=
- *     entry` for a long, `high >= entry` for a short. A touch is the bar's
- *     range entering the BAND, which is wider than the line, so a bar can
- *     touch without ever trading at the EMA; and a bar that gapped clean past
- *     the level never printed that price either. Both are no-fills, not
- *     trades, so the rule is simply `low <= entry <= high`.
+ *  1. THE ENTRY IS THE CLOSE OF THE SIGNAL BAR, which is a price that traded
+ *     by definition — so there is no fill rule here and no no-fill count.
  *
- *     This is not a detail. Filling them anyway was worth +0.23R a trade
- *     across 1105 trades, and it was fiction: on GBP/JPY the fillable trades
+ *     That is a change from the previous strategy, and it is the honest
+ *     version rather than a kinder one. Entry used to be a resting limit at
+ *     the EMA, which meant deciding whether each touch bar had actually
+ *     reached the line: a third of them had not, and filling them anyway was
+ *     worth +0.23R a trade of pure fiction (on GBP/JPY the fillable trades
  *     totalled −9R while the unfillable ones "made" +34R, with entries up to
- *     4.8 pips better than the bar's own extreme. A backtest that buys below
- *     the low prints an edge out of nothing.
+ *     4.8 pips better than the bar's own extreme). A market order at the
+ *     close cannot be flattered that way, because the close is in the bar.
  *
- *  2. THE ENTRY BAR CAN STOP YOU OUT. The fill happens at the EMA *inside*
- *     the touch bar, so the rest of that bar is live: if its range also
- *     covers the stop, the trade is stopped on the bar it opened. Skipping
- *     that was worth another +0.04R a trade and hid a third of the drawdown.
- *
- *     The entry bar can only LOSE here, never win: OHLC cannot say whether
- *     the high came before or after the fill, so the target is not credited
- *     until the next bar.
+ *  2. THE TRADE IS LIVE FROM THE NEXT BAR. Nothing about the signal bar can
+ *     close the trade, in either direction: the fill happens at its close, so
+ *     its high and low both belong to the past.
  *
  *  3. SAME-BAR AMBIGUITY: THE STOP WINS. When one bar's range covers both the
  *     stop and the target, OHLC cannot say which came first, so the stop is
@@ -80,9 +73,10 @@
 import type { Timeframe } from '../../config/timeframes';
 import type { Candle } from '../marketData/types';
 import { pipSize } from '../../lib/pips';
-import { analyseEma50Touch } from './ema50Touch';
+import { ICHIMOKU_STRATEGY, type IchimokuStrategyConfig } from '../../config/ichimokuStrategy';
+import { analyseIchimoku } from './ichimokuSignal';
 import { ticketLevels } from './tradePlan';
-import type { TouchOutcome, TouchSignal } from './types';
+import type { Direction, IchimokuSignal } from './types';
 
 export type BacktestExit = 'tp' | 'sl' | 'open';
 
@@ -90,7 +84,7 @@ export interface BacktestTrade {
   id: string;
   symbol: string;
   timeframe: Timeframe;
-  direction: 'LONG' | 'SHORT';
+  direction: Direction;
   entryTime: number;
   entry: number;
   stop: number;
@@ -108,9 +102,10 @@ export interface BacktestTrade {
   /** |entry − stop| in pips: the risk taken. The pip result's denominator. */
   stopPips: number;
   // ── context, so results can be sliced without re-running ──
-  ichimokuScore: number | null;
-  counterTrend: boolean;
-  touchOutcome: TouchOutcome;
+  /** Confirmations that agreed, 0–4. Every trade here cleared the gate. */
+  score: number;
+  /** The 26-bar range in pips — the volatility the stop was drawn from. */
+  rangePips: number;
 }
 
 export interface BacktestFilters {
@@ -124,10 +119,15 @@ export interface BacktestFilters {
    * contact with a broker.
    */
   costPips?: number;
-  /** Skip a touch whose Ichimoku score is below this (0 = take everything). */
-  minIchimoku?: number;
-  /** Skip touches against the EMA's own trend. */
-  skipCounterTrend?: boolean;
+  /**
+   * Run a VARIANT of the rule, rather than a filter over its output.
+   *
+   * The gate lives inside the detector — a pullback below `minScore` is not
+   * emitted at all — so a filter applied afterwards could only ever tighten
+   * it. Answering "what would a weaker gate have done?" needs the detector
+   * itself re-run, which is what this is for. Defaults to the live settings.
+   */
+  config?: IchimokuStrategyConfig;
   /**
    * An arbitrary extra rule, applied after the two above.
    *
@@ -138,7 +138,7 @@ export interface BacktestFilters {
    * frees the position for a later touch that the unfiltered run never took,
    * so post-hoc filtering answers a question nobody asked.
    */
-  accept?: (signal: TouchSignal) => boolean;
+  accept?: (signal: IchimokuSignal) => boolean;
 }
 
 export interface BacktestMetrics {
@@ -183,16 +183,17 @@ export interface BacktestResult {
   symbol: string;
   timeframe: Timeframe;
   bars: number;
-  /** Touches the detector found, before filters. */
-  touches: number;
-  /** Touches skipped by the filters. */
+  /** Signals the detector produced, before the page's own filters. */
+  signals: number;
+  /** Signals skipped by the filters. */
   filtered: number;
   /**
-   * Touches whose limit at the EMA was never reached by the touch bar.
-   * Reported rather than swallowed: it is a big number, and a reader who
-   * does not know it would think the strategy trades far more often.
+   * Signals that arrived while a position was already open, and were
+   * therefore never traded. Reported rather than swallowed: it is the
+   * difference between "the rule fired this often" and "you could have taken
+   * this many", and on this strategy it is most of them.
    */
-  noFill: number;
+  skippedWhileOpen: number;
   trades: BacktestTrade[];
   metrics: BacktestMetrics;
   /** Cumulative pips after each closed trade, for the equity curve. */
@@ -247,24 +248,19 @@ export function pipsOf(
   return (move - costPrice) / pipSize(symbol);
 }
 
-const passesFilters = (s: TouchSignal, f: BacktestFilters): boolean => {
-  if (f.skipCounterTrend && s.counterTrend) return false;
-  const min = f.minIchimoku ?? 0;
-  if (min > 0 && (s.ichimoku?.score ?? 0) < min) return false;
-  if (f.accept && !f.accept(s)) return false;
-  return true;
-};
+const passesFilters = (s: IchimokuSignal, f: BacktestFilters): boolean => !f.accept || f.accept(s);
 
-export function backtestTouches(
+export function backtestIchimoku(
   candles: readonly Candle[],
   symbol: string,
   timeframe: Timeframe,
   filters: BacktestFilters = {},
 ): BacktestResult {
-  const analysis = analyseEma50Touch(candles, symbol, timeframe);
+  const analysis = analyseIchimoku(candles, symbol, timeframe, filters.config ?? ICHIMOKU_STRATEGY);
   const cost = (filters.costPips ?? 0) * pipSize(symbol);
+  const pip = pipSize(symbol);
 
-  // Touch bar index, so the walk-forward can start from the next bar. The
+  // Signal bar index, so the walk-forward can start from the next bar. The
   // detector reports bar TIMES; this maps them back without assuming the
   // signals and the candles share an index.
   const indexOfTime = new Map<number, number>();
@@ -272,7 +268,7 @@ export function backtestTouches(
 
   const eligible = analysis.signals.filter((s) => passesFilters(s, filters));
   const trades: BacktestTrade[] = [];
-  let noFill = 0;
+  let skippedWhileOpen = 0;
 
   let open: (BacktestTrade & { entryIndex: number }) | null = null;
   let next = 0; // index into `eligible`
@@ -282,7 +278,8 @@ export function backtestTouches(
 
     // ── Manage an open position FIRST, on this bar ───────────────────────
     // A bar must be allowed to close a trade before it is allowed to open
-    // one, or a stop-out and an entry get booked from one candle.
+    // one, or a stop-out and an entry get booked from one candle. Rule 2:
+    // the entry bar itself is never offered, so `i > entryIndex`.
     if (open !== null && i > open.entryIndex) {
       const { exit, price } = resolveBar(bar, open.direction, open.stop, open.target);
       if (exit !== null) {
@@ -297,19 +294,25 @@ export function backtestTouches(
     }
 
     // ── Then let it open a new one ───────────────────────────────────────
-    while (next < eligible.length && (indexOfTime.get(eligible[next]!.barTime) ?? -1) < i) next++;
-    if (open === null && next < eligible.length) {
-      const signal = eligible[next]!;
-      if (indexOfTime.get(signal.barTime) === i) {
-        const levels = ticketLevels(signal);
+    // Signals on bars already behind us are counted as skipped, not dropped
+    // silently: they fired while a position was open, which is a property of
+    // the rule the reader should see.
+    while (next < eligible.length && (indexOfTime.get(eligible[next]!.barTime) ?? -1) < i) {
+      skippedWhileOpen++;
+      next++;
+    }
+    if (next < eligible.length && indexOfTime.get(eligible[next]!.barTime) === i) {
+      if (open !== null) {
+        skippedWhileOpen++;
         next++;
-        // A resting limit at the EMA fills only if the bar TRADED there. The
-        // touch band is wider than the line, so many touches never reach it;
-        // and a bar that gapped clean past the level never printed that price
-        // either, whichever side it came from. Both are no-fills.
-        const filled = levels !== null && bar.low <= levels.entry && levels.entry <= bar.high;
-        if (!filled) noFill++;
-        if (levels && filled) {
+      } else {
+        const signal = eligible[next]!;
+        next++;
+        const levels = ticketLevels(signal);
+        // A market order at the close always fills — the close is a price the
+        // bar traded at, by definition. The only way to get nothing here is
+        // levels that round to an unusable ticket.
+        if (levels) {
           open = {
             id: signal.id,
             symbol,
@@ -325,27 +328,17 @@ export function backtestTouches(
             exitPrice: null,
             barsHeld: 0,
             pips: null,
-            stopPips: Math.abs(levels.entry - levels.stop) / pipSize(symbol),
-            ichimokuScore: signal.ichimoku?.score ?? null,
-            counterTrend: signal.counterTrend,
-            touchOutcome: signal.outcome,
+            stopPips: Math.abs(levels.entry - levels.stop) / pip,
+            score: signal.score,
+            rangePips: signal.rangePips,
           };
-
-          // The rest of the entry bar is live — see rule 2. Stop only.
-          const onEntryBar = resolveBar(bar, open.direction, open.stop, open.target);
-          if (onEntryBar.exit === 'sl') {
-            open.exit = 'sl';
-            open.exitTime = bar.time;
-            open.exitPrice = onEntryBar.price;
-            open.barsHeld = 0;
-            open.pips = pipsOf(symbol, open.direction, open.entry, open.stop, onEntryBar.price, cost);
-            trades.push(open);
-            open = null;
-          }
         }
       }
     }
   }
+
+  // Signals left unconsumed at the end were all behind an open position too.
+  skippedWhileOpen += eligible.length - next;
 
   // A trade still open when the data ends is recorded but never counted.
   if (open !== null) {
@@ -357,9 +350,9 @@ export function backtestTouches(
     symbol,
     timeframe,
     bars: candles.length,
-    touches: analysis.signals.length,
+    signals: analysis.signals.length,
     filtered: analysis.signals.length - eligible.length,
-    noFill,
+    skippedWhileOpen,
     trades,
     metrics: measure(trades),
     equity: equityCurve(trades),

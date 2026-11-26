@@ -1,7 +1,7 @@
 /**
- * Market scanner — live prices, and where each pair sits against its EMA50.
+ * Market scanner — live prices, and where each pair sits against its Kijun.
  *
- * The touches shown here are computed IN THE BROWSER from the candles the
+ * The signals shown here are computed IN THE BROWSER from the candles the
  * charts already hold. An earlier version had a server-side scanner writing
  * its own opinion to a database while the page computed another, and the two
  * could disagree with nothing saying which was right. One source now.
@@ -14,10 +14,9 @@ import { MarketStatus } from '../components/MarketStatus';
 import { MetricCard } from '../components/MetricCard';
 import { SignalTable } from '../components/SignalTable';
 import { TimeframeSelector } from '../components/TimeframeSelector';
-import { EMA50_TOUCH, ICHIMOKU_CONFLUENCE } from '../config/strategy';
+import { ICHIMOKU_SIGNAL_CHECKS, ICHIMOKU_STRATEGY } from '../config/ichimokuStrategy';
 import { DEFAULT_TIMEFRAME, isTimeframe, type Timeframe } from '../config/timeframes';
 import { useLastScanAt, useSignals, useSignalSummary, useStrategyStatus } from '../hooks/useSignals';
-import { ICHIMOKU_CHECKS } from '../services/strategy';
 import { useNow } from '../hooks/useNow';
 import { formatAgo, formatClock } from '../lib/time';
 import { useMarketStore } from '../state/marketStore';
@@ -38,21 +37,25 @@ export function Dashboard() {
   const summary = useSignalSummary();
   const strategyStatus = useStrategyStatus();
   const lastScanAt = useLastScanAt();
-  const [confluentOnly, setConfluentOnly] = useState(false);
+  const [side, setSide] = useState<'all' | 'LONG' | 'SHORT'>('all');
   const now = useNow();
 
-  // Filtering, not hiding: the toggle is off by default so a weak setup is
-  // still visible and can be judged rather than silently dropped.
-  const shown = useMemo(
-    () => (confluentOnly ? signals.filter((s) => s.ichimoku?.agrees) : signals),
-    [signals, confluentOnly],
-  );
-  const confluentCount = useMemo(() => signals.filter((s) => s.ichimoku?.agrees).length, [signals]);
+  /**
+   * Only a direction filter now, and there is a reason there is nothing else.
+   *
+   * This panel used to carry an "Ichimoku confluent only" toggle, because the
+   * old strategy showed every touch and scored it afterwards. The score is
+   * now the gate: a setup that does not reach it produces no signal at all,
+   * so a filter for "the confluent ones" would always match everything and
+   * tell the reader it had done something.
+   */
+  const shown = useMemo(() => (side === 'all' ? signals : signals.filter((s) => s.direction === side)), [signals, side]);
+  const longs = useMemo(() => signals.filter((s) => s.direction === 'LONG').length, [signals]);
 
   const modeLabel = mode === 'stream' ? 'Streaming' : mode === 'poll' ? 'Polling' : 'Connecting';
   const strategyHint =
     strategyStatus === 'READY'
-      ? `EMA${EMA50_TOUCH.period} touch on ${timeframe}`
+      ? `Kijun pullback on ${timeframe}`
       : strategyStatus === 'ERROR'
         ? 'Strategy has no candles'
         : 'Loading candles…';
@@ -75,12 +78,12 @@ export function Dashboard() {
       <section className="metric-strip" aria-label="Scanner overview">
         <MetricCard label="Markets" value={symbols.length} hint={`${quoteCount} priced by ${provider}`} />
         <MetricCard
-          label="At the EMA now"
+          label="In the zone now"
           value={summary.active}
-          hint={strategyStatus === 'READY' ? `Pairs inside the EMA${EMA50_TOUCH.period} band` : strategyHint}
+          hint={strategyStatus === 'READY' ? 'Pairs in the Kijun band, clear of the cloud' : strategyHint}
           accent={summary.active > 0}
         />
-        <MetricCard label="Touches today" value={summary.today} hint={strategyHint} />
+        <MetricCard label="Signals today" value={summary.today} hint={strategyHint} />
         <MetricCard label="Connection" value={<MarketStatus />} hint={`${modeLabel}, synced ${formatAgo(lastContact, now)}`} />
         <MetricCard
           label="Last market update"
@@ -101,19 +104,24 @@ export function Dashboard() {
       <section className="panel">
         <div className="panel-head">
           <div>
-            <h2 className="panel-title">EMA{EMA50_TOUCH.period} touches</h2>
+            <h2 className="panel-title">Kijun pullbacks</h2>
             <span className="panel-sub">
-              Fires when price reaches the EMA{EMA50_TOUCH.period} on the {timeframe} chart, within a
-              volatility-scaled band. One signal per approach, not per bar.
+              Fires when price, already clear of the Kumo on the {timeframe} chart, pulls back into the Kijun band
+              and {ICHIMOKU_STRATEGY.minScore} of {ICHIMOKU_SIGNAL_CHECKS} confirmations agree. The cloud decides
+              the direction; one signal per pullback, not per bar.
             </span>
           </div>
           <div className="page-head-aside">
-            <label className="overlay-toggle">
-              <input type="checkbox" checked={confluentOnly} onChange={(e) => setConfluentOnly(e.target.checked)} />
-              Ichimoku confluent only
-            </label>
+            <div className="chip-row">
+              {(['all', 'LONG', 'SHORT'] as const).map((v) => (
+                <label key={v} className={`chip${side === v ? ' on' : ''}`}>
+                  <input type="radio" name="side" checked={side === v} onChange={() => setSide(v)} />
+                  {v === 'all' ? 'both' : v.toLowerCase()}
+                </label>
+              ))}
+            </div>
             <span className="panel-sub">
-              {confluentCount} of {signals.length} confluent · scanned {formatAgo(lastScanAt, now)}
+              {longs} long · {signals.length - longs} short · scanned {formatAgo(lastScanAt, now)}
             </span>
           </div>
         </div>
@@ -121,10 +129,10 @@ export function Dashboard() {
           signals={shown}
           limit={25}
           emptyHint={
-            confluentOnly && signals.length > 0
-              ? `None of the ${signals.length} touches reach ${ICHIMOKU_CONFLUENCE.agreeThreshold}/${ICHIMOKU_CHECKS} Ichimoku agreement. Untick the filter to see them all.`
+            side !== 'all' && signals.length > 0
+              ? `None of the ${signals.length} signals are ${side.toLowerCase()}s. Switch to both to see them.`
               : strategyStatus === 'READY'
-                ? `Watching ${symbols.length} pairs on ${timeframe}. Nothing has reached its EMA${EMA50_TOUCH.period} yet.`
+                ? `Watching ${symbols.length} pairs on ${timeframe}. No pullback has cleared the gate yet.`
                 : strategyHint
           }
         />

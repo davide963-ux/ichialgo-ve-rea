@@ -1,95 +1,28 @@
-import type { Timeframe } from './timeframes';
-
 /**
- * EMA-50 touch strategy configuration.
+ * How often the strategy is run, and on what.
  *
- * Everything the detector needs to decide "did this pair touch the EMA50?"
- * lives here, so the behaviour can be tuned without editing the logic.
+ * The RULES live in config/ichimokuStrategy.ts; this file is scheduling only.
+ * The split matters: everything here is about polling providers politely and
+ * nothing here can change a trading decision, so tuning one cannot silently
+ * alter the other.
+ *
+ * It used to hold EMA50_TOUCH, TRADE_PLAN and ICHIMOKU_CONFLUENCE — the period
+ * of a moving average, an ATR stop multiple, and a threshold for "does
+ * Ichimoku agree with the EMA". All three are gone. The strategy is Ichimoku
+ * and the levels come out of Ichimoku's own geometry, so there is no second
+ * indicator left to configure.
  */
-export interface Ema50TouchConfig {
-  /** Period of the moving average being touched. */
-  period: number;
-  /**
-   * Touch tolerance. Price rarely prints the EMA to the 5th decimal, so a
-   * touch is "price entered a band around the EMA". The band is
-   *   max(atr * atrMultiple, minPips)
-   * — volatility-aware, with a floor so a dead market still needs a real move.
-   */
-  atrPeriod: number;
-  atrMultiple: number;
-  minTolerancePips: number;
-  /**
-   * Re-arm distance, in tolerance bands. After a touch the pair stops
-   * signalling until price closes this far away from the EMA again — without
-   * it, a market riding the EMA emits a signal on every single bar.
-   */
-  rearmBands: number;
-  /** Bars used to measure the EMA's slope (trend context). */
-  slopeLookback: number;
-  /** Slope, in pips per bar, above which the EMA counts as trending. */
-  trendSlopePips: number;
-  /** Bars of history the detector needs before it reports anything. */
-  get minBars(): number;
-}
-
-export const EMA50_TOUCH: Ema50TouchConfig = {
-  period: 50,
-  atrPeriod: 14,
-  atrMultiple: 0.15,
-  minTolerancePips: 1.5,
-  rearmBands: 1.5,
-  slopeLookback: 10,
-  trendSlopePips: 0.15,
-  get minBars() {
-    return this.period + this.slopeLookback;
-  },
-};
-
-/**
- * How a touch becomes a trade plan. The stop sits an ATR multiple beyond the
- * EMA — far enough that the wick that made the touch does not take it out —
- * and the target is a fixed multiple of that risk.
- */
-export interface TradePlanConfig {
-  /** Stop distance from the entry, in ATRs. */
-  stopAtrMultiple: number;
-  /** Take profit = this many times the stop distance (the R multiple). */
-  rewardMultiple: number;
-  /** Floor on the stop, so a dead-calm ATR cannot produce a 2-pip stop. */
-  minStopPips: number;
-}
-
-export const TRADE_PLAN: TradePlanConfig = {
-  stopAtrMultiple: 1.5,
-  rewardMultiple: 2,
-  minStopPips: 8,
-};
-
-/**
- * Ichimoku confluence. The EMA50 touch says WHERE; Ichimoku says whether the
- * rest of the picture agrees. Signals are annotated, never hidden — the UI
- * offers a filter instead, so a discarded setup is still visible.
- */
-export interface IchimokuConfluenceConfig {
-  /** EMA50 within this many pips of Kijun-sen counts as the same level. */
-  kijunConfluencePips: number;
-  /** Checks (out of 5) needed before a touch counts as confluent. */
-  agreeThreshold: number;
-}
-
-export const ICHIMOKU_CONFLUENCE: IchimokuConfluenceConfig = {
-  kijunConfluencePips: 5,
-  agreeThreshold: 3,
-};
+import { ICHIMOKU_STRATEGY } from './ichimokuStrategy';
+import type { Timeframe } from './timeframes';
 
 export const STRATEGY_CONFIG = {
   /**
-   * Timeframe the engine scans for touches.
+   * Timeframe the engine scans.
    *
-   * This was 15M when the strategy was first written. The app no longer
-   * offers 15M: EMA50 + Ichimoku need 78 bars of warm-up, so on a fast chart
-   * the scan spends most of its data re-reading noise, and a touch resolves
-   * before anyone could act on it. 30M is the smallest the app now serves.
+   * Ichimoku needs 52 + 26 bars before a cloud is in effect and 26 more for
+   * the range around Kijun, so 104 bars of warm-up. On a fast chart that is
+   * mostly noise and a pullback resolves before anyone could act on it. 30M
+   * is the smallest the app serves.
    */
   scanTimeframe: '30M' as Timeframe,
   /**
@@ -118,9 +51,8 @@ export const STRATEGY_CONFIG = {
   minRefetchMs: 120_000,
   /** Newest-first cap on the in-memory signal log. */
   maxSignals: 200,
-  /** A live (intrabar) touch stays "active" this long without a new tick. */
+  /** A live (intrabar) signal stays "active" this long without a new tick. */
   liveSignalTtlMs: 15 * 60_000,
-  ema50Touch: EMA50_TOUCH,
-  tradePlan: TRADE_PLAN,
-  ichimoku: ICHIMOKU_CONFLUENCE,
+  /** The rules. One object, so nothing can read half of them. */
+  ichimoku: ICHIMOKU_STRATEGY,
 } as const;

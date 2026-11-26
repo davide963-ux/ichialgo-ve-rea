@@ -1,7 +1,7 @@
 /**
  * The whole scan loop, end to end, against a real PostgreSQL server.
  *
- *   stubbed Yahoo body ─▶ parseYahooChart ─▶ analyseEma50Touch ─▶ ticketLevels
+ *   stubbed Yahoo body ─▶ parseYahooChart ─▶ analyseIchimoku ─▶ ticketLevels
  *        ─▶ signalRow ─▶ recordSignals ─▶ [Postgres] ─▶ openTrades
  *        ─▶ resolveOpenTrade ─▶ closeTrade ─▶ finishRun
  *
@@ -18,7 +18,8 @@
  *
  * Needs TEST_DATABASE_URL; skipped without it.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { migrate, recentSignals, resetClient, setDriver } from './db.mjs';
 import { createSchemaPool, pgDriver } from './pgTestHarness.mjs';
@@ -101,8 +102,22 @@ run('runScan end to end', () => {
     // same table names.
     pool = await createSchemaPool(URL_, 'test_e2e');
     restoreDriver = setDriver(() => pgDriver(pool));
-    const text = readFileSync(new URL('../db/migrations/0001_signals.sql', import.meta.url), 'utf8');
-    await migrate([{ name: '0001_signals.sql', text }], env);
+    /**
+     * EVERY migration, read from disk in filename order — not a named one.
+     *
+     * This used to apply '0001_signals.sql' by name, and when 0002 retired
+     * the EMA columns this test kept building the old table and failed with
+     * `column "kumo" does not exist`. Reading the directory means a new
+     * migration is exercised here the moment it is added, which is the only
+     * way this test can keep being an end-to-end test of production's schema.
+     */
+    const dir = new URL('../db/migrations/', import.meta.url);
+    const files = readdirSync(dir)
+      .filter((f) => f.endsWith('.sql'))
+      .sort()
+      .map((name) => ({ name, text: readFileSync(join(dir.pathname, name), 'utf8') }));
+    expect(files.length, 'there must be migrations to apply').toBeGreaterThan(1);
+    await migrate(files, env);
   });
 
   afterAll(async () => {
@@ -136,15 +151,32 @@ run('runScan end to end', () => {
 
     const rows = await recentSignals({ limit: 1000 }, env);
     expect(rows.length).toBe(out.recorded);
-    // Every row carries a usable ticket; a row without one cannot be measured.
+    /**
+     * Every row carries a usable ticket AND the Ichimoku detail behind it. The
+     * detail is checked here rather than only in the unit test because the
+     * failure this catches is a schema one: a column the insert names but the
+     * table does not have, or a value that arrives as null because the column
+     * list and the record definition drifted apart.
+     */
     for (const r of rows) {
+      expect(r.strategy).toBe('ichimoku-kijun');
       expect(r.direction === 'LONG' || r.direction === 'SHORT').toBe(true);
       expect(Number(r.stop_pips)).toBeGreaterThan(0);
-      expect(['open', 'sl', 'nofill']).toContain(r.result);
+      // Entry is the signal bar's close, so every recorded signal is a trade:
+      // 'nofill' cannot occur any more and must not appear.
+      expect(['open', 'tp', 'sl']).toContain(r.result);
+
+      expect(r.kumo === 'above' || r.kumo === 'below').toBe(true);
+      expect(r.direction).toBe(r.kumo === 'above' ? 'LONG' : 'SHORT');
+      expect(Number(r.kijun)).toBeGreaterThan(0);
+      expect(Number(r.senkou_a)).toBeGreaterThan(0);
+      expect(Number(r.senkou_b)).toBeGreaterThan(0);
+      expect(Number(r.range_pips)).toBeGreaterThan(0);
+      expect(Number(r.score)).toBeGreaterThanOrEqual(1);
+      expect(Number(r.score)).toBeLessThanOrEqual(4);
+      expect(typeof r.cloud_bullish).toBe('boolean');
+      expect(typeof r.tenkan_agrees).toBe('boolean');
     }
-    // The fill rule must actually reject some: if everything filled, rule 1
-    // is not running and the history is inflated.
-    expect(rows.filter((r) => r.result === 'nofill').length).toBeGreaterThan(0);
 
     const [logged] = await pool.query('select * from scanner_runs').then((r) => r.rows);
     expect(logged.ok).toBe(true);

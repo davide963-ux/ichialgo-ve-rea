@@ -49,8 +49,8 @@ def st(name, **kw):
 
 H1 = st("H1", fontName="Helvetica-Bold", fontSize=19, leading=23, spaceAfter=3)
 SUB = st("SUB", fontSize=10, leading=14, textColor=MUTED, spaceAfter=14)
-H2 = st("H2", fontName="Helvetica-Bold", fontSize=13, leading=17, spaceBefore=16, spaceAfter=6)
-H3 = st("H3", fontName="Helvetica-Bold", fontSize=10.5, leading=14, spaceBefore=10, spaceAfter=3)
+H2 = st("H2", fontName="Helvetica-Bold", fontSize=13, leading=17, spaceBefore=16, spaceAfter=6, keepWithNext=1)
+H3 = st("H3", fontName="Helvetica-Bold", fontSize=10.5, leading=14, spaceBefore=10, spaceAfter=3, keepWithNext=1)
 BODY = st("BODY", spaceAfter=7)
 SMALL = st("SMALL", fontSize=8.5, leading=12, textColor=MUTED, spaceAfter=6)
 MONO = st("MONO", fontName="Courier", fontSize=8.5, leading=12.5)
@@ -122,7 +122,7 @@ def header_footer(canvas, doc):
     canvas.setFont("Helvetica", 7.5)
     canvas.setFillColor(MUTED)
     canvas.drawString(22 * mm, 285 * mm, "ICHIALGO — how a signal is made")
-    canvas.drawRightString(188 * mm, 285 * mm, "EMA50 touch · Ichimoku · ATR")
+    canvas.drawRightString(188 * mm, 285 * mm, "Ichimoku Kijun pullback")
     canvas.line(22 * mm, 16 * mm, 188 * mm, 16 * mm)
     canvas.drawString(22 * mm, 11 * mm, "Generated from the live code and the checked-in OANDA fixtures.")
     canvas.drawRightString(188 * mm, 11 * mm, f"Page {doc.page}")
@@ -140,183 +140,232 @@ A = S.append
 
 # ----------------------------- page 1 -----------------------------
 A(Paragraph("How a signal is made", H1))
-A(Paragraph("What ATR decides, what Ichimoku decides, and which of them is actually in charge.", SUB))
+A(Paragraph("Ichimoku, and nothing else: what sets the direction, what triggers the entry, "
+            "where the stop comes from without an ATR, and what the whole thing measures.", SUB))
 
 A(Paragraph("The short answer", H2))
 A(Paragraph(
-    "<b>ATR decides every price in the trade.</b> How wide the touch band is, where the stop goes, "
-    "and therefore where the target goes. Nothing on the ticket is set by Ichimoku.", BODY))
+    "<b>The cloud sets the direction.</b> Price above the Kumo can only produce a long, price below "
+    "it can only produce a short, and price inside it produces nothing at all.", BODY))
 A(Paragraph(
-    "<b>Ichimoku decides nothing.</b> It is computed on every signal, scored out of 5, stored in the "
-    "database and shown in the UI — and then no code reads it. It cannot trigger a signal, cannot "
-    "change the direction, and cannot stop a trade being taken.", BODY))
+    "<b>Kijun-sen sets the trigger.</b> A signal is price pulling back into a band around the base "
+    "line while still clear of the cloud. One per pullback, not one per bar.", BODY))
 A(Paragraph(
-    "That is worth stating plainly because the measurements say it is the wrong way round: the "
-    "EMA50 touch on its own has no edge, and the Ichimoku score it ignores is carrying all of it.", BODY))
+    "<b>The 26-bar range sets every distance.</b> How wide that band is, and how far the stop sits. "
+    "This is what replaced the ATR, and it is not a new indicator: Kijun-sen IS the midpoint of "
+    "that range, so its width was already implied by the line being traded.", BODY))
+A(Paragraph(
+    "<b>Four confirmations decide whether it happens at all.</b> They are a gate, not a label. "
+    "Below the threshold no signal is produced - it is not produced-and-flagged.", BODY))
+
+A(Paragraph("What changed, and why it is worth knowing", H2))
+A(Paragraph(
+    "The previous strategy traded a touch of a 50-period EMA, sized its band and stop from a "
+    "14-period ATR, and computed an Ichimoku score out of 5 that it then ignored. Three things "
+    "were wrong with it, and all three are fixed here rather than tuned:", BODY))
+A(plain_rows(
+    [
+        [Paragraph("<b>Direction</b>", CELL),
+         "It took the direction from the side price approached the line on, so a pullback inside a "
+         "downtrend became a long. The cloud now decides, and nothing else can."],
+        [Paragraph("<b>The score</b>", CELL),
+         "A 0-of-5 setup was logged, shown, and tradeable, with a dashboard filter offered as a "
+         "consolation. Measured, the EMA touch alone was worth -0.13 pips a trade at a 35.7% win "
+         "rate against the 36.0% it needed to break even: nothing. The score it ignored was "
+         "carrying whatever edge existed. It is now the gate."],
+        [Paragraph("<b>The entry</b>", CELL),
+         "A resting limit at the EMA, which a third of touches never reached. Entry is now the "
+         "close of the pullback bar, which is a price that traded by definition."],
+    ],
+    [26 * mm, 139 * mm]))
 
 A(Paragraph("The pipeline", H2))
-A(Paragraph("Everything below happens on one closed 30-minute bar, per pair.", SMALL))
 S.extend(code("""
-   candles -> EMA50          the line being touched
-           -> ATR(14)        the only source of distance
-           -> Ichimoku       5 lines, scored, then ignored
-                   |
-   1  BAND      tol    = max( ATR x 0.15 , 1.5 pips )        <- ATR
-   2  SIDE      from the PREVIOUS bar's close vs the EMA
-   3  TOUCH     low <= EMA+tol  AND  high >= EMA-tol
-   4  ARMED     one signal per approach, not per bar
-                   |
-               +---v----+
-               | SIGNAL |
-               +---+----+
-   5  DIRECTION came from above -> LONG     came from below -> SHORT
-   6  TICKET    risk   = max( ATR x 1.5 , 8 pips )           <- ATR
-               entry  = the EMA50 itself
-               stop   = entry -/+ risk
-               target = entry +/- risk x 2
-   7  ICHIMOKU  score 0-5, attached, never read
+  300 candles -> Tenkan(9) Kijun(26) Senkou A/B Chikou, 26-bar shift
+                 range(26) = highest high - lowest low   <- the "volatility"
+
+  per bar:
+    1. price vs the Kumo   inside -> skip, no trend to pull back into
+                           above  -> LONG       below -> SHORT
+    2. range reaches Kijun +/- 0.08 * range, and armed?  no -> keep watching
+    3. all 4 confirmations?                    fewer than 4 -> NO SIGNAL
+    4. entry = this close    stop = -/+ 0.40 * range    target = 2x the risk
+    5. disarm until a close leaves the band by 1.5x
 """))
 
-# ----------------------------- ATR -----------------------------
-A(Paragraph("1 — What ATR does", H2))
+A(Paragraph("Where the distances come from, with no ATR", H2))
 A(Paragraph(
-    "ATR is the 14-period Average True Range: the average distance price has been travelling per bar "
-    "recently. It is the strategy's only notion of “how far is far”, and it is used three times.", BODY))
-
-A(table(
-    ["Where", "Formula", "What it controls"],
+    "Removing the ATR leaves a strategy with no sense of distance at all - how wide is a touch, "
+    "how far is a stop. The usual fix is to pick a pip figure, which means one number for a dead "
+    "session and a fast one. Ichimoku already contains the answer:", BODY))
+S.extend(code("""
+  Kijun-sen =  (highest high + lowest low) / 2     over 26 bars
+  range     =   highest high - lowest low          over the same 26 bars
+"""))
+A(Paragraph(
+    "The line being traded is the midpoint of that range, so the range is the line's own width. "
+    "Matching the window to the Kijun period is deliberate: the level and the distance around it "
+    "then describe the same stretch of market. Two fractions of it are all the strategy needs.", BODY))
+A(plain_rows(
     [
-        ["Touch band", Paragraph("max(ATR × <b>0.15</b>, <b>1.5</b> pips)", CELL),
-         "How close price must come to the EMA50 to count as touching it."],
-        ["Stop distance", Paragraph("max(ATR × <b>1.5</b>, <b>8</b> pips)", CELL),
-         "How far the stop sits beyond the entry — far enough that the wick which made the touch does not take it out."],
-        ["Target", Paragraph("stop distance × <b>2</b>", CELL),
-         "Fixed 2:1. So the target is ATR-derived too, at one remove."],
-    ],
-    [30 * mm, 42 * mm, 93 * mm]))
-
-A(Paragraph("The floors matter more than the ATR", H3))
-A(Paragraph(
-    "Both bands have a minimum, and on 30M majors the minimum usually wins. With EUR/USD ATR around "
-    "9–10 pips, ATR × 0.15 is about 1.4 pips — under the 1.5 pip floor. So the touch band is "
-    "<b>almost always exactly 1.5 pips</b>, and does not in practice scale with volatility the way "
-    "the design intends. The stop is the opposite: ATR × 1.5 is ~14 pips against an 8-pip floor, so "
-    "there ATR really is in charge.", BODY))
-
-A(PageBreak())
-
-# ----------------------------- Ichimoku -----------------------------
-A(Paragraph("2 — What Ichimoku does", H2))
-A(Paragraph(
-    "All five Ichimoku lines are computed correctly, including the 26-bar displacement that makes the "
-    "cloud lead and the lagging line trail. Five checks are run against the trade's direction and "
-    "counted into a score out of 5.", BODY))
-
-A(table(
-    ["#", "Check", "Passes when", "Measured worth"],
-    [
-        ["1", "Price vs Kumo", "price is on the trade's side of the cloud",
-         chip("+4.9 pips  strong", GREEN)],
-        ["2", "Cloud colour", "Senkou A above B for a long, below for a short",
-         chip("-6.6 pips  see note", RED)],
-        ["3", "Tenkan / Kijun", "the fast line is the right side of the slow one",
-         chip("+8.9 pips  strong", GREEN)],
-        ["4", "Chikou free", "the lagging line is clear of the candles 26 bars back",
-         chip("+12.6 pips  best", GREEN)],
-        ["5", "EMA50 ~ Kijun", "the two lines are within 5 pips — one level, two methods",
-         chip("+0.4 pips  noise", AMBER)],
-    ],
-    [8 * mm, 32 * mm, 70 * mm, 55 * mm]))
-A(Paragraph(
-    "“Measured worth” is the difference in average result between trades where the check passed and "
-    "trades where it failed, over 848 closed trades on five pairs. Check 2 looked actively harmful, "
-    "but that reversed on held-out data, so it is noise rather than a real inversion — the honest "
-    "reading is that it is unreliable, not backwards.", SMALL))
-
-A(Paragraph("And then nothing reads it", H3))
-A(Paragraph(
-    "The score is attached to the signal, written to the database and rendered in the UI. "
-    "There is no code path in which it changes a decision. The direction comes from which side price "
-    "approached from; the levels come from ATR. A 0/5 signal and a 5/5 signal are traded identically.", BODY))
-A(Paragraph(
-    "The <b>>=3/5 filter on the backtest page is a display control only</b> — it filters the table you "
-    "are looking at. The live scanner stores every touch regardless.", BODY))
-
-# ----------------------------- worked example -----------------------------
-A(Paragraph("3 — One real signal, end to end", H2))
-A(Paragraph(
-    "EUR/USD, 1-hour bar opening <b>Mon 8 Dec 2025 14:00 UTC</b>. Taken from the checked-in OANDA "
-    "fixtures, not invented — every number below is reproducible from that bar.", SMALL))
-
-A(table(
-    ["Input", "Value"],
-    [
-        ["Bar OHLC", Paragraph("open 1.16484 &nbsp; high 1.16548 &nbsp; low 1.16378 &nbsp; close 1.16402", MONOC)],
-        ["EMA50", Paragraph("1.1652303", MONOC)],
-        ["ATR(14)", Paragraph("0.00096563  =  9.66 pips", MONOC)],
+        [Paragraph("<b>Touch band</b>", CELL),
+         Paragraph("<b>0.08 x range</b> either side of Kijun. About a tenth of recent travel: wide "
+                   "enough to catch a real retest, tight enough that drifting near the line does "
+                   "not count.", CELL)],
+        [Paragraph("<b>Re-arm</b>", CELL),
+         Paragraph("<b>1.5 x the band</b>. A close must leave the zone by this much before the pair "
+                   "can signal again. Without it, a market riding its Kijun fires every bar.", CELL)],
+        [Paragraph("<b>Stop</b>", CELL),
+         Paragraph("<b>0.40 x range</b> from the entry.", CELL)],
+        [Paragraph("<b>Target</b>", CELL),
+         Paragraph("<b>2 x the stop distance</b>, so 0.80 x range.", CELL)],
     ],
     [30 * mm, 135 * mm]))
 
+A(Paragraph("The four confirmations", H2))
+A(Paragraph(
+    "Each is read in the direction the cloud already set, so the same bar scores differently for a "
+    "long and a short. All four are required.", BODY))
+A(table(
+    ["#", "Check", "What it asks"],
+    [
+        ["1", Paragraph("<b>Cloud in effect</b>", CELL),
+         "Is Senkou A above Senkou B over this bar? The cloud you are standing on agrees with the "
+         "trade."],
+        ["2", Paragraph("<b>Cloud 26 bars ahead</b>", CELL),
+         "Is the leading cloud the same colour? It is already determined today, and it is what the "
+         "trend is walking into."],
+        ["3", Paragraph("<b>Chikou free</b>", CELL),
+         "Is the close clear of the candles 26 bars back - above their high for a long, below their "
+         "low for a short? Nothing overhead that price has to fight through."],
+        ["4", Paragraph("<b>Tenkan agrees</b>", CELL),
+         "Is the 9-period line on the trade's side of Kijun? Short-term momentum has not already "
+         "turned against the pullback."],
+    ],
+    [8 * mm, 40 * mm, 117 * mm]))
+A(Paragraph(
+    "A check that cannot be answered - Chikou on a bar with fewer than 26 behind it - counts as a "
+    "failure, never as a pass. It is stored as null rather than false, so the history can say "
+    "\"not knowable\" as well as \"no\".", SMALL))
+A(PageBreak())
+
+A(Paragraph("A real signal, end to end", H2))
+A(Paragraph(
+    "EUR/USD, the 1-hour bar opening <b>12 December 2025, 08:00 UTC</b>, from "
+    "<font face=\"Courier\" size=\"8.5\">fixtures/market/EURUSD_1H.csv</font>. Every number below is "
+    "the one the code produces.", BODY))
+
+A(Paragraph("The bar", H3))
 S.extend(code("""
-1  BAND       ATR x 0.15 = 1.45 pips  ->  below the 1.5 floor
-              tol = 1.5 pips          band = 1.16508 .. 1.16538
-
-2  SIDE       the previous bar closed BELOW the EMA   ->  approach = below
-
-3  TOUCH      low  1.16378 <= 1.16538   yes
-              high 1.16548 >= 1.16508   yes          -> touched
-
-4  ARMED      yes, price had left the band since the last touch
-
-5  DIRECTION  came from below = a rally into resistance  ->  SHORT
-
-6  TICKET     risk   = max(9.66 x 1.5, 8) = 14.5 pips
-              entry  = 1.16523     (the EMA itself)
-              stop   = 1.16668     (entry + 14.5 pips)
-              target = 1.16233     (entry - 29.0 pips)
-
-7  ICHIMOKU   price below Kumo        yes  (short wants below)
-              cloud bearish           yes
-              Tenkan above Kijun      yes  -> FAILS, a short wants below
-              Chikou free             yes
-              EMA50 2.2 pips of Kijun yes
-                                      score 4 / 5   ... and is not used
+  open 1.17379   high 1.17422   low 1.17282   close 1.17282
 """))
 
+A(Paragraph("The lines at that bar", H3))
+A(plain_rows(
+    [
+        ["Tenkan-sen (9)", Paragraph('<font face="Courier">1.17372</font>', CELL)],
+        ["Kijun-sen (26)", Paragraph('<font face="Courier">1.17251</font>', CELL)],
+        ["Senkou A / B (in effect)", Paragraph('<font face="Courier">1.16809 / 1.16613</font>', CELL)],
+        ["Senkou A / B (26 bars ahead)", Paragraph('<font face="Courier">1.17311 / 1.16947</font>', CELL)],
+        ["Candles 26 bars back", Paragraph('<font face="Courier">high 1.16898, low 1.16823</font>', CELL)],
+        ["26-bar range", Paragraph('<font face="Courier">75.5 pips</font>', CELL)],
+    ],
+    [55 * mm, 110 * mm]))
+
+A(Paragraph("The decisions, in order", H3))
+S.extend(code("""
+  1. Kumo side      close 1.17282 vs cloud top 1.16809     ABOVE  -> LONG
+  2. Band           0.08 * 75.5 pips = 6.0 pips either side of 1.17251
+                    so the zone is 1.17191 .. 1.17311
+                    the bar's low 1.17282 is inside it     TOUCH
+  3. Armed?         the last signal's zone was left        YES
+  4. Confirmations
+       cloud in effect   1.16809 > 1.16613                 PASS
+       cloud ahead       1.17311 > 1.16947                 PASS
+       Chikou free       close 1.17282 > 1.16898           PASS
+       Tenkan agrees     1.17372 > 1.17251                 PASS
+                                                           4 of 4 -> SIGNAL
+  5. Ticket
+       entry   = the close                                 1.17282
+       stop    = entry - 0.40 * 75.5 pips                  1.16980   (30.2 pips)
+       target  = entry + 2 * 30.2 pips                     1.17886   (60.4 pips)
+"""))
+
+A(Paragraph("What happened next", H3))
 A(Paragraph(
-    "<b>Outcome:</b> the very next bar traded down to 1.16172, through the target at 1.16233. "
-    "Closed +29 pips gross, <b>+28 pips</b> after one pip of spread, holding one bar.", BODY))
-A(Paragraph(
-    "Note what did the work. ATR set the band that found the touch, the 14.5-pip risk, and the "
-    "29-pip target. Ichimoku scored 4/5 and changed nothing — the identical trade would have been "
-    "taken at 0/5.", SMALL))
+    "Price reached the target 53 bars later, on 16 December at 13:00 UTC. After one pip of assumed "
+    "spread that is <b>+59.4 pips</b>. One trade proves nothing about a strategy - it is here "
+    "because every intermediate number above can be checked against the fixture by hand, which is "
+    "the only way to know the description matches the code.", BODY))
 
 A(PageBreak())
 
-# ----------------------------- evidence -----------------------------
-A(Paragraph("4 — Why this matters", H2))
+# ----------------------------- page 4 -----------------------------
+A(Paragraph("What it measures", H2))
 A(Paragraph(
-    "The part that is ignored is the part that works. Same trades, same ATR levels, same exits — the "
-    "only difference is requiring the Ichimoku score the system already computes.", BODY))
+    "Five traded pairs, 5000 one-hour OANDA bars each, 3 December 2025 to 23 September 2026, one "
+    "pip of cost charged on every trade. One position at a time, the stop winning any bar that "
+    "covers both exits, and a trade still open at the end left uncounted.", BODY))
 
+A(Paragraph("The gate is the only setting with evidence behind it", H3))
 A(table(
-    ["Rule", "Trades", "Win rate", "Avg pips", "95% interval"],
+    ["Gate", "Trades", "Win", "Average", "95% interval", "PF"],
     [
-        [Paragraph("<b>As it runs today</b> — no gate", CELL), "856", "35.7%",
-         chip("-0.13", RED), "-2.24 … +1.98"],
-        ["Require score >= 3", "564", "42.4%", chip("+4.23", GREEN), "+1.61 … +6.85"],
-        ["Require score >= 4", "279", "46.2%", chip("+5.73", GREEN), "+2.26 … +9.20"],
+        ["1 of 4", "619", "34.6%", "+0.33 pips", "-3.88 .. +4.54", "1.02"],
+        ["2 of 4", "603", "35.0%", "+1.15 pips", "-3.15 .. +5.45", "1.05"],
+        ["3 of 4", "543", "35.4%", "+1.43 pips", "-3.17 .. +6.02", "1.07"],
+        [Paragraph("<b>4 of 4 (live)</b>", CELL), Paragraph("<b>369</b>", CELL),
+         Paragraph("<b>36.9%</b>", CELL), Paragraph("<b>+3.89 pips</b>", CELL),
+         Paragraph("<b>-1.63 .. +9.40</b>", CELL), Paragraph("<b>1.20</b>", CELL)],
     ],
-    [60 * mm, 20 * mm, 22 * mm, 25 * mm, 38 * mm],
-    aligns={1: "RIGHT", 2: "RIGHT", 3: "RIGHT"}))
-
+    [22 * mm, 20 * mm, 18 * mm, 28 * mm, 45 * mm, 15 * mm],
+    aligns={1: "RIGHT", 2: "RIGHT", 3: "RIGHT", 5: "RIGHT"}))
 A(Paragraph(
-    "Break-even for a 2:1 target is 36.0% after costs. Today's rule wins 35.7% — it is not slightly "
-    "losing, it is sitting exactly on zero, and the interval straddles zero from both sides. Gating "
-    "on the score moves it clear of zero, and that result held on data the tuning never saw "
-    "(+6.22 then +8.37 pips across a 60/40 time split).", BODY))
+    "The interval spans zero at <i>every</i> setting, so none of this is a profitability claim. "
+    "What the table shows is that tightening the gate moves the number in one direction, which is "
+    "a property of the rule rather than of one slice of data.", BODY))
 
-A(Paragraph("What is not proven", H2))
+A(Paragraph("Split by time, it gets worse rather than better", H3))
+A(table(
+    ["Period", "Trades", "Win", "Average", "95% interval"],
+    [
+        ["First 60%", "236", "35.2%", "+0.66 pips", "-5.80 .. +7.12"],
+        ["Last 40%", "127", "40.9%", "+10.68 pips", "+0.16 .. +21.19"],
+    ],
+    [28 * mm, 20 * mm, 18 * mm, 30 * mm, 45 * mm],
+    aligns={1: "RIGHT", 2: "RIGHT", 3: "RIGHT"}))
+A(Paragraph(
+    "That looks like a rule validated out of sample and is not. <b>Every variant tested improves by "
+    "a similar amount across that boundary, including rules with no edge at all.</b> The second "
+    "period was simply kinder. The honest summary is <b>around break-even on hard data, good on "
+    "easy data</b>.", BODY))
+A(Paragraph(
+    "The same split narrows the case for the gate. On the hard first 60% it turns -4.00 pips into "
+    "+0.66; on the kind last 40% it is a wash and slightly negative (+11.26 at 2 of 4, +10.68 at 4 "
+    "of 4). Four is chosen for robustness when conditions are poor, not for more upside when they "
+    "are good.", BODY))
+
+A(Paragraph("It is not uniform across pairs", H3))
+A(table(
+    ["Pair", "Signals", "Trades", "Win", "Average", "Total"],
+    [
+        ["EUR/USD", "208", "70", "40.0%", "+7.05", "+494"],
+        ["GBP/USD", "178", "74", "36.5%", "+2.06", "+153"],
+        ["USD/JPY", "227", "75", "38.7%", "+7.94", "+596"],
+        ["AUD/USD", "235", "78", "25.6%", chip("-5.02", RED), chip("-391", RED)],
+        ["USD/CAD", "232", "72", "44.4%", "+8.11", "+584"],
+    ],
+    [25 * mm, 22 * mm, 20 * mm, 20 * mm, 25 * mm, 22 * mm],
+    aligns={1: "RIGHT", 2: "RIGHT", 3: "RIGHT", 4: "RIGHT", 5: "RIGHT"}))
+A(Paragraph(
+    "Signals far outnumber trades because only one position is held at a time - 1080 signals "
+    "produce 369 trades. The rest fired while a trade was already running and are reported as "
+    "skipped rather than quietly dropped.", SMALL))
+
+A(PageBreak())
+
+# ----------------------------- page 5 -----------------------------
+A(Paragraph("What this does not tell you", H2))
 A(plain_rows(
     [
         [Paragraph("<b>Timeframe mismatch</b>", CELL),
@@ -326,16 +375,40 @@ A(plain_rows(
         [Paragraph("<b>Two pairs untested</b>", CELL),
          "USD/CHF and NZD/USD are scanned live but have no checked-in candles, so nothing above "
          "says anything about them."],
+        [Paragraph("<b>One pair loses</b>", CELL),
+         "AUD/USD is negative over the whole sample. A rule that works on four pairs and not the "
+         "fifth has not been shown to be about the market rather than about those four."],
         [Paragraph("<b>One regime</b>", CELL),
          "About nine months of data. A rule that fits one market regime and fails the next is the "
          "normal outcome, not the exception."],
+        [Paragraph("<b>Correlated pairs</b>", CELL),
+         "EUR/USD, GBP/USD and AUD/USD are largely the same dollar trade, so 369 trades are worth "
+         "fewer than 369 independent observations and every interval above is narrower than it "
+         "should be."],
+        [Paragraph("<b>All in-sample</b>", CELL),
+         "Every setting was chosen after seeing these candles."],
     ],
     [34 * mm, 131 * mm]))
 
+A(Paragraph("How the claim \"pure Ichimoku\" is kept true", H2))
+A(Paragraph(
+    "A promise like this rots quietly. Someone adds an ATR floor under the stop because a quiet "
+    "pair produced a 3-pip one, nothing fails, and a year later the strategy is a hybrid again. So "
+    "it is checked mechanically rather than by review: a test reads the source of the detector and "
+    "its configuration, strips the comments, and fails if the words EMA or ATR appear anywhere in "
+    "the code.", BODY))
+A(Paragraph(
+    "Two other tests carry more weight than any number in this document. One replays a truncated "
+    "series and requires every earlier signal to come out byte-identical, which is what rules out "
+    "the detector reading bars it could not have seen - the failure that would make every figure "
+    "here a faithful calculation over a fiction. The other replays a fixture through the browser's "
+    "backtest and the server's scanner and requires the same verdict on every trade, so the live "
+    "history and the measured history cannot drift apart.", BODY))
+
 A(Paragraph("In one line", H2))
 A(Paragraph(
-    "ATR builds the whole trade and Ichimoku watches from the sidelines — while the evidence says "
-    "Ichimoku is the one with the information.", BODY))
+    "The cloud says which way, Kijun says where, the 26-bar range says how far, and four "
+    "confirmations say whether at all - with no second indicator left to disagree with the first.", BODY))
 
 doc.build(S)
 print("wrote", OUT)

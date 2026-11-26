@@ -28,24 +28,34 @@ export interface StoredSignal {
   bar_time: number;
   detected_at: number;
   source: 'candle' | 'live';
-  price: number;
-  ema: number;
-  atr: number;
-  tolerance_pips: number;
-  distance_pips: number;
-  approach: 'above' | 'below';
-  outcome: string;
-  trend: string;
-  bias: string;
-  counter_trend: boolean;
-  ichimoku: { score?: number } | null;
-  ichimoku_score: number | null;
+  kumo: 'above' | 'below' | null;
+  kijun: number | null;
+  tenkan: number | null;
+  senkou_a: number | null;
+  senkou_b: number | null;
+  distance_pips: number | null;
+  /** The 26-bar range in pips — what the stop is a fraction of. */
+  range_pips: number | null;
+  /** Confirmations that agreed, out of 4. Every stored row cleared the gate. */
+  score: number | null;
+  cloud_bullish: boolean | null;
+  future_cloud_bullish: boolean | null;
+  chikou_free: boolean | null;
+  tenkan_agrees: boolean | null;
   direction: 'LONG' | 'SHORT' | null;
   entry: number | null;
   stop_loss: number | null;
   take_profit: number | null;
   stop_pips: number | null;
-  /** 'open' while price has decided nothing; 'nofill' never became a trade. */
+  /**
+   * 'open' while price has decided nothing; 'expired' when the entry bar
+   * scrolled out of the candle window before it did.
+   *
+   * 'nofill' is in the union only because rows from the retired EMA50-touch
+   * strategy use it. The current strategy enters at the signal bar's close,
+   * which is a price that traded by definition, so it cannot produce one —
+   * and /api/signals filters by strategy, so one should never arrive here.
+   */
   result: 'open' | 'tp' | 'sl' | 'nofill' | 'expired';
   exit_price: number | null;
   exit_at: number | null;
@@ -60,7 +70,7 @@ export interface SymbolStats {
   open: number;
   tp: number;
   sl: number;
-  nofill: number;
+  expired: number;
   net_pips: number | null;
   avg_stop_pips: number | null;
 }
@@ -87,12 +97,13 @@ const toSignal = (r: Record<string, unknown>): StoredSignal =>
     ...r,
     bar_time: n(r.bar_time) ?? 0,
     detected_at: n(r.detected_at) ?? 0,
-    price: n(r.price) ?? 0,
-    ema: n(r.ema) ?? 0,
-    atr: n(r.atr) ?? 0,
-    tolerance_pips: n(r.tolerance_pips) ?? 0,
-    distance_pips: n(r.distance_pips) ?? 0,
-    ichimoku_score: n(r.ichimoku_score),
+    kijun: n(r.kijun),
+    tenkan: n(r.tenkan),
+    senkou_a: n(r.senkou_a),
+    senkou_b: n(r.senkou_b),
+    distance_pips: n(r.distance_pips),
+    range_pips: n(r.range_pips),
+    score: n(r.score),
     entry: n(r.entry),
     stop_loss: n(r.stop_loss),
     take_profit: n(r.take_profit),
@@ -109,7 +120,7 @@ const toStats = (r: Record<string, unknown>): SymbolStats => ({
   open: n(r.open) ?? 0,
   tp: n(r.tp) ?? 0,
   sl: n(r.sl) ?? 0,
-  nofill: n(r.nofill) ?? 0,
+  expired: n(r.expired) ?? 0,
   net_pips: n(r.net_pips),
   avg_stop_pips: n(r.avg_stop_pips),
 });

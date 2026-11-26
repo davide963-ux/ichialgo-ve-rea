@@ -12,10 +12,10 @@ import { PairPage } from './pages/PairPage';
 import { useMarketStore } from './state/marketStore';
 
 /**
- * Live market data, charts, and the EMA50 touch strategy.
+ * Live market data, charts, and the Ichimoku Kijun pullback strategy.
  *
  * The strategy runs in the BROWSER, off the candles the charts already hold:
- * a touch is a pure function of the bars on screen, so what the page shows
+ * a signal is a pure function of the bars on screen, so what the page shows
  * and what the engine decided can never disagree.
  *
  * /history is the one exception, and deliberately a READ-ONLY one. A browser
@@ -42,7 +42,7 @@ function Footer() {
   return (
     <footer className="footer">
       <div className="footer-inner">
-        <span>Ichialgo: live Forex market data + EMA50 touch strategy.</span>
+        <span>Ichialgo: live Forex market data + Ichimoku Kijun pullback strategy.</span>
         <span>Data: {provider}. Charts by TradingView Lightweight Charts.</span>
       </div>
     </footer>

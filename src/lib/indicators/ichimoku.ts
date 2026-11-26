@@ -25,7 +25,18 @@
  * the lagging line shows when it is drawn above bar i. It is null for the
  * last 26 bars, because that part of the line has not been drawn yet.
  */
-import type { OHLC } from './atr';
+/**
+ * The only shape Ichimoku needs from a bar.
+ *
+ * Declared here rather than imported: this file used to take it from the ATR
+ * module, and when the ATR was removed with the rest of the EMA strategy that
+ * import was the one thing holding it on disk.
+ */
+export interface OHLC {
+  high: number;
+  low: number;
+  close: number;
+}
 
 export interface IchimokuConfig {
   tenkan: number;

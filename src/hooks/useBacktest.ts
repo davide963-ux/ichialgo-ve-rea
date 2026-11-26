@@ -17,7 +17,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { PAIRS } from '../config/pairs';
 import type { Candle } from '../services/marketData';
-import { backtestTouches, combine, type BacktestFilters, type BacktestResult } from '../services/strategy';
+import { backtestIchimoku, combine, type BacktestFilters, type BacktestResult } from '../services/strategy';
 
 /**
  * Every pair with a checked-in fixture, and how to fetch it.
@@ -104,7 +104,7 @@ export function useBacktest(symbols: readonly string[], filters: BacktestFilters
     if (!candles) return { status: 'LOADING' as const, error: null, results: [], portfolio: null, span: null };
 
     const results = FIXTURE_PAIRS.filter((p) => symbols.includes(p.symbol)).map((p) =>
-      backtestTouches(candles.get(p.symbol)!, p.symbol, '1H', filters),
+      backtestIchimoku(candles.get(p.symbol)!, p.symbol, '1H', filters),
     );
 
     const all = [...candles.values()].flat();

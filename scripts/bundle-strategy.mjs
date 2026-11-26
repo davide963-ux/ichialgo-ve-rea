@@ -3,7 +3,7 @@
  *
  *   src/services/strategy/serverEntry.ts  ──esbuild──▶  server/strategy.bundle.mjs
  *
- * The scanner needs `analyseEma50Touch` and `ticketLevels`. Those live in
+ * The scanner needs `analyseIchimoku` and `ticketLevels`. Those live in
  * TypeScript under src/ and the Vercel function is JavaScript, so something
  * has to bridge the two. The alternative — writing the rules a second time in
  * .mjs — is how a scanner and a page come to disagree about what a signal is,

@@ -10,7 +10,7 @@
 import { useSyncExternalStore } from 'react';
 import { STRATEGY_CONFIG } from '../config/strategy';
 import type { Timeframe } from '../config/timeframes';
-import type { TouchSignal, WatchLevel } from '../services/strategy/types';
+import type { IchimokuLevel, IchimokuSignal } from '../services/strategy/types';
 
 export type StrategyStatus = 'IDLE' | 'WARMING' | 'READY' | 'ERROR';
 
@@ -19,9 +19,9 @@ export interface SignalState {
   /** Timeframe the strategy is evaluated on. */
   timeframe: Timeframe;
   /** Newest first, capped by STRATEGY_CONFIG.maxSignals. */
-  signals: TouchSignal[];
-  /** Current EMA level per symbol. */
-  levels: Readonly<Record<string, WatchLevel>>;
+  signals: IchimokuSignal[];
+  /** The Kijun band each symbol is sitting against, per symbol. */
+  levels: Readonly<Record<string, IchimokuLevel>>;
   /** Why a symbol produces nothing (too few candles, fetch failed…). */
   notices: Readonly<Record<string, string>>;
   lastScanAt: number | null;
