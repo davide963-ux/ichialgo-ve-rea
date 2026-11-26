@@ -68,7 +68,7 @@ import type { Timeframe } from '../../config/timeframes';
 import type { IchimokuSeries } from '../../lib/indicators';
 import type { Candle } from '../marketData';
 import { bearishCandle, bullishCandle, ichimokuContext, minBarsFor, px, rangeOver, type BarFacts } from './ichimokuBars';
-import { buildSignal, resolveBar, signalId, signalTimeMs } from './signalTicket';
+import { buildSignal, openExit, signalId, signalTimeMs, stepExit, type ExitRules, type ExitState } from './signalTicket';
 import type { Direction, IchimokuLevel, IchimokuSignal, SignalCheck } from './types';
 
 export const STRATEGY = 'ichimoku' as const;
@@ -174,10 +174,10 @@ function stopFor(f: BarFacts, entry: EntryType, long: boolean, config: IchimokuC
  * produced was a signal the account could not have acted on.
  */
 interface OpenPosition {
-  direction: Direction;
-  entry: number;
-  stop: number;
-  target: number;
+  /** The levels the trade opened with, break-even trigger included. */
+  rules: ExitRules;
+  /** How far through those rules it has got — the stop may have moved. */
+  state: ExitState;
   /** Bar index of the fill, so the entry bar itself cannot close the trade. */
   at: number;
   barTime: number;
@@ -230,11 +230,14 @@ function levelAt(
     inBand: pending !== null,
     openTrade: position
       ? {
-          direction: position.direction,
+          direction: position.rules.direction,
           entryType: position.kind,
-          entry: position.entry,
-          stop: position.stop,
-          target: position.target,
+          entry: position.rules.entry,
+          // The stop as it stands NOW, which is the entry once break-even has
+          // armed — showing the original would misstate the live risk.
+          stop: position.state.stop,
+          target: position.rules.target,
+          movedToBreakEven: position.state.movedToBreakEven,
           barTime: position.barTime,
         }
       : null,
@@ -288,6 +291,13 @@ export function analyseIchimoku(
     const risk = Math.abs(entry - stop);
     if (risk <= 0) return null;
     const target = long ? entry + risk * config.rewardMultiple : entry - risk * config.rewardMultiple;
+    // Break-even arms a fixed number of pips into profit; null when disabled.
+    const breakEven =
+      config.breakEvenAtPips > 0
+        ? long
+          ? entry + config.breakEvenAtPips * f.pip
+          : entry - config.breakEvenAtPips * f.pip
+        : null;
 
     signals.push(
       buildSignal(
@@ -302,11 +312,12 @@ export function analyseIchimoku(
           entry,
           checks,
         },
-        { stop, target, stopLevel, entryType: kind },
+        { stop, target, stopLevel, entryType: kind, breakEven },
       ),
     );
     // The pair is now committed, and stays that way until price decides.
-    return { direction, entry, stop, target, at: f.i, barTime: f.bar.time, kind };
+    const rules: ExitRules = { direction, entry, stop, target, breakEvenAt: breakEven };
+    return { rules, state: openExit(rules), at: f.i, barTime: f.bar.time, kind };
   };
 
   for (let i = 1; i < candles.length; i++) {
@@ -329,8 +340,12 @@ export function analyseIchimoku(
       // already behind the position — letting it resolve the trade would be
       // deciding it against a bar it never held.
       if (i > position.at) {
-        const { exit } = resolveBar(f.bar, position.direction, position.stop, position.target);
+        const held = position;
+        const { exit, state } = stepExit(f.bar, held.rules, held.state);
+        // A break-even exit frees the pair exactly as a stop or target does:
+        // the money is no longer committed, whatever the outcome was called.
         if (exit !== null) position = null;
+        else held.state = state;
       }
 
       if (position) {

@@ -100,6 +100,19 @@ export interface IchimokuConfig {
    * Kijun-sen is this range's midpoint, so it is not a new indicator.
    */
   rangePeriod: number;
+  /**
+   * Move the stop to break-even once the trade is this many pips in profit.
+   * 0 disables it.
+   *
+   * OURS ENTIRELY, like the target, and the one rule in the ticket that is
+   * not a distance Ichimoku supplies. Worth knowing what a FIXED pip trigger
+   * means in practice: against the average 41-pip stop it arms at about a
+   * quarter of the risk, but the breakout worked example risks 7.2 pips, so
+   * there 10 pips is past 1.3R and arms only just short of the target. A
+   * trigger expressed as a fraction of the risk would behave the same way on
+   * every trade; both are measured in the README. This is the one that runs.
+   */
+  breakEvenAtPips: number;
 }
 
 export const ICHIMOKU: IchimokuConfig = {
@@ -109,6 +122,7 @@ export const ICHIMOKU: IchimokuConfig = {
   stopBuffer: 0.1,
   rewardMultiple: 2,
   rangePeriod: 26,
+  breakEvenAtPips: 10,
 };
 
 /**

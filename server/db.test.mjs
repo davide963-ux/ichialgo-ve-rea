@@ -95,6 +95,7 @@ run('db.mjs against PostgreSQL', () => {
     senkou_ahead_b: 1.0965,
     cloud_pips: 10,
     entry_type: 'pullback',
+    break_even: 1.101,
     score: 4,
     checks_total: 4,
     checks: [
@@ -403,6 +404,7 @@ run('migrating a database that already holds the old strategy’s rows', () => {
         { name: '0002_ichimoku.sql', text: read('0002_ichimoku.sql') },
         { name: '0003_strategies.sql', text: read('0003_strategies.sql') },
         { name: '0004_one_system.sql', text: read('0004_one_system.sql') },
+        { name: '0005_break_even.sql', text: read('0005_break_even.sql') },
       ],
       env,
     );
@@ -410,6 +412,7 @@ run('migrating a database that already holds the old strategy’s rows', () => {
       '0002_ichimoku.sql',
       '0003_strategies.sql',
       '0004_one_system.sql',
+      '0005_break_even.sql',
     ]);
 
     // The observation survived: a ticket and a result are still a ticket and
@@ -427,7 +430,7 @@ run('migrating a database that already holds the old strategy’s rows', () => {
     }
     // The Ichimoku columns it has but cannot fill. Null, not zero: a zero
     // Kijun would be read as a price.
-    for (const added of ['kumo', 'kijun', 'tenkan', 'senkou_a', 'senkou_b', 'range_pips', 'score', 'checks', 'cloud_pips', 'entry_type']) {
+    for (const added of ['kumo', 'kijun', 'tenkan', 'senkou_a', 'senkou_b', 'range_pips', 'score', 'checks', 'cloud_pips', 'entry_type', 'break_even']) {
       expect(Object.hasOwn(old, added), `${added} should have been added`).toBe(true);
       expect(old[added], `${added} should be null on a legacy row`).toBeNull();
     }
@@ -454,6 +457,7 @@ run('migrating a database that already holds the old strategy’s rows', () => {
             entry_type: 'pullback',
             score: 4,
             checks_total: 4,
+            break_even: 1.101,
             direction: 'LONG',
             entry: 1.1,
             stop_loss: 1.099,

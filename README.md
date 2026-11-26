@@ -437,6 +437,7 @@ flowchart TD
 | **Filter on both** | Chikou against the close 26 bars back |
 | **Stop** | the structure the entry is based on: Kijun, or the far cloud edge |
 | **Target** | 2× the risk — **ours**, the article names none |
+| **Break-even** | +10 pips moves the stop to entry — **ours**, and the biggest single lever on the result |
 | **Then silence** | one trade per pair: no further signal here until that trade's stop or target |
 
 ### One trade per pair, and why it lives in the detector
@@ -481,6 +482,66 @@ Two consequences worth knowing:
   and frees nothing. Measuring a proposed rule means `config`, which re-runs
   the detector. The field is documented as a subsetting tool and the tests
   pin that it can only ever remove.
+
+### Break-even: the stop moves to entry at +10 pips
+
+Once a trade is 10 pips in profit the stop is pulled to the entry price, so
+the trade can no longer lose anything but the spread. Three outcomes exist
+instead of two, and the history records them apart: **TP**, **BE** (scratched
+— the open profit given back, the risk not) and **SL** (the full risk).
+
+**The intrabar problem, and the conservative answer.** A bar that trades 10
+pips up may also trade down through the original stop, and a candle cannot
+say which came first. Arming inside that bar would let the backtest pick the
+order that flatters the rule — a scratch instead of a full loss — on exactly
+the bars where the choice is worth most. So **the trigger bar is still
+resolved against the original stop** and the move applies from the next bar.
+Every number below therefore *understates* what break-even does.
+
+It lives in `stepExit` in `signalTicket.ts`, which is the single place that
+decides whether a bar ended a trade. The detector calls it (it has to know
+when a pair is free again), the backtest calls it, and the live scanner calls
+it when resolving stored trades. One rule, three callers — the same shape as
+one-trade-per-pair, for the same reason.
+
+**What it does to the result**, five pairs, 1 pip of cost:
+
+| Break-even | Trades | TP | BE | SL | Average | 95% interval |
+|---|---|---|---|---|---|---|
+| off | 430 | 32.8% | — | 67.2% | **−6.09 pips** | −12.57 … +0.40 |
+| +5 pips | 1708 | 10.8% | 71.4% | 17.8% | **+0.49 pips** | −0.63 … +1.62 |
+| **+10 pips (live)** | **1367** | **15.4%** | **58.7%** | **26.0%** | **+0.03 pips** | **−1.51 … +1.58** |
+| +15 pips | 1139 | 19.0% | 48.6% | 32.4% | −0.22 pips | −2.22 … +1.78 |
+| +20 pips | 921 | 22.1% | 40.4% | 37.5% | −0.20 pips | −2.72 … +2.31 |
+| +30 pips | 724 | 25.7% | 28.5% | 45.9% | −0.92 pips | −4.39 … +2.56 |
+
+**It does what it was asked to do.** The loss goes away: −6.09 pips a trade
+becomes roughly zero at every trigger tested, and the breakout — the entry
+whose interval previously excluded zero at −13.13 pips — comes back to −0.36
+with an interval that spans it. The losses being avoided are real ones.
+
+**It does not create an edge, and the table should not be read as finding
+one.** Every interval here contains zero. What changed is the *sign of the
+point estimate*, from a measurable loss to something indistinguishable from
+nothing. +5 pips measures best but is within noise of +10, and choosing the
+best row of a six-row sweep on one sample is how in-sample tuning starts.
+
+Two consequences worth seeing:
+
+- **The trade count triples.** A scratch ends a trade early, which frees the
+  pair early, so the system takes 1367 trades instead of 430. That is 1367
+  spreads paid instead of 430 — the rule is not free, and most of what it
+  wins back it hands to the broker.
+- **The win rate collapses to 15%, and that is not a warning sign.** With
+  three outcomes, "win rate against the 33.3% a 2:1 payoff needs" stops being
+  the right comparison: most trades now end at zero rather than at a loss.
+
+**A fixed pip trigger is a blunt instrument** and the figures hide it. Against
+the average 36-pip stop, 10 pips arms at roughly a quarter of the risk — but
+the breakout worked example risks 7.2 pips, so there the same 10 pips is past
+1.3R and arms only just short of the target. A trigger set as a fraction of
+the risk would behave identically on every trade. This is the rule as asked
+for; the alternative is a one-line config change away.
 
 ### The two entries, in the article's words
 
@@ -623,12 +684,12 @@ cannot be flattered that way.
 
 Signal count and trade count are now **the same number**, and that is the
 point of the change described above: the detector only reports a signal the
-pair was free to take. 434 signals, 434 trades, nothing crowded out and
+pair was free to take. 1370 signals, 1370 trades, nothing crowded out and
 nothing filtered. The `SKIPPED` column on the page is a cross-check that
 should read zero.
 
-Of those 434, **430 resolved** inside the data and 4 were still running when
-it ended. The results table below counts the 430: an open trade has no result
+Of those 1370, **1367 resolved** inside the data and 3 were still running when
+it ended. The results table below counts the 1367: an open trade has no result
 to report, and assuming one either way is how a losing run gets hidden.
 
 ### What it says, at 1 pip of cost
@@ -637,24 +698,24 @@ The five traded pairs, 5000 1H bars each, 3 Dec 2025 – 23 Sep 2026. **These
 numbers are all new**: structural stops replaced range-sized ones, which
 changes every trade in the book.
 
-| Entry | Trades | Win | Average | 95% interval | Avg stop |
-|---|---|---|---|---|---|
-| Pullback | 243 | 34.2% | −0.67 pips | −9.65 … +8.31 | 39.3 pips |
-| Kumo breakout | 187 | 31.0% | **−13.13 pips** | **−22.35 … −3.91** | 43.1 pips |
-| **Both (live)** | **430** | **32.8%** | **−6.09 pips** | **−12.57 … +0.40** | **40.9 pips** |
+| Entry | Trades | TP | BE | SL | Average | 95% interval | Avg stop |
+|---|---|---|---|---|---|---|---|
+| Pullback | 832 | 16.3% | 55.8% | 27.9% | +0.29 pips | −1.56 … +2.14 | 33.9 pips |
+| Kumo breakout | 535 | 13.8% | 63.2% | 23.0% | −0.36 pips | −3.06 … +2.33 | 39.5 pips |
+| **Both (live)** | **1367** | **15.4%** | **58.7%** | **26.0%** | **+0.03 pips** | **−1.51 … +1.58** | **36.1 pips** |
 
-A 2:1 target needs **33.3%** to break even. The system as a whole gets 32.8%.
+**Indistinguishable from zero, which is a change from what it was.** Without
+the break-even stop the same rules measured **−6.09 pips a trade**, and the
+Kumo breakout measured −13.13 with an interval of −22.35 … −3.91 that did not
+contain zero — a measurable loss, the only statistically significant result
+this project has produced. Moving the stop to entry at +10 pips removes it:
+the breakout comes back to −0.36, and every interval now spans zero.
 
-**The breakout's interval does not contain zero.** That is the first
-statistically significant result this project has produced, and it only
-became visible once the un-actionable signals were removed: on 187 trades the
-Kumo breakout loses 13.1 pips each, with an interval from −22.4 to −3.9. The
-pullback over the same period is roughly break-even — it clears the required
-win rate (34.2% against 33.3%) and still gives up two thirds of a pip a trade
-to costs.
-
-So the combined figure is not one weak edge. It is a flat entry and a losing
-one, averaged together.
+So the honest summary changed from "this loses money" to "this does
+nothing measurable". That is a real improvement and it is not an edge. The
+table above should not be read as finding one: with 1367 trades the interval
+is ±1.5 pips, which is wide enough to contain any small edge and any small
+loss alike.
 
 Every fixture is a pair the scanner trades, so this table and `/backtest`
 report the same thing. That was not true until recently: a GBP/JPY fixture
@@ -668,13 +729,15 @@ The interval still spans zero, so this is not a proof of a losing strategy
 either — but the point estimate is a loss, and unlike the previous version of
 this section it does not improve under scrutiny:
 
-| Period | Trades | Win | Average |
+| Period | Trades | Average | 95% interval |
 |---|---|---|---|
-| First half | 280 | 33.6% | −5.57 pips |
-| Second half | 150 | 31.3% | −7.05 pips |
+| First half | 743 | +0.58 pips | −1.73 … +2.89 |
+| Second half | 624 | −0.62 pips | −2.57 … +1.34 |
 
-**The sign holds in both halves.** The earlier strategy's "good on easy data"
-pattern is absent here; both periods lose, and the win rate barely moves.
+**The halves now disagree in sign**, which is what "nothing measurable" looks
+like from the inside: +0.58 then −0.62, both intervals straddling zero and
+each containing the other's estimate. Before break-even the two halves agreed
+(−5.57 and −7.05) because there was a real loss for them to agree about.
 
 #### Is it the entries or our exit?
 
@@ -684,27 +747,32 @@ target** — where price actually went, with the exit rules taken away.
 
 | Entry | n | 1 bar | 4 bars | 12 bars | 26 bars | 52 bars | 104 bars |
 |---|---|---|---|---|---|---|---|
-| Pullback | 243 | +0.28 | −0.51 | −3.79 | +1.54 | +1.44 | **+5.91** |
-| Kumo breakout | 187 | −0.94 | −3.18 | −3.66 | −3.15 | −5.41 | **−11.51** |
+| Pullback | 834 | +0.18 | −0.22 | +0.82 | +1.70 | +3.07 | **+6.04** |
+| Kumo breakout | 536 | +0.05 | +0.37 | −0.28 | −0.02 | −2.09 | **−4.74** |
 
-**Read this with the sample size in mind.** It used to run on thousands of
-observations, because the detector emitted every signal whether or not the
-pair was free. It now runs on the trades themselves — a tenth as many — so
-each figure is much noisier: at 4 bars the pullback's 95% interval is
-[−3.20, +2.17] and the breakout's [−6.88, +0.52], neither significant alone.
+This is the clearest picture in the document of why the two entries differ.
+Price drifts **with** the pullback for a hundred bars after it fires, reaching
++6.0 pips, and **against** the breakout, reaching −4.7. An entry whose result
+decays the longer it is held is an entry taken after the move rather than
+before it — which is what the breakout's measurable loss was, before the
+break-even stop papered over it.
 
-What the row *shapes* say is consistent with the walk-forward. Price drifts
-with the pullback over the following hundred bars and against the breakout,
-steadily, to −11.5 pips. An entry whose result decays the longer it is held
-is an entry taken after the move rather than before it.
+Note the exit rules are absent here, so break-even cannot flatter these
+numbers. What it changed is the *sample*: with pairs freeing up sooner the
+detector fires far more often, so this now rests on 834 and 536 observations
+rather than a couple of hundred.
 
-**So it is mostly not the exit.** Sweeping the reward multiple never finds a
-setting that works: the edge over break-even is +0.1, +0.8 and +1.5 points at
-R=0.5, 1 and 1.5 and negative at 2, 3 and 5, and the average per trade is
-negative at every one. Widening the stop buffer only makes it worse. The
-nearest thing to a usable setting is **1.5:1**, the one row where the win
-rate beats break-even by more than a point — and it still loses 2.73 pips a
-trade after costs.
+**The exit turned out to matter more than that question assumed.** When it
+was first asked — before the break-even stop — the answer was "not the
+exit": no reward multiple and no stop buffer produced a positive average, so
+the loss looked like a property of the entries. Moving the stop to entry at
++10 pips then removed the loss, which means the exit was carrying a large
+part of it after all.
+
+What survives that correction is the shape above. The pullback's forward
+return is positive and rising; the breakout's is negative and falling. The
+break-even stop does not change that — it stops the breakout *paying* for it,
+by closing those trades before the drift has time to work against them.
 
 **None of this says OANDA's rules are bad.** It says that on 1H majors over
 nine months, implemented as faithfully as I can read the article, they did not
@@ -722,14 +790,23 @@ contradicts the pure-Ichimoku rule and would fail the purity test.
   for the timeframe actually traded.
 - **One period.** Dec 2025 – Sep 2026 is nine months of one regime.
 - **The pairs are correlated.** EUR/USD, GBP/USD and AUD/USD are largely the
-  same dollar trade, so 430 trades are worth fewer than 430 independent
+  same dollar trade, so 1367 trades are worth fewer than 1367 independent
   observations and the interval is narrower than it should be.
-- **The forward-return table is no longer an independent check.** It used to
-  run on thousands of raw signals; with one trade per pair it runs on the same
-  430 trades, so it corroborates the walk-forward rather than testing it from
-  outside.
+- **Break-even assumes the stop fills at the entry price.** In a fast market
+  it will not: a stop is a market order once touched, and 1367 trades mean
+  1367 chances to slip. The modelled result gives back only the spread; a real
+  one would give back a little more, every time.
+- **Most of the improvement is trades not being taken to their loss**, not
+  trades being won. 58.7% of them now end at zero. A strategy whose central
+  outcome is "nothing happened" is paying a spread to find that out 1367
+  times.
 - **Costs are a flat estimate.** Real spreads widen at the open and on news.
   Swap is not modelled.
+- **Every setting that is ours was chosen after seeing these candles**, and
+  the break-even trigger most of all: 10 pips was measured against five
+  alternatives on the same sample. +5 scored best, and picking it on that
+  basis would be choosing the top row of a six-row sweep — so the number
+  asked for is the number that runs.
 
 ### The strategies that are not here, and why
 

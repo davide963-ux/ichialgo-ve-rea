@@ -22,6 +22,7 @@ import gbpusd from '../../../fixtures/market/GBPUSD_1H.csv?raw';
 import usdcad from '../../../fixtures/market/USDCAD_1H.csv?raw';
 import usdjpy from '../../../fixtures/market/USDJPY_1H.csv?raw';
 import { BARS_PER_FIXTURE } from '../../hooks/useBacktest';
+import { ICHIMOKU } from '../../config/ichimokuStrategy';
 import { pipSize } from '../../lib/pips';
 import type { Candle } from '../marketData';
 import { analyseIchimoku } from './ichimokuSystem';
@@ -168,6 +169,48 @@ describe('the system on real OANDA candles, every traded pair', () => {
           expect(t.entry, `${t.id} filled outside its bar`).toBeGreaterThanOrEqual(bar.low);
           expect(t.entry, `${t.id} filled outside its bar`).toBeLessThanOrEqual(bar.high);
         }
+      });
+
+      /**
+       * What the break-even rule must never do on real candles: lose more
+       * than the trade risked, or quietly turn into a different ticket. A
+       * scratch gives back the open profit and nothing else, so its result is
+       * zero before costs — anything further from zero means the stop moved
+       * somewhere other than the entry.
+       */
+      it('scratches at the entry, and never loses more than the original risk', () => {
+        const result = backtest(candles, symbol, '1H', { costPips: 0 });
+        const scratched = result.trades.filter((t) => t.exit === 'be');
+        expect(scratched.length, 'break-even must actually fire on real bars').toBeGreaterThan(10);
+
+        for (const t of result.trades) {
+          if (t.pips === null) continue;
+          // No outcome may exceed the risk the trade was taken with.
+          expect(t.pips, `${t.id} lost more than it risked`).toBeGreaterThanOrEqual(-t.stopPips - 1e-6);
+          if (t.exit === 'be') {
+            expect(t.exitPrice, `${t.id} scratched somewhere other than entry`).toBeCloseTo(t.entry, 9);
+            expect(t.pips).toBeCloseTo(0, 6);
+          }
+        }
+      });
+
+      /**
+       * The rule's whole purpose, stated as a measurement rather than a hope:
+       * turning it on must convert stop-outs into scratches. It is checked
+       * here rather than only in the README because a silent regression — a
+       * trigger that never arms — would look exactly like "the market
+       * changed".
+       */
+      it('converts stop-outs into scratches when switched on', () => {
+        const off = backtest(candles, symbol, '1H', { costPips: 0, config: { ...ICHIMOKU, breakEvenAtPips: 0 } });
+        const on = backtest(candles, symbol, '1H', { costPips: 0 });
+
+        expect(off.metrics.breakEvens).toBe(0);
+        expect(on.metrics.breakEvens).toBeGreaterThan(10);
+
+        const slRate = (r: typeof on) =>
+          r.trades.filter((t) => t.exit === 'sl').length / r.trades.filter((t) => t.pips !== null).length;
+        expect(slRate(on), 'the share of full stop-outs must fall').toBeLessThan(slRate(off));
       });
 
       it('leaves a usable level on the last bar', () => {

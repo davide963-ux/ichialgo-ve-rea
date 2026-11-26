@@ -333,7 +333,7 @@ export async function recordSignals(rows, env = process.env) {
       id, strategy, symbol, timeframe, bar_time, detected_at, source,
       kumo, kijun, tenkan, senkou_a, senkou_b, senkou_ahead_a, senkou_ahead_b,
       distance_pips, range_pips, cloud_pips, entry_type, score, checks_total, checks,
-      direction, entry, stop_loss, take_profit, stop_pips,
+      direction, entry, stop_loss, take_profit, stop_pips, break_even,
       result, exit_price, exit_at, bars_held, result_pips
     )
     select
@@ -341,7 +341,7 @@ export async function recordSignals(rows, env = process.env) {
       to_timestamp(x.bar_time), to_timestamp(x.detected_at), x.source,
       x.kumo, x.kijun, x.tenkan, x.senkou_a, x.senkou_b, x.senkou_ahead_a, x.senkou_ahead_b,
       x.distance_pips, x.range_pips, x.cloud_pips, x.entry_type, x.score, x.checks_total, x.checks,
-      x.direction, x.entry, x.stop_loss, x.take_profit, x.stop_pips,
+      x.direction, x.entry, x.stop_loss, x.take_profit, x.stop_pips, x.break_even,
       x.result, x.exit_price,
       case when x.exit_at is null then null else to_timestamp(x.exit_at) end,
       x.bars_held, x.result_pips
@@ -356,6 +356,7 @@ export async function recordSignals(rows, env = process.env) {
       score smallint, checks_total smallint, checks jsonb,
       direction text, entry double precision, stop_loss double precision,
       take_profit double precision, stop_pips double precision,
+      break_even double precision,
       result text, exit_price double precision, exit_at double precision,
       bars_held integer, result_pips double precision
     )
@@ -376,6 +377,8 @@ export async function openTrades(env = process.env) {
   const q = sql(env);
   return q`
     select id, symbol, timeframe, direction, entry, stop_loss, take_profit, stop_pips,
+           -- Needed to replay the break-even move when the trade is resolved.
+           break_even,
            extract(epoch from bar_time)::double precision as bar_time
     from signals
     where result = 'open'
@@ -427,7 +430,7 @@ export async function recentSignals(
            source, kumo, kijun, tenkan, senkou_a, senkou_b,
            senkou_ahead_a, senkou_ahead_b, distance_pips, range_pips, cloud_pips,
            entry_type, score, checks_total, checks,
-           direction, entry, stop_loss, take_profit, stop_pips,
+           direction, entry, stop_loss, take_profit, stop_pips, break_even,
            result, exit_price,
            extract(epoch from exit_at)::double precision     as exit_at,
            bars_held, result_pips
@@ -453,9 +456,10 @@ export async function signalStats(env = process.env, strategies = STRATEGIES) {
            count(*) filter (where result = 'open')              as open,
            count(*) filter (where result = 'tp')                as tp,
            count(*) filter (where result = 'sl')                as sl,
+           count(*) filter (where result = 'be')                as be,
            count(*) filter (where result = 'expired')           as expired,
-           sum(result_pips) filter (where result in ('tp','sl')) as net_pips,
-           avg(stop_pips)   filter (where result in ('tp','sl')) as avg_stop_pips
+           sum(result_pips) filter (where result in ('tp','sl','be')) as net_pips,
+           avg(stop_pips)   filter (where result in ('tp','sl','be')) as avg_stop_pips
     from signals
     where strategy = any(${strategies})
     group by strategy, entry_type, symbol

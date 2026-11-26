@@ -43,6 +43,10 @@ export interface TradePlan {
   riskReward: number;
   /** The 26-bar range in pips — what the stop is a fraction of. */
   rangePips: number;
+  /** Price at which the stop moves to entry, or null when the rule is off. */
+  breakEven: number | null;
+  /** How far that is from entry, in pips. Null with no break-even rule. */
+  breakEvenPips: number | null;
   /** Null when the position cannot be sized (missing USD rate, sub-minimum lot). */
   lots: number | null;
   units: number | null;
@@ -66,6 +70,14 @@ export interface TicketLevels {
   entry: number;
   stop: number;
   target: number;
+  /**
+   * Price at which the stop moves to entry, rounded like the rest, or null
+   * when the rule is off. Rounded HERE rather than at each caller for the
+   * same reason the others are: a broker cannot accept 1.1015183, and a
+   * backtest that triggers on a price no order could have used is measuring
+   * something that could not have happened.
+   */
+  breakEven: number | null;
 }
 
 export function ticketLevels(signal: IchimokuSignal): TicketLevels | null {
@@ -78,7 +90,10 @@ export function ticketLevels(signal: IchimokuSignal): TicketLevels | null {
   const target = round(signal.target);
   if (stop <= 0 || stop === entry || target === entry) return null;
 
-  return { direction: signal.direction, entry, stop, target };
+  const breakEven =
+    signal.breakEven !== null && Number.isFinite(signal.breakEven) ? round(signal.breakEven) : null;
+
+  return { direction: signal.direction, entry, stop, target, breakEven };
 }
 
 export function planFromSignal(
@@ -128,6 +143,8 @@ export function planFromSignal(
     targetPips: targetDistance / pip,
     riskReward: stopDistance > 0 ? targetDistance / stopDistance : 0,
     rangePips: signal.rangePips,
+    breakEven: levels.breakEven,
+    breakEvenPips: levels.breakEven === null ? null : Math.abs(levels.breakEven - entry) / pip,
     lots: sized.ok ? sized.lots : null,
     units: sized.ok ? sized.units : null,
     riskAmount: sized.riskAmount,

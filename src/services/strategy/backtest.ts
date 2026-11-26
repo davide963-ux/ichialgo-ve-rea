@@ -80,7 +80,7 @@ import type { Candle } from '../marketData/types';
 import { pipSize } from '../../lib/pips';
 import { ICHIMOKU, type IchimokuConfig } from '../../config/ichimokuStrategy';
 import { analyseIchimoku } from './ichimokuSystem';
-import { resolveBar } from './signalTicket';
+import { openExit, stepExit, type ExitRules, type ExitState } from './signalTicket';
 import { ticketLevels } from './tradePlan';
 import type { Direction, EntryType, IchimokuSignal } from './types';
 
@@ -96,7 +96,13 @@ import type { Direction, EntryType, IchimokuSignal } from './types';
  */
 export { resolveBar } from './signalTicket';
 
-export type BacktestExit = 'tp' | 'sl' | 'open';
+/**
+ * 'be' is a stop that was moved to the entry price and then hit: the trade
+ * gave back its open profit but not the risk. It is kept apart from 'sl'
+ * because "how many losses did break-even avoid" cannot be answered from a
+ * pip total — both come out slightly negative once the spread is paid.
+ */
+export type BacktestExit = 'tp' | 'sl' | 'be' | 'open';
 
 export interface BacktestTrade {
   id: string;
@@ -172,6 +178,8 @@ export interface BacktestMetrics {
   trades: number;
   wins: number;
   losses: number;
+  /** Trades scratched at break-even — the stop had moved to the entry. */
+  breakEvens: number;
   winRatePct: number | null;
   /** Mean pips across closed trades — the headline number. */
   averagePips: number | null;
@@ -277,7 +285,7 @@ export function backtest(
   /** Signals consumed but untradeable: see the ticketLevels branch below. */
   let unusableTicket = 0;
 
-  let open: (BacktestTrade & { entryIndex: number }) | null = null;
+  let open: (BacktestTrade & { entryIndex: number; rules: ExitRules; state: ExitState }) | null = null;
   let next = 0; // index into `eligible`
 
   for (let i = 0; i < candles.length; i++) {
@@ -288,13 +296,17 @@ export function backtest(
     // one, or a stop-out and an entry get booked from one candle. Rule 2:
     // the entry bar itself is never offered, so `i > entryIndex`.
     if (open !== null && i > open.entryIndex) {
-      const { exit, price } = resolveBar(bar, open.direction, open.stop, open.target);
+      const { exit, price, state } = stepExit(bar, open.rules, open.state);
+      open.state = state;
       if (exit !== null) {
         open.exit = exit;
         open.exitTime = bar.time;
         open.exitPrice = price;
         open.barsHeld = i - open.entryIndex;
-        open.pips = pipsOf(symbol, open.direction, open.entry, open.stop, price, cost);
+        // `rules.stop` is the ORIGINAL stop, which is what sizes the risk —
+        // pipsOf only uses it to reject a degenerate ticket, and the trade's
+        // risk never changes just because the stop was pulled up.
+        open.pips = pipsOf(symbol, open.direction, open.entry, open.rules.stop, price, cost);
         trades.push(open);
         open = null;
       }
@@ -329,7 +341,16 @@ export function backtest(
          */
         if (!levels) unusableTicket++;
         if (levels) {
+          const rules: ExitRules = {
+            direction: levels.direction,
+            entry: levels.entry,
+            stop: levels.stop,
+            target: levels.target,
+            breakEvenAt: levels.breakEven,
+          };
           open = {
+            rules,
+            state: openExit(rules),
             id: signal.id,
             symbol,
             timeframe,
@@ -436,6 +457,7 @@ export function measure(trades: readonly BacktestTrade[]): BacktestMetrics {
     trades: n,
     wins: wins.length,
     losses: losses.length,
+    breakEvens: trades.filter((t) => t.exit === 'be').length,
     winRatePct: n > 0 ? (wins.length / n) * 100 : null,
     averagePips,
     totalPips,

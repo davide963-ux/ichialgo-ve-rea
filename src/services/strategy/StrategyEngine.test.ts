@@ -20,6 +20,7 @@ const signal = (over: Partial<IchimokuSignal> = {}): IchimokuSignal => ({
   rangePips: 75,
   entryType: 'pullback',
   stopLevel: 1.0998,
+  breakEven: 1.1 + 10 * 0.0001,
   tenkan: 1.1005,
   kijun: 1.0998,
   senkouA: 1.097,

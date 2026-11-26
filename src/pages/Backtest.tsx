@@ -274,7 +274,15 @@ export function Backtest() {
           )}
 
           <section className="metric-strip" aria-label="Backtest summary">
-            <MetricCard label="Trades" value={metrics.trades} hint={`${metrics.wins}W / ${metrics.losses}L`} />
+            <MetricCard
+              label="Trades"
+              value={metrics.trades}
+              hint={
+                metrics.breakEvens > 0
+                  ? `${metrics.wins}W / ${metrics.losses}L, of which ${metrics.breakEvens} scratched at break-even`
+                  : `${metrics.wins}W / ${metrics.losses}L`
+              }
+            />
             <MetricCard
               label="Average"
               value={pips(metrics.averagePips, 2)}
@@ -289,6 +297,15 @@ export function Backtest() {
               hint="what each trade risked"
             />
             <MetricCard label="Total" value={pips(metrics.totalPips, 0)} hint="sum of every closed trade" />
+            <MetricCard
+              label="Scratched"
+              value={metrics.breakEvens}
+              hint={
+                metrics.trades > 0
+                  ? `${((metrics.breakEvens / metrics.trades) * 100).toFixed(0)}% — stop had moved to entry`
+                  : 'stop had moved to entry'
+              }
+            />
             <MetricCard label="Profit factor" value={pf(metrics.profitFactor)} hint="gross won ÷ gross lost" />
             <MetricCard label="Max drawdown" value={pips(-metrics.maxDrawdownPips, 0)} hint="deepest fall from a peak" />
           </section>

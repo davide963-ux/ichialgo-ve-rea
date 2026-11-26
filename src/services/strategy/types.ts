@@ -109,6 +109,13 @@ export interface IchimokuSignal {
   stopPips: number;
   /** The structure the stop sits beyond: Kijun-sen, or the far cloud edge. */
   stopLevel: number;
+  /**
+   * Price at which the stop moves to break-even, or null when the rule is
+   * off. Stored on the signal rather than recomputed by each consumer, for
+   * the same reason the stop is: the browser, the backtest and the scanner
+   * must not be able to disagree about the ticket they are measuring.
+   */
+  breakEven: number | null;
   /** The 26-bar range in pips — the unit every distance is drawn from. */
   rangePips: number;
 
@@ -178,8 +185,11 @@ export interface IchimokuLevel {
     direction: Direction;
     entryType: EntryType;
     entry: number;
+    /** The stop as it stands now: the original, or entry once armed. */
     stop: number;
     target: number;
+    /** True once the stop has been pulled up (or down) to the entry price. */
+    movedToBreakEven: boolean;
     barTime: number;
   } | null;
   /**

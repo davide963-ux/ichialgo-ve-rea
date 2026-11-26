@@ -28,7 +28,11 @@
 export { analyseIchimoku, minBars, STRATEGY } from './ichimokuSystem';
 export { futureCloudZone, zoneStrength } from './cloudZones';
 export { ticketLevels } from './tradePlan';
-export { backtest, pipsOf, resolveBar } from './backtest';
+export { backtest, pipsOf } from './backtest';
+// The live resolver walks bars itself, so it needs the same exit primitive
+// the detector and the backtest use — one rule, three callers.
+export { openExit, resolveBar, stepExit } from './signalTicket';
+export type { ExitRules, ExitState } from './signalTicket';
 export { pipSize, toPips } from '../../lib/pips';
 export { PAIRS, getPair } from '../../config/pairs';
 export { ICHIMOKU } from '../../config/ichimokuStrategy';

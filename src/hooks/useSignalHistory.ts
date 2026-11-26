@@ -55,6 +55,8 @@ export interface StoredSignal {
   stop_loss: number | null;
   take_profit: number | null;
   stop_pips: number | null;
+  /** Price at which the stop moved to entry. Null if the rule was off. */
+  break_even: number | null;
   /** Which entry fired: 'breakout' or 'pullback'. Null on retired rows. */
   entry_type: string | null;
   /**
@@ -66,7 +68,7 @@ export interface StoredSignal {
    * which is a price that traded by definition, so it cannot produce one —
    * and /api/signals filters by strategy, so one should never arrive here.
    */
-  result: 'open' | 'tp' | 'sl' | 'nofill' | 'expired';
+  result: 'open' | 'tp' | 'sl' | 'be' | 'nofill' | 'expired';
   exit_price: number | null;
   exit_at: number | null;
   bars_held: number | null;
@@ -92,6 +94,8 @@ export interface SymbolStats {
   open: number;
   tp: number;
   sl: number;
+  /** Scratched at break-even: the open profit given back, the risk not. */
+  be: number;
   expired: number;
   net_pips: number | null;
   avg_stop_pips: number | null;
@@ -134,6 +138,7 @@ const toSignal = (r: Record<string, unknown>): StoredSignal =>
     stop_loss: n(r.stop_loss),
     take_profit: n(r.take_profit),
     stop_pips: n(r.stop_pips),
+    break_even: n(r.break_even),
     exit_price: n(r.exit_price),
     exit_at: n(r.exit_at),
     bars_held: n(r.bars_held),
@@ -148,6 +153,7 @@ const toStats = (r: Record<string, unknown>): SymbolStats => ({
   open: n(r.open) ?? 0,
   tp: n(r.tp) ?? 0,
   sl: n(r.sl) ?? 0,
+  be: n(r.be) ?? 0,
   expired: n(r.expired) ?? 0,
   net_pips: n(r.net_pips),
   avg_stop_pips: n(r.avg_stop_pips),

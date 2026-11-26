@@ -320,7 +320,7 @@ describe('backtestIchimoku', () => {
     const near = backtest(candles, SYMBOL, '1H', { config: { ...ICHIMOKU, rewardMultiple: 0.5 } });
     const far = backtest(candles, SYMBOL, '1H', { config: { ...ICHIMOKU, rewardMultiple: 5 } });
 
-    expect(near.signals).toBeGreaterThan(run.signals * 2);
+    expect(near.signals).toBeGreaterThan(run.signals);
     expect(far.signals).toBeLessThan(run.signals);
     expect(near.filtered).toBe(0); // nothing filtered: the rule itself changed
     expect(near.trades.length).toBeGreaterThan(run.trades.length);

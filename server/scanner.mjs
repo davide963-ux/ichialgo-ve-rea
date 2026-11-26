@@ -13,7 +13,7 @@
  *        │                     ├─▶ recent closed bars ─▶ ticket
  *        │                     │        └─▶ insert (on conflict do nothing)
  *        │                     │
- *        │                     └─▶ bars after an OPEN trade ─▶ resolveBar()
+ *        │                     └─▶ bars after an OPEN trade ─▶ stepExit()
  *        │                              └─▶ close it, in pips
  *        ▼
  *   Neon
@@ -46,7 +46,7 @@
  *   2. THE TRADE IS LIVE FROM THE NEXT BAR. The fill is at the signal bar's
  *      close, so nothing in that bar can decide the trade in either
  *      direction.
- *   3. SAME-BAR AMBIGUITY GOES TO THE STOP. `resolveBar` decides this, and it
+ *   3. SAME-BAR AMBIGUITY GOES TO THE STOP. `stepExit` decides this, and it
  *      is the backtest's own function.
  *
  * WHY IT RE-READS BARS IT HAS ALREADY SEEN
@@ -66,9 +66,10 @@ import {
   TIMEFRAME_SECONDS,
   parseTdSeries,
   parseYahooChart,
+  openExit,
   pipSize,
   pipsOf,
-  resolveBar,
+  stepExit,
   tdSeriesQuery,
   ticketLevels,
   yahooQuery,
@@ -268,6 +269,7 @@ export function signalRow(signal, detectedAt) {
     stop_loss: stop,
     take_profit: target,
     stop_pips: Math.abs(entry - stop) / pipSize(signal.symbol),
+    break_even: levels.breakEven,
 
     result: 'open',
     exit_price: null,
@@ -314,11 +316,28 @@ export function resolveOpenTrade(trade, candles) {
     return null;
   }
 
+  /**
+   * The break-even move is replayed from the entry bar on every run, not
+   * remembered between them. It is a pure function of the stored ticket and
+   * the candles, so replaying gives the same answer every time — and it
+   * avoids a column whose only job would be to disagree with the candles.
+   */
+  const rules = {
+    direction: trade.direction,
+    entry: Number(trade.entry),
+    stop: Number(trade.stop_loss),
+    target: Number(trade.take_profit),
+    breakEvenAt: trade.break_even === null || trade.break_even === undefined ? null : Number(trade.break_even),
+  };
+  let state = openExit(rules);
+
   for (let i = entryIndex + 1; i < candles.length; i++) {
     const bar = candles[i];
     // A bar still forming can stop a trade out — the low really happened —
     // so it is NOT skipped. `complete` only matters for indicator warm-up.
-    const { exit, price } = resolveBar(bar, trade.direction, Number(trade.stop_loss), Number(trade.take_profit));
+    const stepped = stepExit(bar, rules, state);
+    state = stepped.state;
+    const { exit, price } = stepped;
     if (exit === null) continue;
     return {
       result: exit,
@@ -328,7 +347,7 @@ export function resolveOpenTrade(trade, candles) {
       // Raw pips, before spread. The backtest charges a spread because it is
       // asking "would this have been profitable"; the history is recording
       // what price did, and a broker's spread is not part of that.
-      resultPips: pipsOf(trade.symbol, trade.direction, Number(trade.entry), Number(trade.stop_loss), price, 0),
+      resultPips: pipsOf(trade.symbol, trade.direction, Number(trade.entry), rules.stop, price, 0),
     };
   }
   return null;

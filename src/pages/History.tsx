@@ -53,7 +53,12 @@ const stamp = (seconds: number) =>
 const RESULT: Record<StoredSignal['result'], { label: string; tone: string; hint: string }> = {
   open: { label: 'OPEN', tone: '', hint: 'price has not reached the stop or the target yet' },
   tp: { label: 'TP', tone: 'pos', hint: 'closed at the target' },
-  sl: { label: 'SL', tone: 'neg', hint: 'closed at the stop' },
+  sl: { label: 'SL', tone: 'neg', hint: 'closed at the stop, for the full risk' },
+  be: {
+    label: 'BE',
+    tone: 'muted',
+    hint: 'the stop had moved to the entry: the open profit was given back, the risk was not',
+  },
   // Only reachable for rows from the retired strategy, which this page does
   // not request. Kept so an unexpected one renders as itself, not as 'OPEN'.
   nofill: { label: 'NO FILL', tone: 'muted', hint: 'a retired strategy’s resting limit was never reached' },
@@ -92,7 +97,7 @@ export function History() {
         (a, s) => ({
           total: a.total + s.total,
           open: a.open + s.open,
-          closed: a.closed + s.tp + s.sl,
+          closed: a.closed + s.tp + s.sl + s.be,
           expired: a.expired + s.expired,
           wins: a.wins + s.tp,
         }),
@@ -201,6 +206,9 @@ export function History() {
                     <th className="num">EXPIRED</th>
                     <th className="num">OPEN</th>
                     <th className="num">TP</th>
+                    <th className="num" title="Scratched at break-even — the stop had moved to the entry">
+                      BE
+                    </th>
                     <th className="num">SL</th>
                     <th className="num">AVG STOP</th>
                     <th className="num">NET PIPS</th>
@@ -217,6 +225,7 @@ export function History() {
                       <td className="num muted">{s.expired}</td>
                       <td className="num">{s.open}</td>
                       <td className="num pos">{s.tp}</td>
+                      <td className="num muted">{s.be}</td>
                       <td className="num neg">{s.sl}</td>
                       <td className="num muted">
                         {s.avg_stop_pips === null ? '—' : s.avg_stop_pips.toFixed(1)}

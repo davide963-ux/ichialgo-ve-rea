@@ -52,6 +52,8 @@ export interface Ticket {
   /** The structure the stop sits beyond: Kijun-sen, or the far cloud edge. */
   stopLevel: number;
   entryType: EntryType;
+  /** Price at which the stop moves to entry, or null when the rule is off. */
+  breakEven: number | null;
 }
 
 export function buildSignal(d: SignalDraft, ticket: Ticket): IchimokuSignal {
@@ -77,6 +79,7 @@ export function buildSignal(d: SignalDraft, ticket: Ticket): IchimokuSignal {
     target: ticket.target,
     stopPips: Math.abs(entry - ticket.stop) / pip,
     stopLevel: ticket.stopLevel,
+    breakEven: ticket.breakEven,
     rangePips: facts.range / pip,
 
     tenkan: facts.tenkan,
@@ -119,4 +122,81 @@ export function resolveBar(
   if (long ? bar.low <= stop : bar.high >= stop) return { exit: 'sl', price: stop };
   if (long ? bar.high >= target : bar.low <= target) return { exit: 'tp', price: target };
   return { exit: null, price: bar.close };
+}
+
+/**
+ * A position's exit rules, fixed at entry.
+ *
+ * `breakEvenAt` is the PRICE at which the stop jumps to `entry`, or null when
+ * the rule is off. A price rather than a pip count, so the pip size of the
+ * pair is converted once, where the ticket is built, instead of in each of
+ * the three places that walk bars.
+ */
+export interface ExitRules {
+  direction: Direction;
+  entry: number;
+  /** The stop the trade opened with. */
+  stop: number;
+  target: number;
+  breakEvenAt: number | null;
+}
+
+/** What changes bar by bar while the position is open. */
+export interface ExitState {
+  /** The stop actually working: the original, or `entry` once armed. */
+  stop: number;
+  /** Whether the break-even move has happened. */
+  movedToBreakEven: boolean;
+}
+
+export const openExit = (rules: ExitRules): ExitState => ({ stop: rules.stop, movedToBreakEven: false });
+
+/**
+ * Advance one bar of an open position.
+ *
+ * WHY THE BREAK-EVEN MOVE TAKES EFFECT ON THE *NEXT* BAR
+ * ─────────────────────────────────────────────────────
+ * OHLC does not say in which order a bar reached its high and its low. On the
+ * bar that first trades 10 pips in profit, the same bar may also trade down
+ * through the original stop — and whether the stop moved before or after that
+ * happened is exactly the information a candle does not contain.
+ *
+ * So the trigger bar is still resolved against the ORIGINAL stop, and the
+ * tighter stop applies from the following bar. That is the conservative
+ * reading of the rule the user asked for: it refuses the scratch and books
+ * the full loss whenever the ambiguity exists, which means the measured
+ * benefit of break-even is an UNDERSTATEMENT rather than a flattering
+ * number. Arming within the trigger bar would let the backtest decide an
+ * intrabar path in the rule's favour, which is the same class of mistake as
+ * filling a limit order the bar never reached.
+ *
+ * The stop is still checked before the target, for the same reason it always
+ * was: a bar covering both cannot be ordered either.
+ */
+export function stepExit(
+  bar: Candle,
+  rules: ExitRules,
+  state: ExitState,
+): { exit: 'tp' | 'sl' | 'be' | null; price: number; state: ExitState } {
+  const long = rules.direction === 'LONG';
+
+  if (long ? bar.low <= state.stop : bar.high >= state.stop) {
+    // Scratched at break-even, or stopped out for a real loss. They are
+    // different outcomes and the history records them apart, because "how
+    // many losses did break-even avoid" cannot be answered otherwise.
+    return { exit: state.movedToBreakEven ? 'be' : 'sl', price: state.stop, state };
+  }
+  if (long ? bar.high >= rules.target : bar.low <= rules.target) {
+    return { exit: 'tp', price: rules.target, state };
+  }
+
+  if (
+    !state.movedToBreakEven &&
+    rules.breakEvenAt !== null &&
+    (long ? bar.high >= rules.breakEvenAt : bar.low <= rules.breakEvenAt)
+  ) {
+    return { exit: null, price: bar.close, state: { stop: rules.entry, movedToBreakEven: true } };
+  }
+
+  return { exit: null, price: bar.close, state };
 }
