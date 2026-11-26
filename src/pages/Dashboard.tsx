@@ -77,7 +77,7 @@ export function Dashboard() {
       <section className="metric-strip" aria-label="Scanner overview">
         <MetricCard label="Markets" value={symbols.length} hint={`${quoteCount} priced by ${provider}`} />
         <MetricCard
-          label="In the zone now"
+          label="Setups pending"
           value={summary.active}
           hint={strategyStatus === 'READY' ? 'Setups part-formed, waiting to complete' : strategyHint}
           accent={summary.active > 0}

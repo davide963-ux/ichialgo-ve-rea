@@ -40,8 +40,8 @@ export function SignalTable({ signals, limit, emptyHint }: Props) {
 
   if (rows.length === 0) {
     return (
-      <EmptyState title="No Kijun pullbacks yet" compact>
-        {emptyHint ?? 'A signal appears when price, already clear of the Kumo, pulls back to Kijun-sen.'}
+      <EmptyState title="No breakouts or pullbacks yet" compact>
+        {emptyHint ?? 'A signal appears when price breaks out of the Kumo and the cloud ahead agrees, or when price already clear of it pulls back and closes through Kijun-sen.'}
       </EmptyState>
     );
   }
@@ -51,7 +51,7 @@ export function SignalTable({ signals, limit, emptyHint }: Props) {
   return (
     <div className="table-wrap">
       <table className="table">
-        <caption className="sr-only">Ichimoku Kijun pullback signals, newest first.</caption>
+        <caption className="sr-only">Ichimoku breakout and pullback signals, newest first.</caption>
         <thead>
           <tr>
             <th scope="col">
