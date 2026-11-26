@@ -50,8 +50,10 @@ import { marketDataService } from '../marketData';
 import { toProviderError, type Quote } from '../marketData/types';
 import { marketStore } from '../../state/marketStore';
 import { signalStore } from '../../state/signalStore';
-import { analyseIchimoku, checkLiveTouch, minBars, signalTimeMs } from './ichimokuSignal';
-import type { IchimokuLevel, IchimokuSignal } from './types';
+import { DEFAULT_STRATEGY, detectorFor } from './detectors';
+import { checkLiveTouch } from './ichimokuSignal';
+import { signalTimeMs } from './signalTicket';
+import type { IchimokuLevel, IchimokuSignal, StrategyId } from './types';
 
 /** Newest first, de-duplicated by id; a candle result replaces a live one. */
 export function mergeSignals(existing: readonly IchimokuSignal[], incoming: readonly IchimokuSignal[], cap: number): IchimokuSignal[] {
@@ -109,6 +111,7 @@ export function candlesAreDue(
 
 export class StrategyEngine {
   private timeframe: Timeframe = STRATEGY_CONFIG.scanTimeframe;
+  private strategy: StrategyId = DEFAULT_STRATEGY;
   private session = 0;
   private timer?: ReturnType<typeof setInterval>;
   private unsubscribe?: () => void;
@@ -124,14 +127,15 @@ export class StrategyEngine {
     return STRATEGY_CONFIG.scanTickMs;
   }
 
-  start(timeframe: Timeframe): void {
-    if (this.running && this.timeframe === timeframe) return;
+  start(timeframe: Timeframe, strategy: StrategyId = this.strategy): void {
+    if (this.running && this.timeframe === timeframe && this.strategy === strategy) return;
     this.stop();
     this.running = true;
     this.timeframe = timeframe;
+    this.strategy = strategy;
     const session = ++this.session;
 
-    signalStore.reset(timeframe);
+    signalStore.reset(timeframe, strategy);
     signalStore.set({ status: 'WARMING' });
 
     this.unsubscribe = marketDataService.onQuotes((quotes) => this.onQuotes(quotes));
@@ -151,10 +155,21 @@ export class StrategyEngine {
     this.notices.clear();
   }
 
-  /** Switch timeframe: everything is timeframe-specific, so this is a restart. */
-  setTimeframe(timeframe: Timeframe): void {
-    if (timeframe === this.timeframe && this.running) return;
-    this.start(timeframe);
+  /**
+   * Switch timeframe or strategy: both are a restart.
+   *
+   * Every level, signal and arming flag in memory belongs to one strategy on
+   * one timeframe. Carrying them across would mean a Kijun band computed by
+   * one rule being checked against a quote by another, so the state is thrown
+   * away rather than migrated.
+   */
+  setTimeframe(timeframe: Timeframe, strategy: StrategyId = this.strategy): void {
+    if (timeframe === this.timeframe && strategy === this.strategy && this.running) return;
+    this.start(timeframe, strategy);
+  }
+
+  get activeStrategy(): StrategyId {
+    return this.strategy;
   }
 
   /**
@@ -187,14 +202,15 @@ export class StrategyEngine {
         // cache would otherwise hand back a copy taken before it did.
         const candles = await marketDataService.getCandles(symbol, this.timeframe, APP_CONFIG.chartCandleCount, { force: true });
         if (session !== this.session) return;
-        const { signals, level, reason } = analyseIchimoku(candles, symbol, this.timeframe);
+        const detector = detectorFor(this.strategy);
+        const { signals, level, reason } = detector.analyse(candles, symbol, this.timeframe);
         changed = true;
 
         const newest = candles.at(-1);
         if (newest) this.pairs.set(symbol, { newestBarTime: newest.time, fetchedAt: Date.now() });
 
         if (reason === 'not-enough-bars') {
-          this.notices.set(symbol, `Needs ${minBars()} ${this.timeframe} candles, got ${candles.length}`);
+          this.notices.set(symbol, `Needs ${detector.minBars()} ${this.timeframe} candles, got ${candles.length}`);
           this.levels.delete(symbol);
           continue;
         }
@@ -227,7 +243,16 @@ export class StrategyEngine {
     }));
   }
 
-  /** Live path: a tick that reaches the Kijun band signals immediately. */
+  /**
+   * Live path: a tick that reaches the Kijun band signals immediately.
+   *
+   * Only our own strategy has one. OANDA's two both need a CLOSE — a close
+   * back through Kijun on a candle of the right colour, or a close through
+   * the cloud — and a tick inside an unfinished bar cannot supply one. Firing
+   * them on a quote would be inventing a rule their article does not contain,
+   * so `checkLiveTouch` returns nothing for them and those strategies simply
+   * update on bar boundaries.
+   */
   private onQuotes(quotes: Quote[]): void {
     if (quotes.length === 0) return;
     const fired: IchimokuSignal[] = [];

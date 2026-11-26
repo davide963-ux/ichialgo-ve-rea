@@ -28,7 +28,7 @@ import { pipSize } from '../../lib/pips';
 import { kumoSide } from '../../lib/indicators';
 import type { Candle } from '../marketData';
 import { analyseIchimoku } from './ichimokuSignal';
-import { backtestIchimoku } from './backtest';
+import { backtest } from './backtest';
 
 /**
  * Loaded through Vite's `?raw` rather than node:fs: this file lives under
@@ -179,7 +179,7 @@ describe('analyseIchimoku on real OANDA candles', () => {
           list
             .filter((s) => s.barTime <= lastComparable)
             .map((s) =>
-              [s.id, s.direction, s.kumo, s.score, s.cloudBullish, s.futureCloudBullish, s.chikouFree, s.tenkanAgrees]
+              [s.id, s.direction, s.kumo, s.score, s.checksTotal, ...s.checks.map((c) => `${c.label}=${c.pass}`)]
                 .join('|'),
             );
 
@@ -195,8 +195,8 @@ describe('analyseIchimoku on real OANDA candles', () => {
        */
       it('produces the same closed trades from a truncated series', () => {
         const cut = Math.floor(candles.length * 0.6);
-        const full = backtestIchimoku(candles, symbol, '1H');
-        const part = backtestIchimoku(candles.slice(0, cut), symbol, '1H');
+        const full = backtest('ichimoku-kijun', candles, symbol, '1H');
+        const part = backtest('ichimoku-kijun', candles.slice(0, cut), symbol, '1H');
         const cutoff = candles[cut - 27]!.time;
 
         const closedBefore = (r: typeof full) =>
@@ -216,7 +216,7 @@ describe('analyseIchimoku on real OANDA candles', () => {
        * that every eligible signal which was not crowded out became a trade.
        */
       it('turns no signal away for want of a fill', () => {
-        const result = backtestIchimoku(candles, symbol, '1H');
+        const result = backtest('ichimoku-kijun', candles, symbol, '1H');
         expect(result.trades.length).toBeGreaterThan(10);
         expect(result.trades.length + result.filtered + result.skippedWhileOpen).toBe(result.signals);
         expect(result.filtered).toBe(0);
@@ -224,7 +224,7 @@ describe('analyseIchimoku on real OANDA candles', () => {
 
       it('enters at a price the entry bar traded, on every trade', () => {
         const byTime = new Map(candles.map((c) => [c.time, c]));
-        for (const t of backtestIchimoku(candles, symbol, '1H').trades) {
+        for (const t of backtest('ichimoku-kijun', candles, symbol, '1H').trades) {
           const bar = byTime.get(t.entryTime)!;
           expect(t.entry, `${t.id} filled outside its bar`).toBeGreaterThanOrEqual(bar.low);
           expect(t.entry, `${t.id} filled outside its bar`).toBeLessThanOrEqual(bar.high);

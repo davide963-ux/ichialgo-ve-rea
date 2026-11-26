@@ -17,7 +17,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { PAIRS } from '../config/pairs';
 import type { Candle } from '../services/marketData';
-import { backtestIchimoku, combine, type BacktestFilters, type BacktestResult } from '../services/strategy';
+import { backtest, combine, type BacktestFilters, type BacktestResult, type StrategyId } from '../services/strategy';
 
 /**
  * Every pair with a checked-in fixture, and how to fetch it.
@@ -85,7 +85,11 @@ export interface BacktestState {
 }
 
 /** Candles are loaded once and kept; only the filters change after that. */
-export function useBacktest(symbols: readonly string[], filters: BacktestFilters): BacktestState {
+export function useBacktest(
+  strategy: StrategyId,
+  symbols: readonly string[],
+  filters: BacktestFilters,
+): BacktestState {
   const [candles, setCandles] = useState<Map<string, Candle[]> | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -104,7 +108,7 @@ export function useBacktest(symbols: readonly string[], filters: BacktestFilters
     if (!candles) return { status: 'LOADING' as const, error: null, results: [], portfolio: null, span: null };
 
     const results = FIXTURE_PAIRS.filter((p) => symbols.includes(p.symbol)).map((p) =>
-      backtestIchimoku(candles.get(p.symbol)!, p.symbol, '1H', filters),
+      backtest(strategy, candles.get(p.symbol)!, p.symbol, '1H', filters),
     );
 
     const all = [...candles.values()].flat();
@@ -113,5 +117,5 @@ export function useBacktest(symbols: readonly string[], filters: BacktestFilters
       : null;
 
     return { status: 'READY' as const, error: null, results, portfolio: combine(results), span };
-  }, [candles, error, symbols, filters]);
+  }, [candles, error, strategy, symbols, filters]);
 }

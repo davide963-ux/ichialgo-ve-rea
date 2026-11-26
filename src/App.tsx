@@ -3,6 +3,7 @@ import { Navbar } from './components/Navbar';
 import { DEFAULT_TIMEFRAME, isTimeframe } from './config/timeframes';
 import { useMarketDataConnection } from './hooks/useMarketData';
 import { useStrategyEngine } from './hooks/useSignals';
+import { DEFAULT_STRATEGY, isStrategyId } from './services/strategy';
 import { CalculatorPage } from './pages/CalculatorPage';
 import { Backtest } from './pages/Backtest';
 import { Dashboard } from './pages/Dashboard';
@@ -12,7 +13,7 @@ import { PairPage } from './pages/PairPage';
 import { useMarketStore } from './state/marketStore';
 
 /**
- * Live market data, charts, and the Ichimoku Kijun pullback strategy.
+ * Live market data, charts, and three pure-Ichimoku strategies.
  *
  * The strategy runs in the BROWSER, off the candles the charts already hold:
  * a signal is a pure function of the bars on screen, so what the page shows
@@ -27,13 +28,19 @@ import { useMarketStore } from './state/marketStore';
  */
 
 /**
- * Keeps the strategy engine pointed at the timeframe in the URL, for every
- * route. Lives inside the router because that is where `?tf=` is readable.
+ * Keeps the strategy engine pointed at the timeframe AND the strategy in the
+ * URL, for every route. Lives inside the router because that is where `?tf=`
+ * and `?s=` are readable.
+ *
+ * The strategy is in the URL rather than in a store so a particular view is
+ * linkable: "OANDA's breakout on 1H" is a thing you can send someone, and the
+ * pair page and the scanner then cannot disagree about which rules are live.
  */
 function StrategyRunner() {
   const [params] = useSearchParams();
   const tf = params.get('tf');
-  useStrategyEngine(isTimeframe(tf) ? tf : DEFAULT_TIMEFRAME);
+  const s = params.get('s');
+  useStrategyEngine(isTimeframe(tf) ? tf : DEFAULT_TIMEFRAME, isStrategyId(s) ? s : DEFAULT_STRATEGY);
   return null;
 }
 
@@ -42,7 +49,7 @@ function Footer() {
   return (
     <footer className="footer">
       <div className="footer-inner">
-        <span>Ichialgo: live Forex market data + Ichimoku Kijun pullback strategy.</span>
+        <span>Ichialgo: live Forex market data + pure-Ichimoku strategies.</span>
         <span>Data: {provider}. Charts by TradingView Lightweight Charts.</span>
       </div>
     </footer>

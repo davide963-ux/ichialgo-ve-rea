@@ -33,7 +33,8 @@
  */
 import { useMemo, useState } from 'react';
 import { MetricCard } from '../components/MetricCard';
-import { ICHIMOKU_SIGNAL_CHECKS, ICHIMOKU_STRATEGY } from '../config/ichimokuStrategy';
+import { DETECTORS, isStrategyId } from '../services/strategy';
+
 import { useSignalHistory, type StoredSignal } from '../hooks/useSignalHistory';
 import { formatNumber } from '../lib/format';
 
@@ -64,12 +65,24 @@ const RESULT: Record<StoredSignal['result'], { label: string; tone: string; hint
 export function History() {
   const { status, configured, signals, stats, error, reload } = useSignalHistory();
   const [symbol, setSymbol] = useState<string | null>(null);
+  const [strategy, setStrategy] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
 
   const symbols = useMemo(() => [...new Set(stats.map((s) => s.symbol))].sort(), [stats]);
+  /**
+   * The scanner records every strategy on the same candles, so the history
+   * holds all of them. Showing them merged would average three different rule
+   * sets into one number, which is the thing the backtest page exists to
+   * avoid — so this filters, and defaults to all with the strategy named on
+   * every row.
+   */
+  const strategies = useMemo(() => [...new Set(stats.map((s) => s.strategy))].sort(), [stats]);
   const filtered = useMemo(
-    () => (symbol ? signals.filter((s) => s.symbol === symbol) : signals),
-    [signals, symbol],
+    () =>
+      signals.filter(
+        (s) => (symbol === null || s.symbol === symbol) && (strategy === null || s.strategy === strategy),
+      ),
+    [signals, symbol, strategy],
   );
   const shown = showAll ? filtered : filtered.slice(0, ROWS);
 
@@ -182,6 +195,7 @@ export function History() {
               <table className="table">
                 <thead>
                   <tr>
+                    <th>STRATEGY</th>
                     <th>PAIR</th>
                     <th className="num">RECORDED</th>
                     <th className="num">EXPIRED</th>
@@ -194,7 +208,10 @@ export function History() {
                 </thead>
                 <tbody>
                   {stats.map((s) => (
-                    <tr key={s.symbol}>
+                    <tr key={`${s.strategy}|${s.symbol}`}>
+                      <td className="muted">
+                        {isStrategyId(s.strategy) ? DETECTORS[s.strategy].name : s.strategy}
+                      </td>
                       <td>{s.symbol}</td>
                       <td className="num muted">{s.total}</td>
                       <td className="num muted">{s.expired}</td>
@@ -231,6 +248,22 @@ export function History() {
 
             <div className="panel-body backtest-controls">
               <fieldset className="control-group">
+                <legend>Strategy</legend>
+                <div className="chip-row">
+                  <label className={`chip${strategy === null ? ' on' : ''}`}>
+                    <input type="radio" name="hstrat" checked={strategy === null} onChange={() => setStrategy(null)} />
+                    all
+                  </label>
+                  {strategies.map((id) => (
+                    <label key={id} className={`chip${strategy === id ? ' on' : ''}`}>
+                      <input type="radio" name="hstrat" checked={strategy === id} onChange={() => setStrategy(id)} />
+                      {isStrategyId(id) ? DETECTORS[id].name : id}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
+              <fieldset className="control-group">
                 <legend>Pair</legend>
                 <div className="chip-row">
                   <label className={`chip${symbol === null ? ' on' : ''}`}>
@@ -252,6 +285,7 @@ export function History() {
                 <thead>
                   <tr>
                     <th>BAR</th>
+                    <th>STRATEGY</th>
                     <th>PAIR</th>
                     <th>SIDE</th>
                     <th className="num">ENTRY</th>
@@ -269,6 +303,9 @@ export function History() {
                     return (
                       <tr key={s.id}>
                         <td className="muted">{stamp(s.bar_time)}</td>
+                        <td className="muted">
+                          {isStrategyId(s.strategy) ? DETECTORS[s.strategy].name : s.strategy}
+                        </td>
                         <td>{s.symbol}</td>
                         <td>
                           {s.direction && (
@@ -279,7 +316,7 @@ export function History() {
                         <td className="num muted">{s.stop_loss === null ? '—' : formatNumber(s.stop_loss, 5)}</td>
                         <td className="num muted">{s.take_profit === null ? '—' : formatNumber(s.take_profit, 5)}</td>
                         <td className="num muted">
-                          {s.score === null ? '—' : `${s.score}/${ICHIMOKU_SIGNAL_CHECKS}`}
+                          {s.score === null ? '—' : `${s.score}/${s.checks_total ?? '?'}`}
                         </td>
                         <td>
                           <span className={`tag ${r.tone}`} title={r.hint}>
@@ -332,10 +369,10 @@ export function History() {
                 strategy rested a limit at the EMA and about a third of its touches never reached it.
               </li>
               <li>
-                <strong>Everything stored already cleared the gate.</strong> The score is a threshold, not a label:
-                a pullback below {ICHIMOKU_STRATEGY.minScore}/{ICHIMOKU_SIGNAL_CHECKS} produces no signal, so there
-                is nothing weaker in the table to filter for. The individual checks are stored next to the total so
-                the history can still answer WHICH one was missing on the rest.
+                <strong>Everything stored already met its strategy's conditions.</strong> The required checks are a
+                gate, not a label — a setup that fails one produces no signal, so there is nothing weaker in the
+                table to filter for. Every individual check is stored beside the total, so the history can still
+                answer WHICH optional one was missing.
               </li>
               <li>
                 <strong>A gap in the dates is a gap in the scanner, not in the market.</strong> The schedule runs on

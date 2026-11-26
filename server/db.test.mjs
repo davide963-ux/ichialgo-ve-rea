@@ -91,11 +91,17 @@ run('db.mjs against PostgreSQL', () => {
     senkou_b: 1.096,
     distance_pips: 2,
     range_pips: 75,
+    senkou_ahead_a: 1.1005,
+    senkou_ahead_b: 1.0965,
+    cloud_pips: 10,
     score: 4,
-    cloud_bullish: true,
-    future_cloud_bullish: true,
-    chikou_free: true,
-    tenkan_agrees: true,
+    checks_total: 4,
+    checks: [
+      { label: 'Cloud in effect bullish', pass: true, detail: '1.097 vs 1.096', required: true },
+      { label: 'Cloud 26 bars ahead bullish', pass: true, detail: '1.1005 vs 1.0965', required: true },
+      { label: 'Chikou free', pass: null, detail: 'too few bars', required: true },
+      { label: 'Tenkan above Kijun', pass: true, detail: '1.1005 vs 1.0998', required: true },
+    ],
     direction: 'LONG',
     entry: 1.1,
     stop_loss: 1.099,
@@ -123,10 +129,18 @@ run('db.mjs against PostgreSQL', () => {
     expect(back[0].symbol).toBe('USD/JPY');
     expect(back[1].kumo).toBe('above');
     expect(Number(back[1].score)).toBe(4);
-    expect(back[1].cloud_bullish).toBe(true);
-    // A boolean must survive as a boolean, not as the string 'true': the
-    // history page branches on it directly.
-    expect(back[1].tenkan_agrees).toBe(true);
+    expect(Number(back[1].checks_total)).toBe(4);
+    /**
+     * The check list has to survive the jsonb round trip intact — labels,
+     * booleans and, critically, a null `pass`. Flattening "not knowable" to
+     * false would make the history unable to tell a failed check from an
+     * unanswerable one, which is the distinction the column exists for.
+     */
+    expect(back[1].checks).toHaveLength(4);
+    expect(back[1].checks[0].pass).toBe(true);
+    expect(back[1].checks[2].pass).toBeNull();
+    expect(back[1].checks[3].label).toBe('Tenkan above Kijun');
+    expect(back[1].checks[1].required).toBe(true);
   });
 
   /**
@@ -221,7 +235,7 @@ run('db.mjs against PostgreSQL', () => {
     expect(Number(eur.net_pips)).toBe(20); // not 40: the retired row is not added in
 
     // Asked for explicitly, it is still there — nothing was deleted.
-    expect((await recentSignals({ strategy: 'ema50-touch' }, env)).map((r) => r.id)).toEqual(['then']);
+    expect((await recentSignals({ strategies: ['ema50-touch'] }, env)).map((r) => r.id)).toEqual(['then']);
 
     // But an open trade is resolved whatever produced it, or the open count
     // grows for ever with trades nothing is tracking.
@@ -263,6 +277,34 @@ run('db.mjs against PostgreSQL', () => {
     expect(Number(eur.expired)).toBe(1);
     expect(Number(eur.net_pips)).toBe(10); // +20 − 10, open and expired excluded
     expect(stats.find((s) => s.symbol === 'USD/JPY')).toBeTruthy();
+  });
+
+  /**
+   * The scanner records every strategy on the same candles, so one bar of one
+   * pair can hold three rows. They must stay separable: merging them would
+   * average three different rule sets into one number, which is the thing the
+   * whole comparison exists to avoid.
+   */
+  it('keeps the live strategies apart, in the rows and in the stats', async () => {
+    await recordSignals(
+      [
+        row({ id: 'a', strategy: 'ichimoku-kijun', result: 'tp' }),
+        row({ id: 'b', strategy: 'oanda-pullback', result: 'tp', bar_time: 1_700_000_100 }),
+        row({ id: 'c', strategy: 'oanda-breakout', result: 'sl', bar_time: 1_700_000_200 }),
+      ],
+      env,
+    );
+    await pool.query(`update signals set result_pips = 20 where result = 'tp'`);
+    await pool.query(`update signals set result_pips = -10 where result = 'sl'`);
+
+    expect(await recentSignals({}, env)).toHaveLength(3);
+    expect(await recentSignals({ strategies: ['oanda-breakout'] }, env)).toHaveLength(1);
+
+    const stats = await signalStats(env);
+    expect(stats).toHaveLength(3); // one row per (strategy, symbol), never merged
+    const byStrategy = new Map(stats.map((s) => [s.strategy, s]));
+    expect(Number(byStrategy.get('oanda-pullback').net_pips)).toBe(20);
+    expect(Number(byStrategy.get('oanda-breakout').net_pips)).toBe(-10);
   });
 
   it('records a scanner run from start to finish', async () => {
@@ -343,15 +385,19 @@ run('migrating a database that already holds the old strategy’s rows', () => {
        )`,
     );
 
-    // 3. The change.
+    // 3. The change — both later migrations, in order.
     const ran = await migrate(
       [
         { name: '0001_signals.sql', text: read('0001_signals.sql') },
         { name: '0002_ichimoku.sql', text: read('0002_ichimoku.sql') },
+        { name: '0003_strategies.sql', text: read('0003_strategies.sql') },
       ],
       env,
     );
-    expect(ran, 'only the new migration should apply').toEqual(['0002_ichimoku.sql']);
+    expect(ran, 'only the new migrations should apply').toEqual([
+      '0002_ichimoku.sql',
+      '0003_strategies.sql',
+    ]);
 
     // The observation survived: a ticket and a result are still a ticket and
     // a result whatever indicator produced them.
@@ -368,7 +414,7 @@ run('migrating a database that already holds the old strategy’s rows', () => {
     }
     // The Ichimoku columns it has but cannot fill. Null, not zero: a zero
     // Kijun would be read as a price.
-    for (const added of ['kumo', 'kijun', 'tenkan', 'senkou_a', 'senkou_b', 'range_pips', 'score', 'cloud_bullish', 'future_cloud_bullish', 'chikou_free', 'tenkan_agrees']) {
+    for (const added of ['kumo', 'kijun', 'tenkan', 'senkou_a', 'senkou_b', 'range_pips', 'score', 'checks', 'cloud_pips']) {
       expect(Object.hasOwn(old, added), `${added} should have been added`).toBe(true);
       expect(old[added], `${added} should be null on a legacy row`).toBeNull();
     }

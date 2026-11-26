@@ -1,5 +1,6 @@
 """
-Build docs/how-a-signal-is-made.pdf — what ATR decides, what Ichimoku decides.
+Build docs/how-a-signal-is-made.pdf — how Ichimoku, and only Ichimoku, makes a
+signal, and how the three strategies that do it compare.
 
     /usr/local/bin/python3.13 scripts/build-signal-doc.py
 
@@ -15,8 +16,8 @@ TWO THINGS THAT WILL BITE WHOEVER EDITS THIS
 
 2. The numbers are not decoration. They come from the measurements in this
    repository's backtest and from one real signal in fixtures/market/ —
-   EUR/USD, the bar opening 2025-12-08 14:00 UTC. If the strategy changes,
-   this document is wrong until it is regenerated with new figures.
+   EUR/USD, the bar opening 2025-12-12 08:00 UTC. If a strategy changes, this
+   document is wrong until it is regenerated with new figures.
 """
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
@@ -122,7 +123,7 @@ def header_footer(canvas, doc):
     canvas.setFont("Helvetica", 7.5)
     canvas.setFillColor(MUTED)
     canvas.drawString(22 * mm, 285 * mm, "ICHIALGO — how a signal is made")
-    canvas.drawRightString(188 * mm, 285 * mm, "Ichimoku Kijun pullback")
+    canvas.drawRightString(188 * mm, 285 * mm, "Three Ichimoku strategies, compared")
     canvas.line(22 * mm, 16 * mm, 188 * mm, 16 * mm)
     canvas.drawString(22 * mm, 11 * mm, "Generated from the live code and the checked-in OANDA fixtures.")
     canvas.drawRightString(188 * mm, 11 * mm, f"Page {doc.page}")
@@ -141,7 +142,8 @@ A = S.append
 # ----------------------------- page 1 -----------------------------
 A(Paragraph("How a signal is made", H1))
 A(Paragraph("Ichimoku, and nothing else: what sets the direction, what triggers the entry, "
-            "where the stop comes from without an ATR, and what the whole thing measures.", SUB))
+            "where the stop comes from without an ATR, what it measures, and how it compares with "
+            "OANDA's published rules.", SUB))
 
 A(Paragraph("The short answer", H2))
 A(Paragraph(
@@ -365,6 +367,68 @@ A(Paragraph(
 A(PageBreak())
 
 # ----------------------------- page 5 -----------------------------
+A(Paragraph("Three strategies, one harness", H2))
+A(Paragraph(
+    "The app runs three entry rules. The one described above is ours. The other two are OANDA's, "
+    "from their published Ichimoku Cloud trading guide, implemented to the letter so they can be "
+    "measured against it rather than argued about.", BODY))
+A(plain_rows(
+    [
+        [Paragraph("<b>Kijun pullback</b><br/><font size=\'8\' color=\'#5C6B64\'>ours</font>", CELL),
+         "Price clear of the Kumo pulls back into a band around Kijun-sen, and all four Ichimoku "
+         "confirmations must agree. The gate is the whole design."],
+        [Paragraph("<b>Tenkan/Kijun pullback</b><br/><font size=\'8\' color=\'#5C6B64\'>OANDA</font>", CELL),
+         "Price clear of the Kumo with Tenkan on the trade's side, a pullback that reaches Tenkan or "
+         "Kijun, then a close back through Kijun on a candle of the trade's own colour. No cloud "
+         "colour, no forward cloud, no Chikou - none of those are in their rules."],
+        [Paragraph("<b>Kumo breakout</b><br/><font size=\'8\' color=\'#5C6B64\'>OANDA</font>", CELL),
+         "Price breaks through the cloud after consolidation and the cloud 26 bars ahead turns the "
+         "same way, with Chikou clear of its prior 26-period price. The twist may arrive after the "
+         "break, because in both of their worked examples it did."],
+    ],
+    [40 * mm, 125 * mm]))
+A(Paragraph(
+    "<b>OANDA's article gives no stop, no target and no position size.</b> So the exit is ours, and "
+    "it is identical for all three - comparing two entry rules only means something if the exit is "
+    "held constant, or the comparison measures the exits instead.", BODY))
+
+A(Paragraph("What they measure, on the same candles", H3))
+A(table(
+    ["Strategy", "Signals", "Trades", "Win", "Average", "95% interval", "PF"],
+    [
+        [Paragraph("<b>Kijun pullback</b>", CELL), Paragraph("<b>1080</b>", CELL),
+         Paragraph("<b>369</b>", CELL), Paragraph("<b>36.9%</b>", CELL),
+         Paragraph("<b>+3.89</b>", CELL), Paragraph("<b>-1.63 .. +9.40</b>", CELL),
+         Paragraph("<b>1.20</b>", CELL)],
+        ["Tenkan/Kijun pullback", "3138", "515", "35.1%", "-0.99", "-6.10 .. +4.13", "0.96"],
+        ["Kumo breakout", "831", "466", "33.3%", chip("-3.47", RED), "-7.58 .. +0.64", chip("0.84", RED)],
+    ],
+    [42 * mm, 19 * mm, 18 * mm, 17 * mm, 20 * mm, 33 * mm, 14 * mm],
+    aligns={1: "RIGHT", 2: "RIGHT", 3: "RIGHT", 4: "RIGHT", 6: "RIGHT"}))
+A(Paragraph(
+    "Every interval spans zero, so none of these is a profitability claim. What is worth having is "
+    "the ordering, and it survives the time split that flatters everything:", BODY))
+A(table(
+    ["Strategy", "First 60% (hard)", "Last 40% (kind)"],
+    [
+        ["Kijun pullback (ours)", "+0.66", "+10.68"],
+        ["Tenkan/Kijun pullback", "-3.85", "+6.21"],
+        ["Kumo breakout", "-5.08", "-0.94"],
+    ],
+    [60 * mm, 35 * mm, 35 * mm],
+    aligns={1: "RIGHT", 2: "RIGHT"}))
+A(Paragraph(
+    "The kind period lifts all three, which is why one split proves nothing about any of them in "
+    "isolation. The RANKING holds in both halves, and that is a stronger statement than any single "
+    "average, because whatever flatters a period flatters all three equally.", BODY))
+A(Paragraph(
+    "<b>None of this says OANDA's rules are bad.</b> It says that on 1-hour majors, over nine "
+    "months, with this exit, in a harness where the only variable is the entry, they did worse than "
+    "what was already here. Their own article is explicit that the Cloud performs poorly in tight, "
+    "choppy or scalping conditions, and hourly FX majors spend a great deal of time exactly there.", BODY))
+
+A(PageBreak())
+
 A(Paragraph("What this does not tell you", H2))
 A(plain_rows(
     [
@@ -386,7 +450,9 @@ A(plain_rows(
          "fewer than 369 independent observations and every interval above is narrower than it "
          "should be."],
         [Paragraph("<b>All in-sample</b>", CELL),
-         "Every setting was chosen after seeing these candles."],
+         "Every setting of OURS was chosen after seeing these candles. That is less true of "
+         "OANDA's two, which were published independently of this data - which makes their "
+         "result the more honest comparison and ours the more flattered one."],
     ],
     [34 * mm, 131 * mm]))
 
@@ -394,9 +460,13 @@ A(Paragraph("How the claim \"pure Ichimoku\" is kept true", H2))
 A(Paragraph(
     "A promise like this rots quietly. Someone adds an ATR floor under the stop because a quiet "
     "pair produced a 3-pip one, nothing fails, and a year later the strategy is a hybrid again. So "
-    "it is checked mechanically rather than by review: a test reads the source of the detector and "
-    "its configuration, strips the comments, and fails if the words EMA or ATR appear anywhere in "
-    "the code.", BODY))
+    "it is checked mechanically rather than by review: a test reads the source of every strategy "
+    "file, strips the comments, and fails if the words EMA or ATR appear anywhere in the code.", BODY))
+A(Paragraph(
+    "That now covers six files rather than two, and it has already earned its place. OANDA's "
+    "article closes by recommending the Cloud be paired with RSI or Stochastic for timing. It is a "
+    "reasonable suggestion, and exactly the kind of thing that arrives one day as a small addition. "
+    "It would fail this test.", BODY))
 A(Paragraph(
     "Two other tests carry more weight than any number in this document. One replays a truncated "
     "series and requires every earlier signal to come out byte-identical, which is what rules out "
@@ -407,8 +477,10 @@ A(Paragraph(
 
 A(Paragraph("In one line", H2))
 A(Paragraph(
-    "The cloud says which way, Kijun says where, the 26-bar range says how far, and four "
-    "confirmations say whether at all - with no second indicator left to disagree with the first.", BODY))
+    "The cloud says which way, Kijun says where, the 26-bar range says how far, and the "
+    "confirmations say whether at all - with no second indicator left to disagree with the first. "
+    "Three rules do that differently, they are all here, and the numbers say which one has done "
+    "better on this data rather than which one reads best.", BODY))
 
 doc.build(S)
 print("wrote", OUT)

@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { resolveOpenTrade, scannerConfig, signalRow } from './scanner.mjs';
 import { TIMEFRAME_SECONDS, analyseIchimoku, pipSize, ticketLevels } from './strategy.bundle.mjs';
-import { backtestIchimoku } from '../src/services/strategy/backtest';
+import { backtest } from '../src/services/strategy/backtest';
 
 const bar = (time, o, h, l, c) => ({ time, open: o, high: h, low: l, close: c, volume: null, complete: true });
 
@@ -36,12 +36,18 @@ const signal = (over = {}) => ({
   kijun: 1.0998,
   senkouA: 1.097,
   senkouB: 1.096,
+  senkouAheadA: 1.1005,
+  senkouAheadB: 1.0965,
   distancePips: 2,
-  cloudBullish: true,
-  futureCloudBullish: true,
-  chikouFree: true,
-  tenkanAgrees: true,
+  cloudPips: 10,
+  checks: [
+    { label: 'Cloud in effect bullish', pass: true, detail: '1.097 vs 1.096', required: true },
+    { label: 'Cloud 26 bars ahead bullish', pass: true, detail: '1.1005 vs 1.0965', required: true },
+    { label: 'Chikou free', pass: true, detail: 'clear', required: true },
+    { label: 'Tenkan above Kijun', pass: true, detail: '1.1005 vs 1.0998', required: true },
+  ],
   score: 4,
+  checksTotal: 4,
   ...over,
 });
 
@@ -70,21 +76,31 @@ describe('signalRow', () => {
     expect(row.result_pips).toBeNull();
   });
 
-  it('stores the lines and every confirmation, not just the total', () => {
-    const row = signalRow(signal({ chikouFree: null, score: 3 }), 0);
+  /**
+   * The conditions go in as the detector stated them, not as named columns.
+   * Three strategies with three different rule sets cannot share a fixed set
+   * of booleans, so what has to survive the round trip is the list itself —
+   * including a check that could not be answered, which must stay null rather
+   * than flatten to false. The history has to be able to say "not knowable"
+   * as well as "failed".
+   */
+  it('stores the lines and the whole check list, not just the total', () => {
+    const unknown = signal().checks.map((c, i) => (i === 2 ? { ...c, pass: null, detail: 'too few bars' } : c));
+    const row = signalRow(signal({ checks: unknown, score: 3 }), 0);
     expect(row.kumo).toBe('above');
     expect(row.kijun).toBe(1.0998);
     expect(row.tenkan).toBe(1.1005);
     expect(row.senkou_a).toBe(1.097);
     expect(row.senkou_b).toBe(1.096);
+    expect(row.senkou_ahead_a).toBe(1.1005);
+    expect(row.senkou_ahead_b).toBe(1.0965);
     expect(row.range_pips).toBe(75);
+    expect(row.cloud_pips).toBe(10);
     expect(row.score).toBe(3);
-    expect(row.cloud_bullish).toBe(true);
-    expect(row.future_cloud_bullish).toBe(true);
-    // An unknown check is stored as null, never flattened to false: the
-    // history has to be able to say "not knowable" as well as "failed".
-    expect(row.chikou_free).toBeNull();
-    expect(row.tenkan_agrees).toBe(true);
+    expect(row.checks_total).toBe(4);
+    expect(row.checks).toHaveLength(4);
+    expect(row.checks[2].pass).toBeNull();
+    expect(row.checks[3].label).toBe('Tenkan above Kijun');
   });
 
   it('mirrors the ticket for a short', () => {
@@ -233,7 +249,7 @@ describe('the scanner and the backtest reach the same verdict', () => {
   it('agrees on outcome and pips for every trade the backtest opened', () => {
     // No spread on either side: the scanner records raw pips, so the
     // comparison has to ask the backtest for raw pips too.
-    const bt = backtestIchimoku(candles, 'EUR/USD', '1H', { costPips: 0 });
+    const bt = backtest('ichimoku-kijun', candles, 'EUR/USD', '1H', { costPips: 0 });
     const byId = new Map(bt.trades.map((t) => [t.id, t]));
 
     const { signals } = analyseIchimoku(candles, 'EUR/USD', '1H');
@@ -271,7 +287,7 @@ describe('the scanner and the backtest reach the same verdict', () => {
    * longer exists now that every signal fills.
    */
   it('records every signal the backtest traded, and more besides', () => {
-    const bt = backtestIchimoku(candles, 'EUR/USD', '1H', { costPips: 0 });
+    const bt = backtest('ichimoku-kijun', candles, 'EUR/USD', '1H', { costPips: 0 });
     const { signals } = analyseIchimoku(candles, 'EUR/USD', '1H');
     const recorded = new Set(signals.map((s) => signalRow(s, 0)).filter(Boolean).map((r) => r.id));
 

@@ -25,12 +25,22 @@
  * is pure computation over candles — no fetch, no stores, no DOM — which is
  * what lets one bundle serve both sides.
  */
+export { DETECTORS, STRATEGY_IDS, detectorFor } from './detectors';
+export type { Detector, DetectorResult } from './detectors';
 export { analyseIchimoku, minBars } from './ichimokuSignal';
+export { analyseOandaPullback } from './oandaPullback';
+export { analyseOandaBreakout } from './oandaBreakout';
 export { ticketLevels } from './tradePlan';
-export { pipsOf, resolveBar } from './backtest';
+export { backtest, pipsOf, resolveBar } from './backtest';
 export { pipSize, toPips } from '../../lib/pips';
 export { PAIRS, getPair } from '../../config/pairs';
-export { ICHIMOKU_SIGNAL_CHECKS, ICHIMOKU_STRATEGY } from '../../config/ichimokuStrategy';
+export {
+  ICHIMOKU_SIGNAL_CHECKS,
+  ICHIMOKU_STRATEGY,
+  OANDA_BREAKOUT,
+  OANDA_PULLBACK,
+  TICKET,
+} from '../../config/ichimokuStrategy';
 export { STRATEGY_CONFIG } from '../../config/strategy';
 export { TIMEFRAME_SECONDS } from '../../config/timeframes';
 // Candle plumbing: the scanner talks to Yahoo directly rather than through
@@ -38,4 +48,4 @@ export { TIMEFRAME_SECONDS } from '../../config/timeframes';
 export { yahooQuery, parseYahooChart, toYahooSymbol, resample, rangeFor } from '../marketData/providers/yahooCandles';
 export { tdSeriesQuery, parseTdSeries } from '../marketData/providers/twelveDataSeries';
 export type { Timeframe } from '../../config/timeframes';
-export type { Direction, IchimokuLevel, IchimokuSignal } from './types';
+export type { Direction, IchimokuLevel, IchimokuSignal, SignalCheck, StrategyId } from './types';

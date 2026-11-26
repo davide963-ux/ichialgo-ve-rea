@@ -59,11 +59,11 @@
  * five times produces one row.
  */
 import {
+  DETECTORS,
+  STRATEGY_IDS,
   PAIRS,
   STRATEGY_CONFIG,
   TIMEFRAME_SECONDS,
-  analyseIchimoku,
-  minBars,
   parseTdSeries,
   parseYahooChart,
   pipSize,
@@ -121,6 +121,14 @@ export function scannerConfig(env = process.env) {
     td: readConfig(env).twelvedata,
     /** Pairs to scan. Defaults to the app's own list, so the two cannot drift. */
     symbols: (env.SCAN_SYMBOLS?.trim() ? env.SCAN_SYMBOLS.split(',').map((s) => s.trim()) : PAIRS.map((p) => p.symbol)),
+    /**
+     * Strategies to record. Defaults to every one the app can run, so the
+     * history can compare them on identical candles rather than on whichever
+     * rule happened to be selected in somebody's browser.
+     */
+    strategies: (env.SCAN_STRATEGIES?.trim()
+      ? env.SCAN_STRATEGIES.split(',').map((s) => s.trim()).filter((s) => STRATEGY_IDS.includes(s))
+      : STRATEGY_IDS),
   };
 }
 
@@ -246,14 +254,20 @@ export function signalRow(signal, detectedAt) {
     tenkan: signal.tenkan,
     senkou_a: signal.senkouA,
     senkou_b: signal.senkouB,
+    senkou_ahead_a: signal.senkouAheadA,
+    senkou_ahead_b: signal.senkouAheadB,
     distance_pips: signal.distancePips,
     range_pips: signal.rangePips,
+    cloud_pips: signal.cloudPips,
 
+    /**
+     * The conditions as the detector stated them, not as named columns.
+     * Three strategies with three different rule sets cannot share a fixed
+     * set of booleans — see db/migrations/0003_strategies.sql.
+     */
     score: signal.score,
-    cloud_bullish: signal.cloudBullish,
-    future_cloud_bullish: signal.futureCloudBullish,
-    chikou_free: signal.chikouFree,
-    tenkan_agrees: signal.tenkanAgrees,
+    checks_total: signal.checksTotal,
+    checks: signal.checks,
 
     direction,
     entry,
@@ -366,24 +380,36 @@ export async function runScan({ env = process.env, now = Date.now(), signal } = 
       // ── record what is new ────────────────────────────────────────────
       if (!cfg.symbols.includes(symbol)) continue; // open trade only; not scanned
 
-      const { signals, reason } = analyseIchimoku(candles, symbol, cfg.timeframe);
-      if (reason === 'not-enough-bars') {
-        errors.push(`${symbol}: only ${candles.length} ${cfg.timeframe} candles, needs ${minBars()}`);
-        continue;
-      }
-
       const newest = candles.at(-1);
-      // Only bars that have CLOSED, and only recent ones. The detector reports
+      // Only bars that have CLOSED, and only recent ones. A detector reports
       // every signal in 300 bars of history; writing all of them would
       // backfill the table with history the fixtures already cover.
       const oldest = (newest?.time ?? 0) - cfg.lookbackBars * barSeconds;
 
+      /**
+       * EVERY strategy, on the SAME candles, every run.
+       *
+       * They are recorded together rather than one at a time because the
+       * whole reason for having three is to compare them, and a comparison
+       * across different candle windows compares the windows. Signal ids are
+       * namespaced by strategy, so three rules on one bar are three rows and
+       * never a collision.
+       */
       const rows = [];
-      for (const s of signals) {
-        if (s.barTime < oldest) continue;
-        if (s.barTime >= (newest?.time ?? 0)) continue; // still forming
-        const row = signalRow(s, now);
-        if (row) rows.push(row);
+      for (const id of cfg.strategies) {
+        const detector = DETECTORS[id];
+        if (!detector) continue;
+        const { signals, reason } = detector.analyse(candles, symbol, cfg.timeframe, now);
+        if (reason === 'not-enough-bars') {
+          errors.push(`${symbol}/${id}: only ${candles.length} ${cfg.timeframe} candles, needs ${detector.minBars()}`);
+          continue;
+        }
+        for (const s of signals) {
+          if (s.barTime < oldest) continue;
+          if (s.barTime >= (newest?.time ?? 0)) continue; // still forming
+          const row = signalRow(s, now);
+          if (row) rows.push(row);
+        }
       }
 
       const added = await recordSignals(rows, env);

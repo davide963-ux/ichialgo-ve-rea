@@ -6,10 +6,11 @@ import { useNow } from '../hooks/useNow';
 import { useChartIndicators } from '../hooks/useChartIndicators';
 import { formatNumber, formatPrice } from '../lib/format';
 import { formatAgo } from '../lib/time';
-import { ICHIMOKU_SIGNAL_CHECKS, ICHIMOKU_STRATEGY } from '../config/ichimokuStrategy';
-import { useIchimokuAnalysis, useStrategyNotice, useTradePlan } from '../hooks/useSignals';
+import { ICHIMOKU_STRATEGY } from '../config/ichimokuStrategy';
+import { useActiveStrategy, useIchimokuAnalysis, useStrategyNotice, useTradePlan } from '../hooks/useSignals';
 import { pipSize } from '../lib/pips';
-import { minBars, signalMarkers } from '../services/strategy';
+import { detectorFor, futureCloudZone, signalMarkers, zoneStrength } from '../services/strategy';
+import { CloudZonePanel } from './CloudZonePanel';
 import { useMarketStore } from '../state/marketStore';
 import { CandlestickChart } from './CandlestickChart';
 import { EmptyState } from './EmptyState';
@@ -44,7 +45,9 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
    * provider request. The chart's own overlays stay on useChartIndicators:
    * a price chart must still render when the strategy has nothing to say.
    */
-  const analysis = useIchimokuAnalysis(symbol, timeframe, candles);
+  const strategy = useActiveStrategy();
+  const detector = detectorFor(strategy);
+  const analysis = useIchimokuAnalysis(symbol, timeframe, candles, strategy);
   const latest = analysis.signals.at(-1) ?? null;
   const plan = useTradePlan(latest);
   const strategyNotice = useStrategyNotice(symbol);
@@ -174,15 +177,19 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
       <section className="panel">
         <div className="panel-head">
           <div>
-            <h2 className="panel-title">Kijun pullback</h2>
+            <h2 className="panel-title">{detector.name}</h2>
             <span className="panel-sub">
-              A pullback is price entering a band of ±{bandPips === null ? '—' : formatNumber(bandPips, 1)} pips
-              around Kijun-sen while clear of the Kumo. The band is{' '}
-              {formatNumber(ICHIMOKU_STRATEGY.touchBand, 2)} of the 26-bar range, so it means the same thing in a
-              dead session and a fast one — and that range is the Kijun's own width, not a second indicator.
+              {detector.blurb} Rules by {detector.source}.
+              {strategy === 'ichimoku-kijun' &&
+                ` The band is ±${bandPips === null ? '—' : formatNumber(bandPips, 1)} pips, ` +
+                  `${formatNumber(ICHIMOKU_STRATEGY.touchBand, 2)} of the 26-bar range — so it means the same thing ` +
+                  `in a dead session and a fast one, and that range is the Kijun's own width rather than a second ` +
+                  `indicator.`}
             </span>
           </div>
-          {atTheLevel && <span className="tag pos" title="Price is inside the band right now">IN THE ZONE</span>}
+          {level?.inBand && (
+            <span className="tag pos" title="A setup is in progress on this pair right now">IN PROGRESS</span>
+          )}
         </div>
 
         {level ? (
@@ -212,22 +219,27 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
                 </dd>
               </div>
               <div>
+                {/* Two separate facts, not one. A pair can be in a setup and
+                    already have fired on it, or be armed and nowhere near one;
+                    collapsing them into a single word gets it wrong in both
+                    directions. */}
                 <dt>State</dt>
-                <dd className="muted" title="Armed = ready to signal the next pullback">
-                  {level.armed ? 'ARMED' : 'FIRED'}
+                <dd className="muted" title="Armed = ready to produce the next signal. In progress = a setup is part-formed.">
+                  {level.inBand ? 'IN PROGRESS' : 'WATCHING'}
+                  {!level.armed && <span className="muted"> · fired</span>}
                 </dd>
               </div>
             </dl>
             <SignalTable
               signals={analysis.signals.slice().reverse()}
               limit={10}
-              emptyHint={`No Kijun pullback cleared ${ICHIMOKU_STRATEGY.minScore}/${ICHIMOKU_SIGNAL_CHECKS} in the last ${candles.length} ${timeframe} candles.`}
+              emptyHint={`${detector.name} found nothing in the last ${candles.length} ${timeframe} candles.`}
             />
           </>
         ) : (
           <EmptyState title="Not enough history" compact>
             {strategyNotice ??
-              `A cloud in effect plus its 26-bar range needs at least ${minBars()} ${timeframe} candles; ${candles.length} loaded.`}
+              `A cloud in effect plus its 26-bar range needs at least ${detector.minBars()} ${timeframe} candles; ${candles.length} loaded.`}
           </EmptyState>
         )}
       </section>
@@ -238,8 +250,10 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
             <div>
               <h2 className="panel-title">Trade plan</h2>
               <span className="panel-sub">
-                From the most recent signal. Entry at the pullback's close, stop a fraction of the 26-bar range
-                away, target twice that — sized off the balance and risk % the calculator uses.
+                From the most recent signal. Entry at the close of the bar that completed the setup, stop a
+                fraction of the 26-bar range away, target twice that — sized off the balance and risk % the
+                calculator uses. The exit is ours: OANDA's article specifies none, so it is held the same across
+                every strategy.
               </span>
             </div>
           </div>
@@ -247,19 +261,27 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
         </section>
       )}
 
-      {latest && analysis.ichimoku && (
+      {latest && indicators.ichimoku && (
         <section className="panel">
           <div className="panel-head">
             <div>
-              <h2 className="panel-title">Confirmations</h2>
+              <h2 className="panel-title">Why it fired</h2>
               <span className="panel-sub">
-                Kijun says where; the Kumo says which way; these {ICHIMOKU_SIGNAL_CHECKS} checks decide whether the
-                setup is taken at all. Needs {ICHIMOKU_STRATEGY.minScore} of them.
+                The conditions {detector.name} requires, in that strategy's own terms — rules by {detector.source}.
               </span>
             </div>
           </div>
-          <IchimokuPanel signal={latest} series={analysis.ichimoku} candles={candles} />
+          <IchimokuPanel signal={latest} series={indicators.ichimoku} candles={candles} />
         </section>
+      )}
+
+      {indicators.ichimoku && (
+        <CloudZonePanel
+          symbol={symbol}
+          zone={futureCloudZone(candles, indicators.ichimoku, symbol)}
+          rangePips={level ? level.range / pipSize(symbol) : null}
+          strength={zoneStrength}
+        />
       )}
 
     </>

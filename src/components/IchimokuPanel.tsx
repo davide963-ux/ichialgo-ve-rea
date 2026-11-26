@@ -1,19 +1,21 @@
-import { ICHIMOKU_SIGNAL_CHECKS, ICHIMOKU_STRATEGY } from '../config/ichimokuStrategy';
 import { formatNumber, formatPrice } from '../lib/format';
 import type { IchimokuSeries } from '../lib/indicators';
 import type { Candle } from '../services/marketData';
-import { explainSignal, type IchimokuSignal } from '../services/strategy';
+import { detectorFor, type IchimokuSignal } from '../services/strategy';
 import { KumoGlyph } from './KumoMark';
 
 /**
- * The four confirmations for one signal, each shown pass/fail with the
- * numbers behind it, plus the lines as they stand now.
+ * Why one signal fired, in the words of the strategy that fired it.
  *
- * The checks are read in the direction being traded — the same facts score
- * differently for a long and a short, which is the point. What has changed
- * since the previous version of this panel is that the score is a threshold
- * rather than a remark: a setup that does not reach `minScore` never becomes
- * a signal, so there is no "Ichimoku does not back this" state left to show.
+ * This panel knows nothing about Ichimoku's checks. It renders whatever
+ * `signal.checks` contains, which is what lets the same component explain our
+ * four-of-four gate and OANDA's quite different rules without a branch — and
+ * what stops the UI quietly describing one strategy's conditions while
+ * showing another's numbers.
+ *
+ * Optional checks are marked. OANDA's cloud-thickness grade is one: a break
+ * through a thin cloud is still a break, "just a weaker one", so it changes
+ * how a signal reads rather than whether it exists.
  */
 export function IchimokuPanel({
   signal,
@@ -25,35 +27,31 @@ export function IchimokuPanel({
   candles: Candle[];
 }) {
   const i = candles.length - 1;
-  const checks = [
-    {
-      label: `Price ${signal.direction === 'LONG' ? 'above' : 'below'} the Kumo`,
-      pass: true,
-      detail: `${signal.kumo} the cloud — this is what set the direction, so it cannot fail`,
-    },
-    ...explainSignal(signal),
-  ];
+  const detector = detectorFor(signal.strategy);
 
   return (
     <div className="panel-body plan-card">
       <div className="plan-head">
         <span className="tag ichi-tag pos">
           <KumoGlyph size={12} />
-          {signal.score}/{ICHIMOKU_SIGNAL_CHECKS}
+          {signal.score}/{signal.checksTotal}
         </span>
         <span className="panel-sub">
-          The gate is {ICHIMOKU_STRATEGY.minScore}/{ICHIMOKU_SIGNAL_CHECKS}: below it no signal is produced, so
-          everything shown here already passed.
+          {detector.name} · rules by {detector.source}. Every check marked required passed, or this signal
+          would not exist.
         </span>
       </div>
 
       <ul className="check-list">
-        {checks.map((c) => (
+        {signal.checks.map((c) => (
           <li key={c.label} className={c.pass === true ? 'pos' : c.pass === null ? 'muted' : ''}>
             <span className="check-mark" aria-hidden="true">
               {c.pass === true ? '✓' : c.pass === null ? '·' : '✕'}
             </span>
-            <span className="check-label">{c.label}</span>
+            <span className="check-label">
+              {c.label}
+              {!c.required && <span className="muted"> (optional)</span>}
+            </span>
             <span className="check-detail muted">{c.detail}</span>
           </li>
         ))}
@@ -83,8 +81,8 @@ export function IchimokuPanel({
           <dd className="num">{formatNumber(signal.rangePips, 1)} pips</dd>
         </div>
         <div>
-          <dt>Off Kijun at entry</dt>
-          <dd className="num">{formatNumber(signal.distancePips, 1)} pips</dd>
+          <dt>Cloud thickness</dt>
+          <dd className="num">{formatNumber(signal.cloudPips, 1)} pips</dd>
         </div>
       </dl>
     </div>

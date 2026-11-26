@@ -158,8 +158,19 @@ run('runScan end to end', () => {
      * table does not have, or a value that arrives as null because the column
      * list and the record definition drifted apart.
      */
+    /**
+     * Every strategy is recorded on the same candles — that is the point of
+     * running three — so the rows span all of them and the assertions have to
+     * hold for each. Pinning one strategy here would have passed while the
+     * other two wrote nothing.
+     */
+    const strategies = new Set(rows.map((r) => r.strategy));
+    expect(strategies.size, 'every strategy should have recorded something').toBeGreaterThan(1);
+    for (const st of strategies) {
+      expect(['ichimoku-kijun', 'oanda-pullback', 'oanda-breakout']).toContain(st);
+    }
+
     for (const r of rows) {
-      expect(r.strategy).toBe('ichimoku-kijun');
       expect(r.direction === 'LONG' || r.direction === 'SHORT').toBe(true);
       expect(Number(r.stop_pips)).toBeGreaterThan(0);
       // Entry is the signal bar's close, so every recorded signal is a trade:
@@ -173,9 +184,16 @@ run('runScan end to end', () => {
       expect(Number(r.senkou_b)).toBeGreaterThan(0);
       expect(Number(r.range_pips)).toBeGreaterThan(0);
       expect(Number(r.score)).toBeGreaterThanOrEqual(1);
-      expect(Number(r.score)).toBeLessThanOrEqual(4);
-      expect(typeof r.cloud_bullish).toBe('boolean');
-      expect(typeof r.tenkan_agrees).toBe('boolean');
+      expect(Number(r.score)).toBeLessThanOrEqual(Number(r.checks_total));
+      // The conditions arrive as the detector stated them, not as columns.
+      expect(Array.isArray(r.checks)).toBe(true);
+      expect(r.checks.length).toBe(Number(r.checks_total));
+      for (const c of r.checks) {
+        expect(typeof c.label).toBe('string');
+        expect(typeof c.required).toBe('boolean');
+      }
+      // Every required check passed, or the signal would not exist.
+      for (const c of r.checks) if (c.required) expect(c.pass).toBe(true);
     }
 
     const [logged] = await pool.query('select * from scanner_runs').then((r) => r.rows);

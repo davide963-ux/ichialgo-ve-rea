@@ -10,7 +10,7 @@
 import { useSyncExternalStore } from 'react';
 import { STRATEGY_CONFIG } from '../config/strategy';
 import type { Timeframe } from '../config/timeframes';
-import type { IchimokuLevel, IchimokuSignal } from '../services/strategy/types';
+import type { IchimokuLevel, IchimokuSignal, StrategyId } from '../services/strategy/types';
 
 export type StrategyStatus = 'IDLE' | 'WARMING' | 'READY' | 'ERROR';
 
@@ -18,6 +18,8 @@ export interface SignalState {
   status: StrategyStatus;
   /** Timeframe the strategy is evaluated on. */
   timeframe: Timeframe;
+  /** Which strategy produced everything in this state. */
+  strategy: StrategyId;
   /** Newest first, capped by STRATEGY_CONFIG.maxSignals. */
   signals: IchimokuSignal[];
   /** The Kijun band each symbol is sitting against, per symbol. */
@@ -33,6 +35,7 @@ type Listener = () => void;
 const EMPTY: SignalState = {
   status: 'IDLE',
   timeframe: STRATEGY_CONFIG.scanTimeframe,
+  strategy: 'ichimoku-kijun',
   signals: [],
   levels: {},
   notices: {},
@@ -52,8 +55,15 @@ export const signalStore = {
     state = { ...state, ...next };
     listeners.forEach((l) => l());
   },
-  reset(timeframe: Timeframe) {
-    state = { ...EMPTY, timeframe };
+  /**
+   * Wipe everything on a timeframe or strategy change.
+   *
+   * Signals, levels and notices all belong to one strategy on one timeframe.
+   * Keeping them would leave the page showing another rule's output under the
+   * new rule's name until the first scan replaced it.
+   */
+  reset(timeframe: Timeframe, strategy: StrategyId) {
+    state = { ...EMPTY, timeframe, strategy };
     listeners.forEach((l) => l());
   },
   subscribe(listener: Listener) {

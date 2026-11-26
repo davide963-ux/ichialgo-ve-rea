@@ -16,6 +16,14 @@ import type { IchimokuSignal } from './types';
 const ACCOUNT = { balance: 10_000, riskPct: 1 };
 const PIP = 0.0001;
 
+/** Four required checks, all passing — what a clean signal looks like. */
+const CLEAN_CHECKS = Array.from({ length: ICHIMOKU_SIGNAL_CHECKS }, (_, i) => ({
+  label: `check ${i + 1}`,
+  pass: true as boolean | null,
+  detail: 'ok',
+  required: true,
+}));
+
 /** A long on EUR/USD: entry 1.0850, 30-pip stop, 60-pip target. */
 const signal = (over: Partial<IchimokuSignal> = {}): IchimokuSignal => {
   const base: IchimokuSignal = {
@@ -37,12 +45,13 @@ const signal = (over: Partial<IchimokuSignal> = {}): IchimokuSignal => {
     kijun: 1.0848,
     senkouA: 1.082,
     senkouB: 1.081,
+    senkouAheadA: 1.0995,
+    senkouAheadB: 1.0975,
     distancePips: 2,
-    cloudBullish: true,
-    futureCloudBullish: true,
-    chikouFree: true,
-    tenkanAgrees: true,
+    cloudPips: 10,
+    checks: CLEAN_CHECKS,
     score: ICHIMOKU_SIGNAL_CHECKS,
+    checksTotal: ICHIMOKU_SIGNAL_CHECKS,
   };
   return { ...base, ...over };
 };
@@ -165,13 +174,20 @@ describe('planFromSignal', () => {
    */
   it('names a non-unanimous score first, and still sizes the trade', () => {
     const plan = planFromSignal(signal({ score: ICHIMOKU_SIGNAL_CHECKS - 1 }), ACCOUNT)!;
-    expect(plan.warnings[0]).toMatch(new RegExp(`of ${ICHIMOKU_SIGNAL_CHECKS} Ichimoku confirmations`));
+    expect(plan.warnings[0]).toMatch(new RegExp(`of ${ICHIMOKU_SIGNAL_CHECKS} checks passed`));
     expect(plan.lots).not.toBeNull();
   });
 
-  it('says so when Chikou could not be checked, rather than passing it silently', () => {
-    const plan = planFromSignal(signal({ chikouFree: null }), ACCOUNT)!;
-    expect(plan.warnings.join(' ')).toMatch(/Chikou/);
+  /**
+   * A check that could not be answered is worth saying out loud, and the plan
+   * reads it off the signal's own list rather than from a named field — the
+   * three strategies do not share one, so a hardcoded "chikouFree" lookup
+   * would be silent on two of them.
+   */
+  it('says so when a check could not be answered, rather than passing it silently', () => {
+    const unknown = CLEAN_CHECKS.map((c, i) => (i === 2 ? { ...c, pass: null, detail: 'fewer than 26 bars' } : c));
+    const plan = planFromSignal(signal({ checks: unknown, score: ICHIMOKU_SIGNAL_CHECKS }), ACCOUNT)!;
+    expect(plan.warnings.join(' ')).toMatch(/could not be checked/);
   });
 
   it('marks a live signal as read from an unfinished bar', () => {

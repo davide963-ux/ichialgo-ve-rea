@@ -33,15 +33,23 @@ export interface StoredSignal {
   tenkan: number | null;
   senkou_a: number | null;
   senkou_b: number | null;
+  /** The cloud 26 bars ahead, as computed at the signal bar. */
+  senkou_ahead_a: number | null;
+  senkou_ahead_b: number | null;
   distance_pips: number | null;
   /** The 26-bar range in pips — what the stop is a fraction of. */
   range_pips: number | null;
-  /** Confirmations that agreed, out of 4. Every stored row cleared the gate. */
+  /** Cloud thickness in pips. A thick cloud is stronger support/resistance. */
+  cloud_pips: number | null;
+  /** Checks that passed. Every stored row met its strategy's required ones. */
   score: number | null;
-  cloud_bullish: boolean | null;
-  future_cloud_bullish: boolean | null;
-  chikou_free: boolean | null;
-  tenkan_agrees: boolean | null;
+  /** How many there were. A 3/3 and a 3/5 are not the same statement. */
+  checks_total: number | null;
+  /**
+   * The conditions the detector stated, in its own words. Null on rows
+   * written before strategies could differ — see 0003_strategies.sql.
+   */
+  checks: { label: string; pass: boolean | null; detail: string; required: boolean }[] | null;
   direction: 'LONG' | 'SHORT' | null;
   entry: number | null;
   stop_loss: number | null;
@@ -65,6 +73,7 @@ export interface StoredSignal {
 }
 
 export interface SymbolStats {
+  strategy: string;
   symbol: string;
   total: number;
   open: number;
@@ -101,9 +110,13 @@ const toSignal = (r: Record<string, unknown>): StoredSignal =>
     tenkan: n(r.tenkan),
     senkou_a: n(r.senkou_a),
     senkou_b: n(r.senkou_b),
+    senkou_ahead_a: n(r.senkou_ahead_a),
+    senkou_ahead_b: n(r.senkou_ahead_b),
     distance_pips: n(r.distance_pips),
     range_pips: n(r.range_pips),
+    cloud_pips: n(r.cloud_pips),
     score: n(r.score),
+    checks_total: n(r.checks_total),
     entry: n(r.entry),
     stop_loss: n(r.stop_loss),
     take_profit: n(r.take_profit),
@@ -115,6 +128,7 @@ const toSignal = (r: Record<string, unknown>): StoredSignal =>
   }) as StoredSignal;
 
 const toStats = (r: Record<string, unknown>): SymbolStats => ({
+  strategy: String(r.strategy),
   symbol: String(r.symbol),
   total: n(r.total) ?? 0,
   open: n(r.open) ?? 0,

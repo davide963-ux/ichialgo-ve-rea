@@ -26,7 +26,6 @@
  * order at 1.1015183, and sizing off the raw float would make the plan
  * disagree with the calculator it prefills.
  */
-import { ICHIMOKU_SIGNAL_CHECKS } from '../../config/ichimokuStrategy';
 import { getPair } from '../../config/pairs';
 import { pipSize } from '../../lib/pips';
 import { calculatePosition, type RateLookup } from '../../lib/positionSize';
@@ -101,13 +100,20 @@ export function planFromSignal(
   );
 
   const warnings = [...sized.warnings, ...sized.errors];
-  if (signal.score < ICHIMOKU_SIGNAL_CHECKS) {
+
+  /**
+   * Warnings come off the signal's own checks rather than from named fields,
+   * because the three strategies do not share a set of conditions. A check
+   * that could not be answered is worth saying out loud; one that simply
+   * failed and was not required is the strategy working as designed.
+   */
+  if (signal.score < signal.checksTotal) {
     warnings.unshift(
-      `${signal.score} of ${ICHIMOKU_SIGNAL_CHECKS} Ichimoku confirmations — above the gate, but not unanimous.`,
+      `${signal.score} of ${signal.checksTotal} checks passed — enough to trade, but not unanimous.`,
     );
   }
-  if (signal.chikouFree === null) {
-    warnings.push('Chikou could not be checked: there are fewer than 26 bars behind this signal.');
+  for (const c of signal.checks) {
+    if (c.pass === null) warnings.push(`${c.label} could not be checked: ${c.detail}.`);
   }
   if (signal.source === 'live') {
     warnings.push('Fired from a live tick inside an unfinished bar — the cloud is read from the last closed one.');

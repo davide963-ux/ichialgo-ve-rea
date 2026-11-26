@@ -1,6 +1,6 @@
 # Ichialgo — Forex terminal
 
-**Live Forex market data, charts, a pure-Ichimoku strategy and a position-size calculator.**
+**Live Forex market data, charts, three pure-Ichimoku strategies and a position-size calculator.**
 
 > **The strategy runs in the browser.** A signal is a pure function of the candles on screen, so
 > what the chart shows and what the engine decided cannot disagree — and the server-side scanner
@@ -13,8 +13,8 @@
 | Charts | TradingView Lightweight Charts v5 (open-source charting library) |
 | Build | Vite 8 |
 | Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`), with Twelve Data multi-key failover |
-| Strategy | Ichimoku Kijun pullback — cloud sets the direction, 4-of-4 confirmations gate it, levels from the 26-bar range. No EMA, no ATR. See [§4](#4-strategy) |
-| Tests | Vitest — 360 across the strategy, the backtest, indicators, the proxy, the key pool, the response cache, the Yahoo candle route, the scanner, the database and the calculator |
+| Strategies | Three, selectable: our gated Kijun pullback, plus OANDA's published Tenkan/Kijun pullback and Kumo breakout, implemented to the letter and measured side by side. No EMA, no ATR in any of them. See [§4](#4-strategy) |
+| Tests | Vitest — 425 across the strategy, the backtest, indicators, the proxy, the key pool, the response cache, the Yahoo candle route, the scanner, the database and the calculator |
 | Data | Twelve Data, behind a provider interface |
 
 ---
@@ -261,16 +261,23 @@ src/
     providers/YahooCandleRouter  Yahoo first, Twelve Data on refusal (+breaker)
     index.ts                 singleton + public exports
   services/strategy/
-    ichimokuSignal.ts        the detector: Kumo direction, Kijun band, the gate,
-                             the live-quote path (+tests, incl. a purity test that
-                             fails if an EMA or ATR ever appears in it)
-    explain.ts               the four confirmations in words, one wording everywhere
+    detectors.ts             the three strategies behind one interface — the seam
+                             the engine, backtest and scanner all run through
+    ichimokuBars.ts          the Ichimoku picture at one bar, shared by all three
+                             so they cannot disagree about what a bar looked like
+    ichimokuSignal.ts        OURS: Kumo direction, Kijun band, 4-of-4 gate, and
+                             the live-quote path
+    oandaPullback.ts         OANDA's Tenkan/Kijun trend continuation pullback
+    oandaBreakout.ts         OANDA's Kumo breakout + their Chikou filter
+    cloudZones.ts            OANDA's future support/resistance zones (no signals)
+    signalTicket.ts          the shared exit — identical for every strategy, so
+                             a comparison measures entries and not exits
     tradePlan.ts             rounds the detector's levels and sizes the position
     StrategyEngine.ts        scans pairs, watches quotes between scans
     chartMarkers.ts          signals → arrows, so the chart stays strategy-free
     backtest.ts              walk-forward replay: exits, pips, metrics, intervals
     serverEntry.ts           what esbuild bundles for the scanner — one implementation
-    realData.test.ts         the detector and the backtest over 30,000 real bars
+    realData.test.ts         the detectors and the backtest over 30,000 real bars
   state/signalStore.ts       the signal log (useSyncExternalStore)
   state/marketStore.ts       immutable external store (useSyncExternalStore)
   state/accountStore.ts      balance + risk %, persisted; shared by plans and calculator
@@ -285,7 +292,8 @@ src/
                              EmptyState, Calculator, ConnectionBanner, KumoMark
   components/chart/          kumoPrimitive (the Kumo fill)
   pages/                     Dashboard, PairPage, Backtest, History, CalculatorPage
-db/migrations/               0001 the signals table, 0002 retires the EMA columns
+db/migrations/               0001 the signals table, 0002 retires the EMA columns,
+                             0003 makes it hold three strategies' different checks
 fixtures/market/             real OANDA candles, for validating the strategy against
 server/
   api.mjs                    read-only GET allowlist + Twelve Data key failover
@@ -377,12 +385,21 @@ tooltip says so. There is no bid/ask on the REST quote, so those columns show `�
 
 ---
 
-## 4. Strategy
+## 4. Strategies
 
-**Pure Ichimoku.** Price clear of the Kumo, pulling back to Kijun-sen, with
-four Ichimoku confirmations as a gate. No moving average, no ATR, no other
-indicator anywhere in the rule — a test reads the detector's source and fails
-if one appears.
+**Pure Ichimoku, three ways.** The default is ours: price clear of the Kumo,
+pulling back to Kijun-sen, with four Ichimoku confirmations as a gate. The
+other two are OANDA's published rules, implemented to the letter so they can
+be measured against it. No moving average, no ATR, no other indicator in any
+of them — a test reads every strategy file and fails if one appears.
+
+Pick one with the chips on the scanner or the backtest page; it lives in the
+URL (`?s=oanda-breakout`), so a particular view is linkable and the pages
+cannot disagree about which rules are live. The server-side scanner records
+**all three on every pass**, so the history compares them on identical
+candles rather than on whichever rule someone had selected.
+
+The sections below describe OURS. OANDA's are further down.
 
 It runs **in the browser**, off the candles the charts already hold. An
 earlier design had a server-side scanner writing its opinion to Postgres while
@@ -576,6 +593,96 @@ And it is not uniform across pairs:
 - **Costs are a flat estimate.** Real spreads widen at the open and on news,
   exactly when Kijun tends to get retested. Swap is not modelled.
 
+### OANDA's published rules, implemented alongside
+
+Two of the three strategies are not ours. They are the entry rules from
+OANDA's *Ichimoku Cloud trading guide: key strategies*, implemented to the
+letter and measured on the same candles through the same harness, so the
+comparison is of ENTRIES and nothing else.
+
+The article names four approaches. Three are entry rules; the fourth is a way
+of reading the chart and produces no signals, so it is a read-out on the pair
+page rather than a detector.
+
+| OANDA's rule | Where it lives |
+|---|---|
+| **Kumo breakout** | `oandaBreakout.ts` — a detector |
+| **Tenkan/Kijun trend continuation pullback** | `oandaPullback.ts` — a detector |
+| **Chikou span confirmation filter** | inside `oandaBreakout.ts`, which is where their article attaches it |
+| **Future support and resistance zones** | `cloudZones.ts` — a read-out, no signals |
+
+**Tenkan/Kijun trend continuation pullback**, quoted:
+
+> Price above the Cloud (green coloured).
+> - Tenkan-sen (Conversion line) is above Kijun-sen (Base line).
+> - Pullback touches or dips slightly below Tenkan-sen (Conversion line) or Kijun-sen (Base line).
+> - Price closes above Kijun-sen (Base line) with a bullish candlestick.
+
+Note what is **absent**: the cloud's colour, the forward cloud and Chikou. All
+three gate our strategy and none of them is in theirs. The pullback and the
+confirming close are also different events on different bars — in the
+article's USD/JPY example the dip is in the morning and the confirming hourly
+close at 1pm — so this is a state machine, not a single-bar test.
+
+**Kumo breakout**, quoted: *"Price breaks above the cloud. Cloud is turning
+bullish (Span A crossing above span B)."* The twist is allowed to arrive after
+the break, because in both of the article's own examples it did — three hours
+later on AUD/USD, twenty-six on NZD/USD. Requiring both on one bar would
+reject their own illustrations.
+
+**Chikou** is compared with *"its prior 26-period price"* — that bar's close.
+Ours uses the stricter test of clearing that bar's whole range. They are not
+the same rule, so each strategy keeps its own.
+
+### What the article does not give you
+
+**No stop, no target, no position size — not one sentence.** So the exit is
+ours, and it is deliberately identical for all three: comparing two entry
+rules is only meaningful when the exit is held constant, or the comparison
+quietly measures the exits instead.
+
+The article also closes by suggesting the Cloud be paired with RSI or
+Stochastic. That is not implemented: it contradicts the pure-Ichimoku rule,
+and the purity test covers every strategy file, so it would fail the build.
+
+### All three, measured on the same candles
+
+Five traded pairs, 5000 1H bars each, 3 Dec 2025 – 23 Sep 2026, one pip of
+cost, identical exits.
+
+| Strategy | Signals | Trades | Win | Average | 95% interval | PF |
+|---|---|---|---|---|---|---|
+| **Kijun pullback (ours)** | 1080 | 369 | 36.9% | **+3.89 pips** | −1.63 … +9.40 | 1.20 |
+| Tenkan/Kijun pullback (OANDA) | 3138 | 515 | 35.1% | −0.99 pips | −6.10 … +4.13 | 0.96 |
+| Kumo breakout (OANDA) | 831 | 466 | 33.3% | **−3.47 pips** | −7.58 … +0.64 | 0.84 |
+
+Every interval spans zero, so none of these is a profitability claim — but
+the ordering is consistent, and that is the part worth having. Split by time:
+
+| Strategy | First 60% (hard) | Last 40% (kind) |
+|---|---|---|
+| Kijun pullback (ours) | +0.66 | +10.68 |
+| Tenkan/Kijun pullback | −3.85 | +6.21 |
+| Kumo breakout | −5.08 | −0.94 |
+
+The kind period lifts all three, which is why a single split proves nothing
+about any of them. What survives the split is the **ranking**: ours above
+their pullback above their breakout, in both halves. That is a stronger
+statement than any one average, because the thing that flatters a period
+flatters all three equally.
+
+The breakout loses on four pairs of five and loses badly on GBP/USD
+(−10.02 pips over 103 trades). It is also the entry shape that lost before:
+the TK cross measured on these same fixtures came in at −2.74 pips over 889
+trades, worse the more Ichimoku agreed. Both are momentum entries taken after
+the move has happened.
+
+**None of this says OANDA's rules are bad.** It says that on 1H majors, over
+nine months, with this exit, in a harness where the only variable is the
+entry, they did worse than what was already here. The article is explicit that
+the Cloud "performs poorly in tight, choppy, or scalping conditions", and
+hourly FX majors spend a lot of time exactly there.
+
 ### The strategies that are not here, and why
 
 **EMA50 touch** came first: a band around a 50-period EMA sized by ATR, with
@@ -647,7 +754,7 @@ scanner and the browser only reads it.
 flowchart LR
     A["GitHub Actions<br/>on a schedule, Mon–Fri"] -->|"POST /api/scan<br/>OIDC token"| B["api/scan.js"]
     B --> C["Yahoo candles"]
-    C --> D["analyseIchimoku()<br/>+ ticketLevels()"]
+    C --> D["every detector<br/>+ ticketLevels()"]
     D -->|"new, closed bars"| E[("Neon Postgres<br/>signals")]
     B -->|"open trades"| F["resolveBar()"]
     F -->|"TP / SL / expired"| E
@@ -670,11 +777,19 @@ It applies the backtest's pessimistic rules, for the same reason:
    nothing that bar did can decide the trade in either direction.
 3. **Same-bar ambiguity goes to the stop.**
 
-The table holds rows from the retired EMA strategy too — they are real
-observations, so `0002_ichimoku.sql` drops its indicator columns but keeps the
-rows. Every read filters by `strategy`, so the two are never mixed into one
-total; `server/db.test.mjs` pins both halves of that, including the upgrade
-applied to a table that already has rows in it.
+Every strategy is recorded on every pass, on the same candles, so the history
+can compare them rather than describe whichever rule a browser happened to
+have selected. Signal ids are namespaced by strategy, so three rules firing on
+one bar are three rows and never a collision.
+
+Because the three have different conditions, the checks are stored as the list
+each detector produced rather than as named columns — see
+`db/migrations/0003_strategies.sql` for why a union of booleans could not
+work. The table also still holds rows from the retired EMA strategy: they are
+real observations, so `0002_ichimoku.sql` dropped its indicator columns and
+kept the rows. Every read filters by `strategy`, so none of them are mixed
+into one total; `server/db.test.mjs` pins that, including the upgrade applied
+to a table that already has rows in it.
 
 Results are stored in **pips**, raw — no spread. The backtest charges a spread
 because it asks whether the strategy would have made money; this table records

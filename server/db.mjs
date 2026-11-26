@@ -290,8 +290,17 @@ export async function migrate(files, env = process.env) {
   return ran;
 }
 
-/** The strategy whose rows this app reads. See recentSignals for why. */
-export const STRATEGY = 'ichimoku-kijun';
+/**
+ * The strategies this app currently runs.
+ *
+ * Reads filter on this list rather than on one id: the scanner records all
+ * three on every pass so they can be compared on identical candles, and the
+ * history page needs to show them side by side. What the list EXCLUDES is the
+ * retired 'ema50-touch' — those rows are still on disk because they are real
+ * observations, but their indicator columns were dropped in 0002 and mixing
+ * them into a total would average two different strategies together.
+ */
+export const STRATEGIES = ['ichimoku-kijun', 'oanda-pullback', 'oanda-breakout'];
 
 // ── writing ───────────────────────────────────────────────────────────────
 
@@ -318,16 +327,16 @@ export async function recordSignals(rows, env = process.env) {
   const inserted = await q`
     insert into signals (
       id, strategy, symbol, timeframe, bar_time, detected_at, source,
-      kumo, kijun, tenkan, senkou_a, senkou_b, distance_pips, range_pips,
-      score, cloud_bullish, future_cloud_bullish, chikou_free, tenkan_agrees,
+      kumo, kijun, tenkan, senkou_a, senkou_b, senkou_ahead_a, senkou_ahead_b,
+      distance_pips, range_pips, cloud_pips, score, checks_total, checks,
       direction, entry, stop_loss, take_profit, stop_pips,
       result, exit_price, exit_at, bars_held, result_pips
     )
     select
       x.id, x.strategy, x.symbol, x.timeframe,
       to_timestamp(x.bar_time), to_timestamp(x.detected_at), x.source,
-      x.kumo, x.kijun, x.tenkan, x.senkou_a, x.senkou_b, x.distance_pips, x.range_pips,
-      x.score, x.cloud_bullish, x.future_cloud_bullish, x.chikou_free, x.tenkan_agrees,
+      x.kumo, x.kijun, x.tenkan, x.senkou_a, x.senkou_b, x.senkou_ahead_a, x.senkou_ahead_b,
+      x.distance_pips, x.range_pips, x.cloud_pips, x.score, x.checks_total, x.checks,
       x.direction, x.entry, x.stop_loss, x.take_profit, x.stop_pips,
       x.result, x.exit_price,
       case when x.exit_at is null then null else to_timestamp(x.exit_at) end,
@@ -337,9 +346,9 @@ export async function recordSignals(rows, env = process.env) {
       bar_time double precision, detected_at double precision, source text,
       kumo text, kijun double precision, tenkan double precision,
       senkou_a double precision, senkou_b double precision,
+      senkou_ahead_a double precision, senkou_ahead_b double precision,
       distance_pips double precision, range_pips double precision,
-      score smallint, cloud_bullish boolean, future_cloud_bullish boolean,
-      chikou_free boolean, tenkan_agrees boolean,
+      cloud_pips double precision, score smallint, checks_total smallint, checks jsonb,
       direction text, entry double precision, stop_loss double precision,
       take_profit double precision, stop_pips double precision,
       result text, exit_price double precision, exit_at double precision,
@@ -402,7 +411,7 @@ export async function closeTrade({ id, result, exitPrice, exitAt, barsHeld, resu
  * to say" rather than "this is a different strategy".
  */
 export async function recentSignals(
-  { limit = 200, symbol = null, strategy = STRATEGY } = {},
+  { limit = 200, symbol = null, strategies = STRATEGIES } = {},
   env = process.env,
 ) {
   const q = sql(env);
@@ -411,14 +420,15 @@ export async function recentSignals(
     select id, strategy, symbol, timeframe,
            extract(epoch from bar_time)::double precision   as bar_time,
            extract(epoch from detected_at)::double precision as detected_at,
-           source, kumo, kijun, tenkan, senkou_a, senkou_b, distance_pips, range_pips,
-           score, cloud_bullish, future_cloud_bullish, chikou_free, tenkan_agrees,
+           source, kumo, kijun, tenkan, senkou_a, senkou_b,
+           senkou_ahead_a, senkou_ahead_b, distance_pips, range_pips, cloud_pips,
+           score, checks_total, checks,
            direction, entry, stop_loss, take_profit, stop_pips,
            result, exit_price,
            extract(epoch from exit_at)::double precision     as exit_at,
            bars_held, result_pips
     from signals
-    where strategy = ${strategy}
+    where strategy = any(${strategies})
       and (${symbol}::text is null or symbol = ${symbol})
     order by bar_time desc
     limit ${capped}`;
@@ -431,10 +441,10 @@ export async function recentSignals(
  * EUR/USD pip is adding unlike things — the same reason the backtest page
  * flags a mixed selection instead of printing one total.
  */
-export async function signalStats(env = process.env, strategy = STRATEGY) {
+export async function signalStats(env = process.env, strategies = STRATEGIES) {
   const q = sql(env);
   return q`
-    select symbol,
+    select strategy, symbol,
            count(*)                                            as total,
            count(*) filter (where result = 'open')              as open,
            count(*) filter (where result = 'tp')                as tp,
@@ -443,9 +453,9 @@ export async function signalStats(env = process.env, strategy = STRATEGY) {
            sum(result_pips) filter (where result in ('tp','sl')) as net_pips,
            avg(stop_pips)   filter (where result in ('tp','sl')) as avg_stop_pips
     from signals
-    where strategy = ${strategy}
-    group by symbol
-    order by symbol`;
+    where strategy = any(${strategies})
+    group by strategy, symbol
+    order by strategy, symbol`;
 }
 
 // ── run log ───────────────────────────────────────────────────────────────

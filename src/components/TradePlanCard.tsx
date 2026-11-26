@@ -5,10 +5,10 @@ import { calculatorLink, type IchimokuSignal, type TradePlan } from '../services
 import { useAccount } from '../state/accountStore';
 
 /**
- * The order ticket for a signal.
+ * The order ticket for a signal, whichever strategy produced it.
  *
  *   target ──┐  entry + 2 × risk
- *   entry  ──●  the close that completed the pullback
+ *   entry  ──●  the close of the bar that completed the setup
  *   stop   ──┘  entry ∓ 0.4 × the 26-bar range
  *
  * Both distances come out of Ichimoku's own geometry: Kijun-sen is the
@@ -44,7 +44,7 @@ export function TradePlanCard({ signal, plan }: { signal: IchimokuSignal; plan: 
 
       <dl className="quote-grid">
         <div>
-          <dt>Entry (pullback close)</dt>
+          <dt>Entry (signal bar close)</dt>
           <dd className="num">{formatPrice(signal.symbol, plan.entry)}</dd>
         </div>
         <div>

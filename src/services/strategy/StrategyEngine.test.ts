@@ -22,12 +22,13 @@ const signal = (over: Partial<IchimokuSignal> = {}): IchimokuSignal => ({
   kijun: 1.0998,
   senkouA: 1.097,
   senkouB: 1.096,
+  senkouAheadA: 1.0995,
+  senkouAheadB: 1.0975,
   distancePips: 2,
-  cloudBullish: true,
-  futureCloudBullish: true,
-  chikouFree: true,
-  tenkanAgrees: true,
-  score: 4,
+  cloudPips: 10,
+  checks: [{ label: 'Cloud in effect bullish', pass: true, detail: '', required: true }],
+  score: 1,
+  checksTotal: 1,
   ...over,
 });
 

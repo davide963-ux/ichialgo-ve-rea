@@ -1,24 +1,30 @@
-import { ICHIMOKU_SIGNAL_CHECKS } from '../config/ichimokuStrategy';
-import { explainLines, scoreLabel, type IchimokuSignal } from '../services/strategy';
+import type { IchimokuSignal } from '../services/strategy';
 import { KumoGlyph } from './KumoMark';
 
 /**
  * The confirmation score for one signal, with the individual checks in the
  * tooltip.
  *
- * It is always green, and that is the point. Under the old strategy this was
- * an annotation: a touch was shown whatever Ichimoku said, and the score sat
- * next to it greyed out when the cloud disagreed. The score is now a GATE —
- * a setup below the threshold produces no signal at all — so every score
- * shown here already passed, and colouring some of them as failures would be
- * describing a state the system cannot be in.
+ * It reads the signal's own `checks` rather than a fixed set, because the
+ * three strategies do not share one. Ours scores out of four Ichimoku
+ * confirmations; OANDA's pullback has four conditions of its own, none of
+ * which are the same four; their breakout has three plus a thickness grade.
+ *
+ * Green when every REQUIRED check passed, which is the only state a stored
+ * signal can be in — the optional ones grade rather than gate, so a 3/4 with
+ * its one failure optional is a real signal, not a near miss.
  */
 export function ScoreTag({ signal }: { signal: IchimokuSignal }) {
-  const title = [scoreLabel(signal), ...explainLines(signal)].join('\n');
+  const mark = (p: boolean | null) => (p === true ? '✓' : p === null ? '·' : '✕');
+  const title = [
+    `${signal.score}/${signal.checksTotal} checks for a ${signal.direction}:`,
+    ...signal.checks.map((c) => `${mark(c.pass)} ${c.label}${c.required ? '' : ' (optional)'} — ${c.detail}`),
+  ].join('\n');
+
   return (
     <span className="tag ichi-tag pos" title={title}>
       <KumoGlyph />
-      {signal.score}/{ICHIMOKU_SIGNAL_CHECKS}
+      {signal.score}/{signal.checksTotal}
     </span>
   );
 }

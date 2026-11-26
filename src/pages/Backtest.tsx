@@ -1,5 +1,14 @@
 /**
- * Backtest — what the Ichimoku Kijun pullback did on real candles.
+ * Backtest — what each strategy did on real candles.
+ *
+ * THREE RULE SETS, ONE HARNESS
+ * ────────────────────────────
+ * Two of them are OANDA's published rules and one is ours. They run through
+ * identical fill, exit and accounting code, so a difference in the result is
+ * a difference in the ENTRY — which is the only thing either author
+ * specified. OANDA's article gives no stop, no target and no sizing at all,
+ * so the exit here is ours and is held constant across all three. Changing it
+ * per strategy would turn a comparison of entries into a comparison of exits.
  *
  * THE ORDER IS THE ARGUMENT
  * ─────────────────────────
@@ -46,7 +55,8 @@ import { MetricCard } from '../components/MetricCard';
 import { ICHIMOKU_SIGNAL_CHECKS, ICHIMOKU_STRATEGY } from '../config/ichimokuStrategy';
 import { FIXTURE_PAIRS, UNTESTED_PAIRS, useBacktest } from '../hooks/useBacktest';
 import { formatNumber } from '../lib/format';
-import type { BacktestFilters, BacktestMetrics } from '../services/strategy';
+import { DEFAULT_STRATEGY, DETECTORS, STRATEGY_IDS, analyseIchimoku } from '../services/strategy';
+import type { BacktestFilters, BacktestMetrics, StrategyId } from '../services/strategy';
 
 const DEFAULT_COST_PIPS = 1;
 const TRADE_ROWS = 60;
@@ -90,16 +100,34 @@ function verdict(m: BacktestMetrics): { text: string; tone: 'pos' | 'neg' | 'mut
 }
 
 export function Backtest() {
+  const [strategy, setStrategy] = useState<StrategyId>(DEFAULT_STRATEGY);
   const [symbols, setSymbols] = useState<string[]>(FIXTURE_PAIRS.map((p) => p.symbol));
   const [minScore, setMinScore] = useState(ICHIMOKU_STRATEGY.minScore);
   const [costPips, setCostPips] = useState(DEFAULT_COST_PIPS);
   const [showAll, setShowAll] = useState(false);
 
+  const detector = DETECTORS[strategy];
+  /**
+   * The gate control only applies to our strategy, because only ours has a
+   * gate to move. OANDA's rules are conditions, not a threshold — there is no
+   * "3 of 4" version of "price closes above Kijun with a bullish candle".
+   */
+  const gated = strategy === 'ichimoku-kijun';
+
   const filters = useMemo<BacktestFilters>(
-    () => ({ costPips, config: { ...ICHIMOKU_STRATEGY, minScore } }),
-    [minScore, costPips],
+    () =>
+      gated
+        ? {
+            costPips,
+            analyse: (candles, symbol, timeframe, detectedAt) => {
+              const r = analyseIchimoku(candles, symbol, timeframe, { ...ICHIMOKU_STRATEGY, minScore }, detectedAt ?? 0);
+              return { signals: r.signals, level: r.level, reason: r.reason };
+            },
+          }
+        : { costPips },
+    [gated, minScore, costPips],
   );
-  const { status, error, results, portfolio, span } = useBacktest(symbols, filters);
+  const { status, error, results, portfolio, span } = useBacktest(strategy, symbols, filters);
 
   const metrics = portfolio?.metrics;
   const points = useMemo<EquityPoint[]>(() => {
@@ -136,9 +164,10 @@ export function Backtest() {
         <div>
           <h1>Backtest</h1>
           <p className="page-sub">
-            The Ichimoku Kijun pullback replayed over real OANDA candles — entry at the pullback bar's close, stop{' '}
+            {detector.name} — {detector.blurb} Rules by {detector.source}. Entry at the signal bar's close, stop{' '}
             {ICHIMOKU_STRATEGY.stopRange} × the 26-bar range, target {ICHIMOKU_STRATEGY.rewardMultiple}× the stop
-            distance.{span && ` ${day(span.from)} – ${day(span.to)}, 1H.`}
+            distance — the exit is ours and is the same for every strategy, so this compares entries.
+            {span && ` ${day(span.from)} – ${day(span.to)}, 1H.`}
           </p>
         </div>
       </div>
@@ -157,6 +186,23 @@ export function Backtest() {
         </div>
         <div className="panel-body backtest-controls">
           <fieldset className="control-group">
+            <legend>Strategy</legend>
+            <div className="chip-row">
+              {STRATEGY_IDS.map((id) => (
+                <label key={id} className={`chip${strategy === id ? ' on' : ''}`}>
+                  <input type="radio" name="strategy" checked={strategy === id} onChange={() => setStrategy(id)} />
+                  {DETECTORS[id].name}
+                </label>
+              ))}
+            </div>
+            <span className="panel-sub">
+              {detector.source === 'OANDA'
+                ? 'OANDA’s published rules, implemented to the letter. Their article specifies no stop, target or position size, so those are ours and identical across all three.'
+                : 'Ours. The one with a movable gate — OANDA’s rules are conditions, not thresholds.'}
+            </span>
+          </fieldset>
+
+          <fieldset className="control-group">
             <legend>Pairs</legend>
             <div className="chip-row">
               {FIXTURE_PAIRS.map((p) => (
@@ -168,22 +214,24 @@ export function Backtest() {
             </div>
           </fieldset>
 
-          <fieldset className="control-group">
-            <legend>Confirmations required</legend>
-            <div className="chip-row">
-              {[1, 2, 3, 4].map((n) => (
-                <label key={n} className={`chip${minScore === n ? ' on' : ''}`}>
-                  <input type="radio" name="score" checked={minScore === n} onChange={() => setMinScore(n)} />
-                  {n}/{ICHIMOKU_SIGNAL_CHECKS}
-                  {n === ICHIMOKU_STRATEGY.minScore ? ' ·' : ''}
-                </label>
-              ))}
-            </div>
-            <span className="panel-sub">
-              Re-runs the detector at that gate rather than filtering its output, so a weaker setting really does
-              produce the weaker signals. The live default is marked.
-            </span>
-          </fieldset>
+          {gated && (
+            <fieldset className="control-group">
+              <legend>Confirmations required</legend>
+              <div className="chip-row">
+                {[1, 2, 3, 4].map((n) => (
+                  <label key={n} className={`chip${minScore === n ? ' on' : ''}`}>
+                    <input type="radio" name="score" checked={minScore === n} onChange={() => setMinScore(n)} />
+                    {n}/{ICHIMOKU_SIGNAL_CHECKS}
+                    {n === ICHIMOKU_STRATEGY.minScore ? ' ·' : ''}
+                  </label>
+                ))}
+              </div>
+              <span className="panel-sub">
+                Re-runs the detector at that gate rather than filtering its output, so a weaker setting really does
+                produce the weaker signals. The live default is marked.
+              </span>
+            </fieldset>
+          )}
 
           <fieldset className="control-group">
             <legend>Cost per trade</legend>
@@ -356,7 +404,7 @@ export function Backtest() {
                       <td className="num">{formatNumber(t.entry, 5)}</td>
                       <td className="num muted">{formatNumber(t.stop, 5)}</td>
                       <td className="num muted">{formatNumber(t.target, 5)}</td>
-                      <td className="num muted">{t.score}/{ICHIMOKU_SIGNAL_CHECKS}</td>
+                      <td className="num muted">{t.score}/{t.checksTotal}</td>
                       <td className="num muted">{t.exit === 'open' ? '—' : t.barsHeld}</td>
                       <td>
                         <span className={`tag ${t.exit === 'tp' ? 'pos' : t.exit === 'sl' ? 'neg' : ''}`}>

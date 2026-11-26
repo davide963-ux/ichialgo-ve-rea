@@ -1,11 +1,16 @@
 /**
- * Backtest harness for the Ichimoku pullback — plumbing, not strategy.
+ * Backtest harness — plumbing, not strategy.
  *
- * It replays candles through the SAME `analyseIchimoku` the live engine calls
- * and the SAME `ticketLevels` the trade-plan card shows, so a backtested trade
- * and a live signal come from one implementation. There is no "backtest
- * version" of the rules that could quietly diverge from the ones actually
- * being traded.
+ * It replays candles through whichever DETECTOR it is handed — the same ones
+ * the live engine and the server-side scanner call — and through the SAME
+ * `ticketLevels` the trade-plan card shows. So a backtested trade and a live
+ * signal come from one implementation, and there is no "backtest version" of
+ * any rule that could quietly diverge from the one being traded.
+ *
+ * Taking the detector as an argument is what makes the three strategies
+ * comparable at all: they run through identical fill, exit and accounting
+ * code, so a difference in the result is a difference in the ENTRY, which is
+ * the only thing their authors specified.
  *
  *   signal at bar i ──▶ ticketLevels() ──▶ buy the close of bar i
  *                                           │
@@ -73,10 +78,9 @@
 import type { Timeframe } from '../../config/timeframes';
 import type { Candle } from '../marketData/types';
 import { pipSize } from '../../lib/pips';
-import { ICHIMOKU_STRATEGY, type IchimokuStrategyConfig } from '../../config/ichimokuStrategy';
-import { analyseIchimoku } from './ichimokuSignal';
+import { detectorFor, type Detector } from './detectors';
 import { ticketLevels } from './tradePlan';
-import type { Direction, IchimokuSignal } from './types';
+import type { Direction, IchimokuSignal, StrategyId } from './types';
 
 export type BacktestExit = 'tp' | 'sl' | 'open';
 
@@ -102,8 +106,10 @@ export interface BacktestTrade {
   /** |entry − stop| in pips: the risk taken. The pip result's denominator. */
   stopPips: number;
   // ── context, so results can be sliced without re-running ──
-  /** Confirmations that agreed, 0–4. Every trade here cleared the gate. */
+  /** Checks that passed. Every trade here cleared its strategy's gate. */
   score: number;
+  /** How many checks there were — strategies do not all have four. */
+  checksTotal: number;
   /** The 26-bar range in pips — the volatility the stop was drawn from. */
   rangePips: number;
 }
@@ -120,14 +126,17 @@ export interface BacktestFilters {
    */
   costPips?: number;
   /**
-   * Run a VARIANT of the rule, rather than a filter over its output.
+   * Run the detector with non-default settings.
    *
-   * The gate lives inside the detector — a pullback below `minScore` is not
+   * A gate lives INSIDE a detector — our pullback below `minScore` is not
    * emitted at all — so a filter applied afterwards could only ever tighten
    * it. Answering "what would a weaker gate have done?" needs the detector
-   * itself re-run, which is what this is for. Defaults to the live settings.
+   * itself re-run, which is what this is for. The shape is the config of
+   * whichever strategy is being measured.
    */
-  config?: IchimokuStrategyConfig;
+  config?: unknown;
+  /** Re-runs the detector with `config` applied. Supplied by the caller. */
+  analyse?: Detector['analyse'];
   /**
    * An arbitrary extra rule, applied after the two above.
    *
@@ -180,6 +189,7 @@ export interface BacktestMetrics {
 }
 
 export interface BacktestResult {
+  strategy: StrategyId;
   symbol: string;
   timeframe: Timeframe;
   bars: number;
@@ -250,13 +260,15 @@ export function pipsOf(
 
 const passesFilters = (s: IchimokuSignal, f: BacktestFilters): boolean => !f.accept || f.accept(s);
 
-export function backtestIchimoku(
+export function backtest(
+  strategy: StrategyId,
   candles: readonly Candle[],
   symbol: string,
   timeframe: Timeframe,
   filters: BacktestFilters = {},
 ): BacktestResult {
-  const analysis = analyseIchimoku(candles, symbol, timeframe, filters.config ?? ICHIMOKU_STRATEGY);
+  const analyse = filters.analyse ?? detectorFor(strategy).analyse;
+  const analysis = analyse(candles, symbol, timeframe, 0);
   const cost = (filters.costPips ?? 0) * pipSize(symbol);
   const pip = pipSize(symbol);
 
@@ -330,6 +342,7 @@ export function backtestIchimoku(
             pips: null,
             stopPips: Math.abs(levels.entry - levels.stop) / pip,
             score: signal.score,
+            checksTotal: signal.checksTotal,
             rangePips: signal.rangePips,
           };
         }
@@ -347,6 +360,7 @@ export function backtestIchimoku(
   }
 
   return {
+    strategy,
     symbol,
     timeframe,
     bars: candles.length,

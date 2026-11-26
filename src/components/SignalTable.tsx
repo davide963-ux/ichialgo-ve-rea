@@ -1,6 +1,5 @@
 import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ICHIMOKU_SIGNAL_CHECKS } from '../config/ichimokuStrategy';
 import { pairToSlug } from '../config/pairs';
 import { formatMoney, formatNumber, formatPrice } from '../lib/format';
 import type { RateLookup } from '../lib/positionSize';
@@ -18,7 +17,13 @@ interface Props {
   emptyHint?: string;
 }
 
-/** The signal log. Rows open the pair on the timeframe it fired on. */
+/**
+ * The signal log. Rows open the pair on the timeframe it fired on.
+ *
+ * Nothing here knows which strategy produced a row: the score renders out of
+ * whatever that signal's own `checksTotal` is, so a four-condition rule and a
+ * three-condition one both read correctly in the same table.
+ */
 export function SignalTable({ signals, limit, emptyHint }: Props) {
   const navigate = useNavigate();
   const balance = useAccount((a) => a.balance);
@@ -58,7 +63,7 @@ export function SignalTable({ signals, limit, emptyHint }: Props) {
             <th scope="col"><abbr title="Direction, taken from which side of the Kumo price is on">SIDE</abbr></th>
             <th scope="col"><abbr title="Closed bar, or a live tick inside an unfinished bar">SOURCE</abbr></th>
             <th scope="col">
-              <abbr title={`How many of the ${ICHIMOKU_SIGNAL_CHECKS} Ichimoku confirmations agree. This is a gate: a lower score produces no signal. Hover for the breakdown.`}>
+              <abbr title="How many of this strategy's conditions passed. The required ones are a gate — a signal cannot exist without them. Hover a score for the breakdown.">
                 SCORE
               </abbr>
             </th>

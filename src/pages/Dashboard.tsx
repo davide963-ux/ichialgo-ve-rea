@@ -14,7 +14,7 @@ import { MarketStatus } from '../components/MarketStatus';
 import { MetricCard } from '../components/MetricCard';
 import { SignalTable } from '../components/SignalTable';
 import { TimeframeSelector } from '../components/TimeframeSelector';
-import { ICHIMOKU_SIGNAL_CHECKS, ICHIMOKU_STRATEGY } from '../config/ichimokuStrategy';
+import { DEFAULT_STRATEGY, DETECTORS, STRATEGY_IDS, isStrategyId } from '../services/strategy';
 import { DEFAULT_TIMEFRAME, isTimeframe, type Timeframe } from '../config/timeframes';
 import { useLastScanAt, useSignals, useSignalSummary, useStrategyStatus } from '../hooks/useSignals';
 import { useNow } from '../hooks/useNow';
@@ -25,7 +25,11 @@ export function Dashboard() {
   const [params, setParams] = useSearchParams();
   const tfParam = params.get('tf');
   const timeframe: Timeframe = isTimeframe(tfParam) ? tfParam : DEFAULT_TIMEFRAME;
-  const setTimeframe = (tf: Timeframe) => setParams({ tf }, { replace: true });
+  const sParam = params.get('s');
+  const strategy = isStrategyId(sParam) ? sParam : DEFAULT_STRATEGY;
+  const detector = DETECTORS[strategy];
+  const setTimeframe = (tf: Timeframe) => setParams({ tf, s: strategy }, { replace: true });
+  const setStrategy = (s: string) => setParams({ tf: timeframe, s }, { replace: true });
 
   const symbols = useMarketStore((s) => s.symbols);
   const quoteCount = useMarketStore((s) => Object.keys(s.quotes).length);
@@ -55,7 +59,7 @@ export function Dashboard() {
   const modeLabel = mode === 'stream' ? 'Streaming' : mode === 'poll' ? 'Polling' : 'Connecting';
   const strategyHint =
     strategyStatus === 'READY'
-      ? `Kijun pullback on ${timeframe}`
+      ? `${detector.name} on ${timeframe}`
       : strategyStatus === 'ERROR'
         ? 'Strategy has no candles'
         : 'Loading candles…';
@@ -104,12 +108,19 @@ export function Dashboard() {
       <section className="panel">
         <div className="panel-head">
           <div>
-            <h2 className="panel-title">Kijun pullbacks</h2>
+            <h2 className="panel-title">{detector.name}</h2>
             <span className="panel-sub">
-              Fires when price, already clear of the Kumo on the {timeframe} chart, pulls back into the Kijun band
-              and {ICHIMOKU_STRATEGY.minScore} of {ICHIMOKU_SIGNAL_CHECKS} confirmations agree. The cloud decides
-              the direction; one signal per pullback, not per bar.
+              {detector.blurb} Rules by {detector.source}. The cloud decides the direction; one signal per setup,
+              not per bar.
             </span>
+            <div className="chip-row">
+              {STRATEGY_IDS.map((id) => (
+                <label key={id} className={`chip${strategy === id ? ' on' : ''}`}>
+                  <input type="radio" name="strategy" checked={strategy === id} onChange={() => setStrategy(id)} />
+                  {DETECTORS[id].name}
+                </label>
+              ))}
+            </div>
           </div>
           <div className="page-head-aside">
             <div className="chip-row">
@@ -132,7 +143,7 @@ export function Dashboard() {
             side !== 'all' && signals.length > 0
               ? `None of the ${signals.length} signals are ${side.toLowerCase()}s. Switch to both to see them.`
               : strategyStatus === 'READY'
-                ? `Watching ${symbols.length} pairs on ${timeframe}. No pullback has cleared the gate yet.`
+                ? `Watching ${symbols.length} pairs on ${timeframe}. Nothing has met ${detector.name}'s conditions yet.`
                 : strategyHint
           }
         />

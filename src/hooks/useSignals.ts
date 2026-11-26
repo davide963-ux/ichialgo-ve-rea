@@ -12,22 +12,27 @@
 import { useEffect, useMemo } from 'react';
 import { STRATEGY_CONFIG } from '../config/strategy';
 import { TIMEFRAME_SECONDS, type Timeframe } from '../config/timeframes';
-import { analyseIchimoku, planFromSignal, signalTimeMs, strategyEngine } from '../services/strategy';
-import type { IchimokuAnalysis, IchimokuLevel, IchimokuSignal, TradePlan } from '../services/strategy';
+import { DEFAULT_STRATEGY, detectorFor, planFromSignal, signalTimeMs, strategyEngine } from '../services/strategy';
+import type { DetectorResult, IchimokuLevel, IchimokuSignal, StrategyId, TradePlan } from '../services/strategy';
 import type { Candle } from '../services/marketData';
 import type { RateLookup } from '../lib/positionSize';
 import { useAccount } from '../state/accountStore';
 import { useMarketStore } from '../state/marketStore';
 import { useSignalStore } from '../state/signalStore';
 
-/** Runs the engine for as long as the app is mounted, following the timeframe. */
-export function useStrategyEngine(timeframe: Timeframe): void {
+/**
+ * Runs the engine for as long as the app is mounted, following the timeframe
+ * and the selected strategy. Changing either is a restart — see the engine.
+ */
+export function useStrategyEngine(timeframe: Timeframe, strategy: StrategyId = DEFAULT_STRATEGY): void {
   useEffect(() => {
-    strategyEngine.setTimeframe(timeframe);
-  }, [timeframe]);
+    strategyEngine.setTimeframe(timeframe, strategy);
+  }, [timeframe, strategy]);
 
   useEffect(() => () => strategyEngine.stop(), []);
 }
+
+export const useActiveStrategy = (): StrategyId => useSignalStore((s) => s.strategy);
 
 export const useSignals = (): IchimokuSignal[] => useSignalStore((s) => s.signals);
 export const useStrategyStatus = () => useSignalStore((s) => s.status);
@@ -84,8 +89,16 @@ export function useSignalSummary(): SignalSummary {
  * than read from the store: the overlay then always matches the bars on
  * screen, and it costs no extra provider request.
  */
-export function useIchimokuAnalysis(symbol: string, timeframe: Timeframe, candles: Candle[]): IchimokuAnalysis {
-  return useMemo(() => analyseIchimoku(candles, symbol, timeframe), [candles, symbol, timeframe]);
+export function useIchimokuAnalysis(
+  symbol: string,
+  timeframe: Timeframe,
+  candles: Candle[],
+  strategy: StrategyId = DEFAULT_STRATEGY,
+): DetectorResult {
+  return useMemo(
+    () => detectorFor(strategy).analyse(candles, symbol, timeframe),
+    [candles, symbol, timeframe, strategy],
+  );
 }
 
 /**

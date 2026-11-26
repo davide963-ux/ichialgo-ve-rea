@@ -13,6 +13,11 @@ import { analyseIchimoku, ichimokuSignalId, minBars, rangeOver } from './ichimok
 import eurusd from '../../../fixtures/market/EURUSD_1H.csv?raw';
 import detectorSrc from './ichimokuSignal.ts?raw';
 import configSrc from '../../config/ichimokuStrategy.ts?raw';
+import pullbackSrc from './oandaPullback.ts?raw';
+import breakoutSrc from './oandaBreakout.ts?raw';
+import barsSrc from './ichimokuBars.ts?raw';
+import zonesSrc from './cloudZones.ts?raw';
+import ticketSrc from './signalTicket.ts?raw';
 
 const parseCsv = (csv: string): Candle[] =>
   csv
@@ -28,14 +33,24 @@ const candles = parseCsv(eurusd);
 
 describe('purity', () => {
   /**
-   * The whole point of this module. A stop floor in ATR or a trend filter on
-   * an EMA would both work fine and both break the promise, so the promise is
-   * checked mechanically rather than by review.
+   * The whole point of this module, and now of five more.
+   *
+   * A stop floor in ATR or a trend filter on an EMA would both work fine and
+   * both break the promise, so the promise is checked mechanically rather
+   * than by review. OANDA's own article closes by recommending the Cloud be
+   * paired with RSI or Stochastic — a reasonable suggestion, and exactly the
+   * kind of thing that would arrive here one day as a "small addition". It is
+   * covered too: anything not Ichimoku's own fails this list.
    */
-  it('contains no EMA and no ATR, in the detector or its config', () => {
+  it('contains no EMA and no ATR, in any strategy file', () => {
     for (const [name, src] of [
       ['ichimokuSignal.ts', detectorSrc],
       ['ichimokuStrategy.ts', configSrc],
+      ['oandaPullback.ts', pullbackSrc],
+      ['oandaBreakout.ts', breakoutSrc],
+      ['ichimokuBars.ts', barsSrc],
+      ['cloudZones.ts', zonesSrc],
+      ['signalTicket.ts', ticketSrc],
     ] as const) {
       // Strip comments: the docblocks explain what was removed and why.
       const code = src

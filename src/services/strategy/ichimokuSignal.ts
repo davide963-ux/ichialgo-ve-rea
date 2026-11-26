@@ -1,19 +1,29 @@
 /**
+ * Our own strategy: a Kijun pullback behind a four-of-four Ichimoku gate.
+ *
  * Pure Ichimoku. No moving average, no volatility measure from outside the
  * cloud, no other indicator anywhere in this file. A test reads this source
  * and fails if one ever appears.
  *
+ * HOW IT DIFFERS FROM OANDA'S PULLBACK, WHICH IS ALSO IMPLEMENTED
+ * ──────────────────────────────────────────────────────────────
+ * Both trade a pullback to Kijun inside a trend the cloud established, and
+ * they are not the same rule. Theirs requires Tenkan on the trade's side and
+ * a confirming close back through Kijun on a bullish candle, and looks at
+ * nothing else. Ours fires on the touch itself and demands four conditions —
+ * cloud colour, the cloud 26 ahead, Chikou and Tenkan — of which only the
+ * last appears in their rules at all. See oandaPullback.ts.
+ *
  * THE TRADE
  * ─────────
  * Price is clear of the Kumo, so the cloud has a direction. Price pulls back
- * to Kijun-sen and is caught there. That is the whole setup: a retest of the
- * base line inside a trend the cloud already established.
+ * to Kijun-sen and is caught there.
  *
- *     price above the Kumo          ← the cloud sets the direction
- *          │
- *          ├─ pulls back to Kijun   ← the trigger
- *          │
- *          └─ 4 confirmations       ← the gate, not a label
+ *     price above the Kumo          <- the cloud sets the direction
+ *          |
+ *          +- pulls back to Kijun   <- the trigger
+ *          |
+ *          +- 4 confirmations       <- the gate, not a label
  *
  * WHAT DECIDES WHAT
  * ─────────────────
@@ -34,10 +44,6 @@
  *                      price reaches the zone, between scans, for no extra
  *                      provider credits — the quote stream is already running.
  *
- * Both produce the same shape, scored by the same four checks against the
- * same gate, and share an id per bar, so the closed bar's version replaces
- * the live one rather than adding a second row.
- *
  * WHAT THIS IS MEASURED TO DO, STATED PLAINLY
  * ───────────────────────────────────────────
  * On the five traded pairs' 1H fixtures, at one pip of cost, the default
@@ -54,22 +60,24 @@
  * The gate is the one setting with evidence behind it, and the evidence is
  * narrower than it first looked. Over the whole sample it improves the result
  * monotonically: +0.33, +1.15, +1.43, +3.89 pips at 1, 2, 3 and 4 of 4. But
- * the gain is concentrated in the HARD half — on the first 60% it turns -4.00
+ * the gain is concentrated in the HARD half -- on the first 60% it turns -4.00
  * into +0.66, while on the kinder last 40% it is a wash and slightly negative
  * (+11.26 at 2, +10.68 at 4). So 4 buys robustness when conditions are poor
  * rather than more upside when they are good, which is the trade worth
  * making but is not the same claim as "a tighter gate is simply better".
- *
- * The fixtures are 1H and the scanner runs 30M, so none of this is settled
- * for the timeframe actually traded.
  */
 import { ICHIMOKU_SIGNAL_CHECKS, ICHIMOKU_STRATEGY, type IchimokuStrategyConfig } from '../../config/ichimokuStrategy';
 import type { Timeframe } from '../../config/timeframes';
-import { cloudIsBullish, ichimoku, kumoSide, type IchimokuSeries } from '../../lib/indicators';
+import type { IchimokuSeries } from '../../lib/indicators';
 import { pipSize } from '../../lib/pips';
 import type { Candle } from '../marketData';
-import type { Direction, IchimokuLevel, IchimokuSignal } from './types';
+import { ichimokuContext, minBarsFor, px, rangeOver, type BarFacts } from './ichimokuBars';
+import { buildSignal, signalId, signalTimeMs } from './signalTicket';
+import type { Direction, IchimokuLevel, IchimokuSignal, SignalCheck } from './types';
 
+export const STRATEGY = 'ichimoku-kijun' as const;
+
+export { rangeOver, signalTimeMs };
 export type { Direction, IchimokuLevel, IchimokuSignal } from './types';
 
 export interface IchimokuAnalysis {
@@ -83,65 +91,59 @@ export interface IchimokuAnalysis {
 }
 
 export const ichimokuSignalId = (symbol: string, timeframe: Timeframe, barTime: number) =>
-  `ichimoku-kijun|${symbol}|${timeframe}|${barTime}`;
+  signalId(STRATEGY, symbol, timeframe, barTime);
 
-/**
- * When a signal happened, in ms.
- *
- * A live signal happened when the tick arrived; a closed-bar one happened on
- * its bar. Sorting the log by `detectedAt` alone would put a bar that closed
- * an hour ago above a tick from a second ago whenever a scan ran in between.
- */
-export const signalTimeMs = (s: Pick<IchimokuSignal, 'source' | 'barTime' | 'detectedAt'>): number =>
-  s.source === 'live' ? s.detectedAt : s.barTime * 1000;
-
-/**
- * Highest high minus lowest low over `period` bars ending at each index.
- *
- * This is the strategy's entire notion of distance. It is not a new
- * indicator: Kijun-sen is the midpoint of exactly this window, so the range
- * is already implied by the line being traded.
- */
-export function rangeOver(candles: readonly Candle[], period: number): (number | null)[] {
-  const out: (number | null)[] = new Array(candles.length).fill(null);
-  if (period < 1) return out;
-  for (let i = period - 1; i < candles.length; i++) {
-    let hi = -Infinity;
-    let lo = Infinity;
-    for (let j = i - period + 1; j <= i; j++) {
-      const c = candles[j]!;
-      if (c.high > hi) hi = c.high;
-      if (c.low < lo) lo = c.low;
-    }
-    out[i] = hi - lo;
-  }
-  return out;
+export function minBars(config: IchimokuStrategyConfig = ICHIMOKU_STRATEGY): number {
+  return minBarsFor(config.rangePeriod);
 }
 
 /**
- * Bars needed before anything is reported: Senkou B's 52 plus the 26-bar
- * displacement, so a cloud is actually in effect at the bar being judged,
- * plus the range window.
+ * The four confirmations, in the direction being traded.
+ *
+ * Written as a list rather than four booleans so the panel that renders them
+ * does not have to know what they are — the same panel shows OANDA's rules,
+ * which are different checks entirely.
  */
-export function minBars(config = ICHIMOKU_STRATEGY): number {
-  return 52 + 26 + config.rangePeriod;
-}
-
-/** The four confirmations, in the direction being traded. */
-function scoreChecks(
+function checksFor(
+  f: Pick<BarFacts, 'tenkan' | 'kijun' | 'senkouA' | 'senkouB' | 'aheadA' | 'aheadB' | 'back' | 'bar' | 'cloudBullish'>,
   long: boolean,
-  cloudBullish: boolean,
-  futureCloudBullish: boolean | null,
   chikouFree: boolean | null,
-  tenkanAgrees: boolean,
-): number {
-  const checks = [
-    long ? cloudBullish : !cloudBullish,
-    futureCloudBullish === null ? false : long ? futureCloudBullish : !futureCloudBullish,
-    chikouFree === true,
-    tenkanAgrees,
+): SignalCheck[] {
+  const futureBullish = f.aheadA === null || f.aheadB === null ? null : f.aheadA > f.aheadB;
+  const tenkanAgrees = f.tenkan === null ? false : long ? f.tenkan > f.kijun : f.tenkan < f.kijun;
+
+  return [
+    {
+      label: `Cloud in effect ${long ? 'bullish' : 'bearish'}`,
+      pass: long ? f.cloudBullish : !f.cloudBullish,
+      detail: `Senkou A ${px(f.senkouA)} vs B ${px(f.senkouB)}`,
+      required: true,
+    },
+    {
+      label: `Cloud 26 bars ahead ${long ? 'bullish' : 'bearish'}`,
+      pass: futureBullish === null ? null : long ? futureBullish : !futureBullish,
+      detail:
+        futureBullish === null
+          ? 'the leading cloud is not determined at this bar'
+          : `Span A ${px(f.aheadA)} vs B ${px(f.aheadB)}`,
+      required: true,
+    },
+    {
+      label: 'Chikou free',
+      pass: chikouFree,
+      detail:
+        chikouFree === null
+          ? 'fewer than 26 bars behind this one'
+          : `close ${px(f.bar.close)} vs the ${long ? 'high' : 'low'} ${px(long ? f.back?.high : f.back?.low)} 26 bars back`,
+      required: true,
+    },
+    {
+      label: `Tenkan ${long ? 'above' : 'below'} Kijun`,
+      pass: tenkanAgrees,
+      detail: `${px(f.tenkan)} vs ${px(f.kijun)}`,
+      required: true,
+    },
   ];
-  return checks.filter(Boolean).length;
 }
 
 export function analyseIchimoku(
@@ -151,65 +153,48 @@ export function analyseIchimoku(
   config: IchimokuStrategyConfig = ICHIMOKU_STRATEGY,
   detectedAt = Date.now(),
 ): IchimokuAnalysis {
-  const series = ichimoku(candles);
-  const range = rangeOver(candles, config.rangePeriod);
+  const ctx = ichimokuContext(candles, symbol, config.rangePeriod);
 
   if (candles.length < minBars(config)) {
-    return { ichimoku: series, range, signals: [], level: null, reason: 'not-enough-bars' };
+    return { ichimoku: ctx.series, range: ctx.range, signals: [], level: null, reason: 'not-enough-bars' };
   }
 
-  const pip = pipSize(symbol);
-  const shift = series.config.displacement;
   const signals: IchimokuSignal[] = [];
   let armed = true;
   let level: IchimokuLevel | null = null;
 
   for (let i = 1; i < candles.length; i++) {
-    const bar = candles[i]!;
-    const kijun = series.kijun[i];
-    const senkouA = series.senkouA[i];
-    const senkouB = series.senkouB[i];
-    const r = range[i];
-    if (kijun == null || senkouA == null || senkouB == null || r == null || r <= 0) continue;
+    const f = ctx.at(i);
+    if (!f) continue;
 
-    const side = kumoSide(series, i, bar.close);
-    const bullish = cloudIsBullish(series, i);
-    if (side === null || bullish === null) continue;
-
-    const band = r * config.touchBand;
-    const long = side === 'above';
-    const tenkan = series.tenkan[i] ?? null;
-    const tenkanAgrees = tenkan === null ? false : long ? tenkan > kijun : tenkan < kijun;
-
-    // The cloud 26 bars ahead: known today, and what the trend walks into.
-    const aheadA = series.senkouARaw[i] ?? null;
-    const aheadB = series.senkouBRaw[i] ?? null;
-    const futureCloudBullish = aheadA === null || aheadB === null ? null : aheadA > aheadB;
-
-    const back = candles[i - shift];
+    const band = f.range * config.touchBand;
+    const long = f.side === 'above';
     const last = i === candles.length - 1;
-    const touched = bar.low <= kijun + band && bar.high >= kijun - band;
+    const touched = f.bar.low <= f.kijun + band && f.bar.high >= f.kijun - band;
 
     const publish = (): IchimokuLevel => ({
       symbol,
       timeframe,
-      kijun,
+      strategy: STRATEGY,
+      kijun: f.kijun,
+      tenkan: f.tenkan,
       band,
-      range: r,
-      direction: side === 'inside' ? null : long ? 'LONG' : 'SHORT',
-      side,
+      range: f.range,
+      direction: f.side === 'inside' ? null : long ? 'LONG' : 'SHORT',
+      side: f.side,
       armed,
       inBand: touched,
-      barTime: bar.time,
+      barTime: f.bar.time,
       updatedAt: detectedAt,
-      tenkan,
-      senkouA,
-      senkouB,
-      cloudBullish: bullish,
-      futureCloudBullish,
-      tenkanAgrees,
-      backHigh: back?.high ?? null,
-      backLow: back?.low ?? null,
+      senkouA: f.senkouA,
+      senkouB: f.senkouB,
+      senkouAheadA: f.aheadA,
+      senkouAheadB: f.aheadB,
+      cloudBullish: f.cloudBullish,
+      tenkanAgrees: f.tenkan === null ? false : long ? f.tenkan > f.kijun : f.tenkan < f.kijun,
+      backHigh: f.back?.high ?? null,
+      backLow: f.back?.low ?? null,
+      backClose: f.back?.close ?? null,
     });
 
     /**
@@ -217,8 +202,8 @@ export function analyseIchimoku(
      * traded — but the pair is re-armed once price is clearly away from the
      * line, so the next genuine retest is not swallowed by a stale disarm.
      */
-    if (side === 'inside') {
-      if (Math.abs(bar.close - kijun) > band * config.rearmBands) armed = true;
+    if (f.side === 'inside') {
+      if (Math.abs(f.bar.close - f.kijun) > band * config.rearmBands) armed = true;
       if (last) level = publish();
       continue;
     }
@@ -226,49 +211,35 @@ export function analyseIchimoku(
     const direction: Direction = long ? 'LONG' : 'SHORT';
 
     if (touched && armed) {
-      const chikouFree = back ? (long ? bar.close > back.high : bar.close < back.low) : null;
-      const score = scoreChecks(long, bullish, futureCloudBullish, chikouFree, tenkanAgrees);
+      const chikouFree = f.back ? (long ? f.bar.close > f.back.high : f.bar.close < f.back.low) : null;
+      const checks = checksFor(f, long, chikouFree);
+      const score = checks.filter((c) => c.pass === true).length;
       armed = false;
 
       // The gate. Below the threshold no signal exists — it is not produced
       // and flagged, which is the mistake the previous strategy made.
       if (score >= config.minScore) {
-        const entry = bar.close;
-        const risk = r * config.stopRange;
-        signals.push({
-          id: ichimokuSignalId(symbol, timeframe, bar.time),
-          strategy: 'ichimoku-kijun',
-          symbol,
-          timeframe,
-          barTime: bar.time,
-          detectedAt,
-          source: 'candle',
-          direction,
-          kumo: long ? 'above' : 'below',
-          entry,
-          stop: long ? entry - risk : entry + risk,
-          target: long ? entry + risk * config.rewardMultiple : entry - risk * config.rewardMultiple,
-          stopPips: risk / pip,
-          rangePips: r / pip,
-          tenkan,
-          kijun,
-          senkouA,
-          senkouB,
-          distancePips: Math.abs(entry - kijun) / pip,
-          cloudBullish: bullish,
-          futureCloudBullish,
-          chikouFree,
-          tenkanAgrees,
-          score,
-        });
+        signals.push(
+          buildSignal({
+            strategy: STRATEGY,
+            symbol,
+            timeframe,
+            facts: f,
+            detectedAt,
+            source: 'candle',
+            direction,
+            entry: f.bar.close,
+            checks,
+          }),
+        );
       }
     }
 
-    if (!armed && Math.abs(bar.close - kijun) > band * config.rearmBands) armed = true;
+    if (!armed && Math.abs(f.bar.close - f.kijun) > band * config.rearmBands) armed = true;
     if (last) level = publish();
   }
 
-  return { ichimoku: series, range, signals, level, reason: 'ok' };
+  return { ichimoku: ctx.series, range: ctx.range, signals, level, reason: 'ok' };
 }
 
 /**
@@ -297,6 +268,8 @@ export function checkLiveTouch(
   at: number,
   config: IchimokuStrategyConfig = ICHIMOKU_STRATEGY,
 ): { signal: IchimokuSignal | null; level: IchimokuLevel } {
+  if (level.strategy !== STRATEGY) return { signal: null, level };
+
   const distance = Math.abs(price - level.kijun);
   const inBand = distance <= level.band;
   const clear = distance > level.band * config.rearmBands;
@@ -304,8 +277,7 @@ export function checkLiveTouch(
   /**
    * `inBand` follows the quote on every tick, whatever else happens, so the
    * UI's "a pullback is in progress" state is live rather than as of the last
-   * closed bar. `touched` is only ever compared, never written back, so this
-   * is the one thing the live path updates unconditionally.
+   * closed bar.
    */
   const track = (patch: Partial<IchimokuLevel> = {}): IchimokuLevel =>
     level.inBand === inBand && Object.keys(patch).length === 0
@@ -317,7 +289,6 @@ export function checkLiveTouch(
   if (level.direction === null) {
     return { signal: null, level: track(!level.armed && clear ? { armed: true } : {}) };
   }
-
   if (!inBand) {
     return { signal: null, level: track(!level.armed && clear ? { armed: true } : {}) };
   }
@@ -326,7 +297,23 @@ export function checkLiveTouch(
   const long = level.direction === 'LONG';
   const edge = long ? level.backHigh : level.backLow;
   const chikouFree = edge === null ? null : long ? price > edge : price < edge;
-  const score = scoreChecks(long, level.cloudBullish, level.futureCloudBullish, chikouFree, level.tenkanAgrees);
+
+  const checks = checksFor(
+    {
+      tenkan: level.tenkan,
+      kijun: level.kijun,
+      senkouA: level.senkouA,
+      senkouB: level.senkouB,
+      aheadA: level.senkouAheadA,
+      aheadB: level.senkouAheadB,
+      back: level.backHigh === null ? undefined : ({ high: level.backHigh, low: level.backLow } as Candle),
+      bar: { close: price } as Candle,
+      cloudBullish: level.cloudBullish,
+    },
+    long,
+    chikouFree,
+  );
+  const score = checks.filter((c) => c.pass === true).length;
 
   // Disarm whether or not it scored: the pullback has happened, and a rule
   // that kept firing until one tick happened to pass the gate would turn the
@@ -335,34 +322,34 @@ export function checkLiveTouch(
   if (score < config.minScore) return { signal: null, level: next };
 
   const pip = pipSize(level.symbol);
-  const risk = level.range * config.stopRange;
   return {
-    signal: {
-      id: ichimokuSignalId(level.symbol, level.timeframe, level.barTime),
-      strategy: 'ichimoku-kijun',
+    signal: buildSignal({
+      strategy: STRATEGY,
       symbol: level.symbol,
       timeframe: level.timeframe,
-      barTime: level.barTime,
+      facts: {
+        i: -1,
+        bar: { time: level.barTime, open: price, high: price, low: price, close: price, volume: null, complete: false },
+        tenkan: level.tenkan,
+        kijun: level.kijun,
+        senkouA: level.senkouA,
+        senkouB: level.senkouB,
+        aheadA: level.senkouAheadA,
+        aheadB: level.senkouAheadB,
+        range: level.range,
+        side: long ? 'above' : 'below',
+        cloudBullish: level.cloudBullish,
+        cloudPips: Math.abs(level.senkouA - level.senkouB) / pip,
+        back: undefined,
+        pip,
+      },
       detectedAt: at,
       source: 'live',
       direction: level.direction,
-      kumo: long ? 'above' : 'below',
       entry: price,
-      stop: long ? price - risk : price + risk,
-      target: long ? price + risk * config.rewardMultiple : price - risk * config.rewardMultiple,
-      stopPips: risk / pip,
-      rangePips: level.range / pip,
-      tenkan: level.tenkan,
-      kijun: level.kijun,
-      senkouA: level.senkouA,
-      senkouB: level.senkouB,
-      distancePips: distance / pip,
-      cloudBullish: level.cloudBullish,
-      futureCloudBullish: level.futureCloudBullish,
-      chikouFree,
-      tenkanAgrees: level.tenkanAgrees,
-      score,
-    },
+      checks,
+      barTime: level.barTime,
+    }),
     level: next,
   };
 }

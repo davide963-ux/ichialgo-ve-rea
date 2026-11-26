@@ -15,7 +15,7 @@
 import { describe, expect, it } from 'vitest';
 import { ICHIMOKU_SIGNAL_CHECKS, ICHIMOKU_STRATEGY } from '../../config/ichimokuStrategy';
 import type { Candle } from '../marketData/types';
-import { backtestIchimoku, combine, equityCurve, measure, pipsOf, type BacktestResult, type BacktestTrade } from './backtest';
+import { backtest, combine, equityCurve, measure, pipsOf, type BacktestResult, type BacktestTrade } from './backtest';
 import { analyseIchimoku } from './ichimokuSignal';
 import { ticketLevels } from './tradePlan';
 import eurusd from '../../../fixtures/market/EURUSD_1H.csv?raw';
@@ -44,6 +44,7 @@ function parseCsv(csv: string): Candle[] {
 
 const candles = parseCsv(eurusd);
 const SYMBOL = 'EUR/USD';
+const STRATEGY = 'ichimoku-kijun' as const;
 
 const trade = (over: Partial<BacktestTrade> = {}): BacktestTrade => ({
   id: 't',
@@ -61,11 +62,13 @@ const trade = (over: Partial<BacktestTrade> = {}): BacktestTrade => ({
   pips: 200,
   stopPips: 100,
   score: ICHIMOKU_SIGNAL_CHECKS,
+  checksTotal: ICHIMOKU_SIGNAL_CHECKS,
   rangePips: 250,
   ...over,
 });
 
 const result = (symbol: string, exitTime: number, pips: number): BacktestResult => ({
+  strategy: STRATEGY,
   symbol,
   timeframe: '1H',
   bars: 0,
@@ -194,7 +197,7 @@ describe('equityCurve', () => {
 // ── the walk-forward rules ────────────────────────────────────────────────
 
 describe('backtestIchimoku', () => {
-  const run = backtestIchimoku(candles, SYMBOL, '1H');
+  const run = backtest(STRATEGY, candles, SYMBOL, '1H');
 
   it('produces trades from the fixture at all', () => {
     expect(run.signals).toBeGreaterThan(50);
@@ -239,7 +242,7 @@ describe('backtestIchimoku', () => {
     const hi = Math.max(first.stop, first.target) + 0.005;
     wide.push(bar(candles[entryIndex]!.time + 3600, first.entry, hi, lo, first.entry));
 
-    const engulfed = backtestIchimoku(wide, SYMBOL, '1H');
+    const engulfed = backtest(STRATEGY, wide, SYMBOL, '1H');
     const same = engulfed.trades.find((t) => t.id === first.id)!;
     expect(same.exit).toBe('sl');
     // Stopped out: the loss is exactly the stop distance it recorded.
@@ -292,8 +295,15 @@ describe('backtestIchimoku', () => {
    * because the weaker rule's signals were never generated.
    */
   it('re-runs the detector when the gate moves, rather than filtering its output', () => {
-    const loose = backtestIchimoku(candles, SYMBOL, '1H', { config: { ...ICHIMOKU_STRATEGY, minScore: 1 } });
-    const strict = backtestIchimoku(candles, SYMBOL, '1H', { config: { ...ICHIMOKU_STRATEGY, minScore: 4 } });
+    const at = (minScore: number) =>
+      backtest(STRATEGY, candles, SYMBOL, '1H', {
+        analyse: (c, sym, tf, t) => {
+          const r = analyseIchimoku(c, sym, tf, { ...ICHIMOKU_STRATEGY, minScore }, t ?? 0);
+          return { signals: r.signals, level: r.level, reason: r.reason };
+        },
+      });
+    const loose = at(1);
+    const strict = at(4);
 
     expect(loose.signals).toBeGreaterThan(strict.signals);
     expect(loose.filtered).toBe(0); // nothing filtered: the rule itself changed
@@ -302,7 +312,7 @@ describe('backtestIchimoku', () => {
   });
 
   it('handles a series too short to produce anything', () => {
-    const short = backtestIchimoku([bar(0, 1.1, 1.1, 1.1, 1.1)], SYMBOL, '1H');
+    const short = backtest(STRATEGY, [bar(0, 1.1, 1.1, 1.1, 1.1)], SYMBOL, '1H');
     expect(short.trades).toEqual([]);
     expect(short.signals).toBe(0);
     expect(short.metrics.trades).toBe(0);
@@ -342,11 +352,11 @@ describe('combine', () => {
  * which is why rule variants have to be tested here rather than afterwards.
  */
 describe('accept — measuring a proposed rule', () => {
-  const all = backtestIchimoku(candles, SYMBOL, '1H');
+  const all = backtest(STRATEGY, candles, SYMBOL, '1H');
 
   it('runs the rule against every signal and keeps only what it allows', () => {
-    const none = backtestIchimoku(candles, SYMBOL, '1H', { accept: () => false });
-    const every = backtestIchimoku(candles, SYMBOL, '1H', { accept: () => true });
+    const none = backtest(STRATEGY, candles, SYMBOL, '1H', { accept: () => false });
+    const every = backtest(STRATEGY, candles, SYMBOL, '1H', { accept: () => true });
 
     expect(none.trades).toEqual([]);
     expect(none.filtered).toBe(all.signals);
@@ -356,9 +366,12 @@ describe('accept — measuring a proposed rule', () => {
   });
 
   it('is applied on top of the rule being measured, not instead of it', () => {
-    const config = { ...ICHIMOKU_STRATEGY, minScore: 2 };
-    const both = backtestIchimoku(candles, SYMBOL, '1H', { config, accept: () => true });
-    const configOnly = backtestIchimoku(candles, SYMBOL, '1H', { config });
+    const analyse = (c: Parameters<typeof analyseIchimoku>[0], sym: string, tf: '1H', t?: number) => {
+      const r = analyseIchimoku(c, sym, tf, { ...ICHIMOKU_STRATEGY, minScore: 2 }, t ?? 0);
+      return { signals: r.signals, level: r.level, reason: r.reason };
+    };
+    const both = backtest(STRATEGY, candles, SYMBOL, '1H', { analyse, accept: () => true });
+    const configOnly = backtest(STRATEGY, candles, SYMBOL, '1H', { analyse });
     expect(both.trades.length).toBe(configOnly.trades.length);
     expect(configOnly.signals).toBeGreaterThan(all.signals);
   });
@@ -396,7 +409,7 @@ describe('accept — measuring a proposed rule', () => {
      * happened sometimes.
      */
     for (const b of blockers.slice(0, 10)) {
-      const without = backtestIchimoku(candles, SYMBOL, '1H', { accept: (sig) => sig.id !== b.id });
+      const without = backtest(STRATEGY, candles, SYMBOL, '1H', { accept: (sig) => sig.id !== b.id });
       expect(without.trades.some((t) => t.id === b.id)).toBe(false);
       expect(
         without.trades.some((t) => !taken.has(t.id)),
@@ -416,8 +429,8 @@ describe('trading costs', () => {
   });
 
   it('makes every trade worse, and never changes how many there are', () => {
-    const free = backtestIchimoku(candles, SYMBOL, '1H');
-    const paid = backtestIchimoku(candles, SYMBOL, '1H', { costPips: 1 });
+    const free = backtest(STRATEGY, candles, SYMBOL, '1H');
+    const paid = backtest(STRATEGY, candles, SYMBOL, '1H', { costPips: 1 });
 
     expect(paid.trades.length).toBe(free.trades.length);
     expect(paid.metrics.trades).toBe(free.metrics.trades);
