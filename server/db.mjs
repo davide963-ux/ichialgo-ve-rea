@@ -293,14 +293,18 @@ export async function migrate(files, env = process.env) {
 /**
  * The strategies this app currently runs.
  *
- * Reads filter on this list rather than on one id: the scanner records all
- * three on every pass so they can be compared on identical candles, and the
- * history page needs to show them side by side. What the list EXCLUDES is the
- * retired 'ema50-touch' — those rows are still on disk because they are real
- * observations, but their indicator columns were dropped in 0002 and mixing
- * them into a total would average two different strategies together.
+ * Reads filter on this list, and it holds exactly one id, because exactly one
+ * strategy is live. The table still carries rows from four retired rule sets —
+ * 'ema50-touch', whose indicator columns 0002 dropped, and the three
+ * selectable strategies 0004 superseded — and every one of them is a real
+ * observation of a real bar. What they are not is comparable: each measured a
+ * different rule, and two of them placed stops a different way, so pooling
+ * them into one net-pips total would average unlike things and present the
+ * result as this strategy's record.
+ *
+ * So they stay on disk and out of the reads. See db/migrations/0004.
  */
-export const STRATEGIES = ['ichimoku-kijun', 'oanda-pullback', 'oanda-breakout'];
+export const STRATEGIES = ['ichimoku'];
 
 // ── writing ───────────────────────────────────────────────────────────────
 
@@ -328,7 +332,7 @@ export async function recordSignals(rows, env = process.env) {
     insert into signals (
       id, strategy, symbol, timeframe, bar_time, detected_at, source,
       kumo, kijun, tenkan, senkou_a, senkou_b, senkou_ahead_a, senkou_ahead_b,
-      distance_pips, range_pips, cloud_pips, score, checks_total, checks,
+      distance_pips, range_pips, cloud_pips, entry_type, score, checks_total, checks,
       direction, entry, stop_loss, take_profit, stop_pips,
       result, exit_price, exit_at, bars_held, result_pips
     )
@@ -336,7 +340,7 @@ export async function recordSignals(rows, env = process.env) {
       x.id, x.strategy, x.symbol, x.timeframe,
       to_timestamp(x.bar_time), to_timestamp(x.detected_at), x.source,
       x.kumo, x.kijun, x.tenkan, x.senkou_a, x.senkou_b, x.senkou_ahead_a, x.senkou_ahead_b,
-      x.distance_pips, x.range_pips, x.cloud_pips, x.score, x.checks_total, x.checks,
+      x.distance_pips, x.range_pips, x.cloud_pips, x.entry_type, x.score, x.checks_total, x.checks,
       x.direction, x.entry, x.stop_loss, x.take_profit, x.stop_pips,
       x.result, x.exit_price,
       case when x.exit_at is null then null else to_timestamp(x.exit_at) end,
@@ -348,7 +352,8 @@ export async function recordSignals(rows, env = process.env) {
       senkou_a double precision, senkou_b double precision,
       senkou_ahead_a double precision, senkou_ahead_b double precision,
       distance_pips double precision, range_pips double precision,
-      cloud_pips double precision, score smallint, checks_total smallint, checks jsonb,
+      cloud_pips double precision, entry_type text,
+      score smallint, checks_total smallint, checks jsonb,
       direction text, entry double precision, stop_loss double precision,
       take_profit double precision, stop_pips double precision,
       result text, exit_price double precision, exit_at double precision,
@@ -404,11 +409,10 @@ export async function closeTrade({ id, result, exitPrice, exitAt, barsHeld, resu
 /**
  * Newest first, for the history page. `symbol` null means every pair.
  *
- * `strategy` has a default but is not optional in spirit: the table holds
- * rows from the retired EMA50-touch strategy, whose indicator columns 0002
- * dropped. Returning them alongside Ichimoku rows would put nulls in every
- * Ichimoku column and invite the page to read them as "Ichimoku had nothing
- * to say" rather than "this is a different strategy".
+ * `strategies` has a default but is not optional in spirit: the table holds
+ * rows from four retired rule sets, and returning them alongside live ones
+ * would invite the page to read a missing column as "the system had nothing
+ * to say" rather than "this is a different strategy". See STRATEGIES.
  */
 export async function recentSignals(
   { limit = 200, symbol = null, strategies = STRATEGIES } = {},
@@ -422,7 +426,7 @@ export async function recentSignals(
            extract(epoch from detected_at)::double precision as detected_at,
            source, kumo, kijun, tenkan, senkou_a, senkou_b,
            senkou_ahead_a, senkou_ahead_b, distance_pips, range_pips, cloud_pips,
-           score, checks_total, checks,
+           entry_type, score, checks_total, checks,
            direction, entry, stop_loss, take_profit, stop_pips,
            result, exit_price,
            extract(epoch from exit_at)::double precision     as exit_at,
@@ -444,7 +448,7 @@ export async function recentSignals(
 export async function signalStats(env = process.env, strategies = STRATEGIES) {
   const q = sql(env);
   return q`
-    select strategy, symbol,
+    select strategy, entry_type, symbol,
            count(*)                                            as total,
            count(*) filter (where result = 'open')              as open,
            count(*) filter (where result = 'tp')                as tp,
@@ -454,8 +458,8 @@ export async function signalStats(env = process.env, strategies = STRATEGIES) {
            avg(stop_pips)   filter (where result in ('tp','sl')) as avg_stop_pips
     from signals
     where strategy = any(${strategies})
-    group by strategy, symbol
-    order by strategy, symbol`;
+    group by strategy, entry_type, symbol
+    order by strategy, entry_type, symbol`;
 }
 
 // ── run log ───────────────────────────────────────────────────────────────

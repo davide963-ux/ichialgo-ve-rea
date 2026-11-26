@@ -1,17 +1,17 @@
 import { formatNumber, formatPrice } from '../lib/format';
 import type { IchimokuSeries } from '../lib/indicators';
 import type { Candle } from '../services/marketData';
-import { detectorFor, type IchimokuSignal } from '../services/strategy';
+import type { IchimokuSignal } from '../services/strategy';
 import { KumoGlyph } from './KumoMark';
 
 /**
- * Why one signal fired, in the words of the strategy that fired it.
+ * Why one signal fired, in the words of the entry that fired it.
  *
- * This panel knows nothing about Ichimoku's checks. It renders whatever
- * `signal.checks` contains, which is what lets the same component explain our
- * four-of-four gate and OANDA's quite different rules without a branch — and
- * what stops the UI quietly describing one strategy's conditions while
- * showing another's numbers.
+ * This panel knows nothing about the conditions. It renders whatever
+ * `signal.checks` contains, which is what lets one component explain both of
+ * the system's entries — a breakout and a pullback have different conditions
+ * and different counts — without a branch, and what stops the UI describing
+ * one entry's rules while showing the other's numbers.
  *
  * Optional checks are marked. OANDA's cloud-thickness grade is one: a break
  * through a thin cloud is still a break, "just a weaker one", so it changes
@@ -27,7 +27,6 @@ export function IchimokuPanel({
   candles: Candle[];
 }) {
   const i = candles.length - 1;
-  const detector = detectorFor(signal.strategy);
 
   return (
     <div className="panel-body plan-card">
@@ -37,8 +36,8 @@ export function IchimokuPanel({
           {signal.score}/{signal.checksTotal}
         </span>
         <span className="panel-sub">
-          {detector.name} · rules by {detector.source}. Every check marked required passed, or this signal
-          would not exist.
+          {signal.entryType === 'breakout' ? 'Kumo breakout' : 'Tenkan/Kijun pullback'} — rules by OANDA. Every
+          check marked required passed, or this signal would not exist.
         </span>
       </div>
 

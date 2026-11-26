@@ -55,6 +55,8 @@ export interface StoredSignal {
   stop_loss: number | null;
   take_profit: number | null;
   stop_pips: number | null;
+  /** Which entry fired: 'breakout' or 'pullback'. Null on retired rows. */
+  entry_type: string | null;
   /**
    * 'open' while price has decided nothing; 'expired' when the entry bar
    * scrolled out of the candle window before it did.
@@ -74,6 +76,17 @@ export interface StoredSignal {
 
 export interface SymbolStats {
   strategy: string;
+  /**
+   * Which entry produced these rows: 'breakout' or 'pullback'. Null on rows
+   * from the retired strategies that had only one entry.
+   *
+   * The stats are grouped by it, not merely tagged with it, and that is the
+   * point: the two entries place their stops differently — Kijun for a
+   * pullback, the far cloud edge for a breakout — so the pullback risks
+   * roughly a third of what the breakout does. A net-pips figure that pooled
+   * them would be adding a 12-pip bet to a 40-pip bet and reporting the sum.
+   */
+  entry_type: string | null;
   symbol: string;
   total: number;
   open: number;
@@ -129,6 +142,7 @@ const toSignal = (r: Record<string, unknown>): StoredSignal =>
 
 const toStats = (r: Record<string, unknown>): SymbolStats => ({
   strategy: String(r.strategy),
+  entry_type: r.entry_type == null ? null : String(r.entry_type),
   symbol: String(r.symbol),
   total: n(r.total) ?? 0,
   open: n(r.open) ?? 0,

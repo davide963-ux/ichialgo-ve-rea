@@ -9,15 +9,21 @@
  * prices, and about the plan never inventing a level of its own.
  */
 import { describe, expect, it } from 'vitest';
-import { ICHIMOKU_SIGNAL_CHECKS, ICHIMOKU_STRATEGY } from '../../config/ichimokuStrategy';
+import { ICHIMOKU } from '../../config/ichimokuStrategy';
+
 import { calculatorLink, planFromSignal, ticketLevels } from './tradePlan';
 import type { IchimokuSignal } from './types';
 
 const ACCOUNT = { balance: 10_000, riskPct: 1 };
 const PIP = 0.0001;
 
-/** Four required checks, all passing — what a clean signal looks like. */
-const CLEAN_CHECKS = Array.from({ length: ICHIMOKU_SIGNAL_CHECKS }, (_, i) => ({
+/**
+ * A clean signal's checks. The COUNT is deliberately not imported from the
+ * config: a pullback and a breakout do not require the same number of
+ * conditions, so there is no single "number of checks" any more, and a test
+ * that pretended there was would be asserting against the wrong thing.
+ */
+const CLEAN_CHECKS = Array.from({ length: 5 }, (_, i) => ({
   label: `check ${i + 1}`,
   pass: true as boolean | null,
   detail: 'ok',
@@ -27,8 +33,8 @@ const CLEAN_CHECKS = Array.from({ length: ICHIMOKU_SIGNAL_CHECKS }, (_, i) => ({
 /** A long on EUR/USD: entry 1.0850, 30-pip stop, 60-pip target. */
 const signal = (over: Partial<IchimokuSignal> = {}): IchimokuSignal => {
   const base: IchimokuSignal = {
-    id: 'ichimoku-kijun|EUR/USD|30M|1000',
-    strategy: 'ichimoku-kijun',
+    id: 'ichimoku|EUR/USD|30M|1000',
+    strategy: 'ichimoku',
     symbol: 'EUR/USD',
     timeframe: '30M',
     barTime: 1000,
@@ -41,6 +47,8 @@ const signal = (over: Partial<IchimokuSignal> = {}): IchimokuSignal => {
     target: 1.085 + 60 * PIP,
     stopPips: 30,
     rangePips: 75,
+    entryType: 'pullback',
+    stopLevel: 1.0848,
     tenkan: 1.0855,
     kijun: 1.0848,
     senkouA: 1.082,
@@ -50,8 +58,8 @@ const signal = (over: Partial<IchimokuSignal> = {}): IchimokuSignal => {
     distancePips: 2,
     cloudPips: 10,
     checks: CLEAN_CHECKS,
-    score: ICHIMOKU_SIGNAL_CHECKS,
-    checksTotal: ICHIMOKU_SIGNAL_CHECKS,
+    score: CLEAN_CHECKS.length,
+    checksTotal: CLEAN_CHECKS.length,
   };
   return { ...base, ...over };
 };
@@ -88,7 +96,7 @@ describe('planFromSignal', () => {
     expect(plan.entry).toBe(1.085);
     expect(plan.stopPips).toBeCloseTo(30, 6);
     expect(plan.targetPips).toBeCloseTo(60, 6);
-    expect(plan.riskReward).toBeCloseTo(ICHIMOKU_STRATEGY.rewardMultiple, 6);
+    expect(plan.riskReward).toBeCloseTo(ICHIMOKU.rewardMultiple, 6);
     expect(plan.rangePips).toBe(75);
   });
 
@@ -173,8 +181,8 @@ describe('planFromSignal', () => {
    * presenting a 3/4 setup as identical to a 4/4 one.
    */
   it('names a non-unanimous score first, and still sizes the trade', () => {
-    const plan = planFromSignal(signal({ score: ICHIMOKU_SIGNAL_CHECKS - 1 }), ACCOUNT)!;
-    expect(plan.warnings[0]).toMatch(new RegExp(`of ${ICHIMOKU_SIGNAL_CHECKS} checks passed`));
+    const plan = planFromSignal(signal({ score: CLEAN_CHECKS.length - 1 }), ACCOUNT)!;
+    expect(plan.warnings[0]).toMatch(new RegExp(`of ${CLEAN_CHECKS.length} checks passed`));
     expect(plan.lots).not.toBeNull();
   });
 
@@ -186,7 +194,7 @@ describe('planFromSignal', () => {
    */
   it('says so when a check could not be answered, rather than passing it silently', () => {
     const unknown = CLEAN_CHECKS.map((c, i) => (i === 2 ? { ...c, pass: null, detail: 'fewer than 26 bars' } : c));
-    const plan = planFromSignal(signal({ checks: unknown, score: ICHIMOKU_SIGNAL_CHECKS }), ACCOUNT)!;
+    const plan = planFromSignal(signal({ checks: unknown, score: CLEAN_CHECKS.length }), ACCOUNT)!;
     expect(plan.warnings.join(' ')).toMatch(/could not be checked/);
   });
 

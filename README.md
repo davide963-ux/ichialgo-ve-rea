@@ -13,7 +13,7 @@
 | Charts | TradingView Lightweight Charts v5 (open-source charting library) |
 | Build | Vite 8 |
 | Server | `server/api.mjs` read-only market-data proxy (used by dev, preview and `npm start`), with Twelve Data multi-key failover |
-| Strategies | Three, selectable: our gated Kijun pullback, plus OANDA's published Tenkan/Kijun pullback and Kumo breakout, implemented to the letter and measured side by side. No EMA, no ATR in any of them. See [§4](#4-strategy) |
+| Strategy | One: the Ichimoku system from OANDA's published guide — a Kumo breakout and a Tenkan/Kijun pullback, Chikou validating both, stops on Kijun and the cloud edge. No EMA, no ATR, no other indicator; a test fails the build if one appears. See [§4](#4-strategies) |
 | Tests | Vitest — 425 across the strategy, the backtest, indicators, the proxy, the key pool, the response cache, the Yahoo candle route, the scanner, the database and the calculator |
 | Data | Twelve Data, behind a provider interface |
 
@@ -261,23 +261,20 @@ src/
     providers/YahooCandleRouter  Yahoo first, Twelve Data on refusal (+breaker)
     index.ts                 singleton + public exports
   services/strategy/
-    detectors.ts             the three strategies behind one interface — the seam
-                             the engine, backtest and scanner all run through
-    ichimokuBars.ts          the Ichimoku picture at one bar, shared by all three
-                             so they cannot disagree about what a bar looked like
-    ichimokuSignal.ts        OURS: Kumo direction, Kijun band, 4-of-4 gate, and
-                             the live-quote path
-    oandaPullback.ts         OANDA's Tenkan/Kijun trend continuation pullback
-    oandaBreakout.ts         OANDA's Kumo breakout + their Chikou filter
+    ichimokuSystem.ts        THE strategy: both entries, one pass, one state
+                             machine per pair — breakout and pullback cannot stack
+    ichimokuBars.ts          the Ichimoku picture at one bar, so both entries
+                             cannot disagree about what a bar looked like
     cloudZones.ts            OANDA's future support/resistance zones (no signals)
-    signalTicket.ts          the shared exit — identical for every strategy, so
-                             a comparison measures entries and not exits
+    signalTicket.ts          the ticket: structural stop in, rounded levels out
     tradePlan.ts             rounds the detector's levels and sizes the position
-    StrategyEngine.ts        scans pairs, watches quotes between scans
+    StrategyEngine.ts        scans pairs on bar boundaries (no live-quote path:
+                             both entries need a CLOSE, which a tick cannot give)
     chartMarkers.ts          signals → arrows, so the chart stays strategy-free
     backtest.ts              walk-forward replay: exits, pips, metrics, intervals
     serverEntry.ts           what esbuild bundles for the scanner — one implementation
-    realData.test.ts         the detectors and the backtest over 30,000 real bars
+    ichimokuSystem.test.ts   the RULES, condition by condition, vs the article
+    realData.test.ts         breadth + integration over 30,000 real bars
   state/signalStore.ts       the signal log (useSyncExternalStore)
   state/marketStore.ts       immutable external store (useSyncExternalStore)
   state/accountStore.ts      balance + risk %, persisted; shared by plans and calculator
@@ -293,7 +290,8 @@ src/
   components/chart/          kumoPrimitive (the Kumo fill)
   pages/                     Dashboard, PairPage, Backtest, History, CalculatorPage
 db/migrations/               0001 the signals table, 0002 retires the EMA columns,
-                             0003 makes it hold three strategies' different checks
+                             0003 stores each signal's own checks as jsonb,
+                             0004 adds entry_type and keeps retired rows separate
 fixtures/market/             real OANDA candles, for validating the strategy against
 server/
   api.mjs                    read-only GET allowlist + Twelve Data key failover
@@ -387,19 +385,18 @@ tooltip says so. There is no bid/ask on the REST quote, so those columns show `�
 
 ## 4. Strategies
 
-**Pure Ichimoku, three ways.** The default is ours: price clear of the Kumo,
-pulling back to Kijun-sen, with four Ichimoku confirmations as a gate. The
-other two are OANDA's published rules, implemented to the letter so they can
-be measured against it. No moving average, no ATR, no other indicator in any
-of them — a test reads every strategy file and fails if one appears.
+**One strategy: the Ichimoku system from OANDA's published guide.** Not three,
+and that correction is the whole history of this section. The article —
+*Ichimoku Cloud trading guide: key strategies* — names four approaches, and an
+earlier version of this code made each a selectable strategy so they could be
+scored against each other. That misread the source. The article presents them
+as parts of one method that **work together**, not as rivals, so splitting
+them measured the components against each other instead of running the thing
+it describes. There is now one detector, two entries, and no selector.
 
-Pick one with the chips on the scanner or the backtest page; it lives in the
-URL (`?s=oanda-breakout`), so a particular view is linkable and the pages
-cannot disagree about which rules are live. The server-side scanner records
-**all three on every pass**, so the history compares them on identical
-candles rather than on whichever rule someone had selected.
-
-The sections below describe OURS. OANDA's are further down.
+No moving average, no ATR, no RSI, no other indicator anywhere in it — a test
+reads every strategy file, strips the comments and fails the build if `ema` or
+`atr` appears in any of them.
 
 It runs **in the browser**, off the candles the charts already hold. An
 earlier design had a server-side scanner writing its opinion to Postgres while
@@ -409,106 +406,155 @@ compiled module* (`src/services/strategy/serverEntry.ts`).
 
 ```mermaid
 flowchart TD
-    C["candles the chart already has<br/>(no extra request)"] --> I["Ichimoku: Tenkan, Kijun,<br/>Kumo, Chikou + 26-bar range"]
-    I --> K{"price clear<br/>of the Kumo?"}
-    K -- "inside" --> W["no trend to pull back into"]
-    K -- "above / below" --> D["direction = the cloud's"]
-    D --> B{"bar's range enters<br/>the Kijun band, and armed?"}
-    B -- no --> W
-    B -- yes --> G{"4 of 4<br/>confirmations?"}
-    G -- no --> X["no signal at all"]
-    G -- yes --> T["signal"]
-    T --> P["ticket: entry at the close,<br/>stop 0.4 × range, target 2× risk"]
-    T --> R["disarm until a close leaves<br/>the band by 1.5 bands"]
-    R --> W
+    C["candles the chart already has<br/>(no extra request)"] --> I["Ichimoku: Tenkan, Kijun, Kumo,<br/>Chikou, the cloud 26 ahead"]
+    I --> K{"where did<br/>the close land?"}
+    K -- "inside the Kumo" --> W["no trade: no trend to join"]
+    K -- "crossed out of it<br/>this bar" --> ARM["arm a BREAKOUT<br/>(waiting for the span twist)"]
+    K -- "already clear of it" --> TCH{"bar touched<br/>Tenkan or Kijun?"}
+    TCH -- yes --> ARM2["arm a PULLBACK<br/>(waiting for a close through Kijun)"]
+    ARM --> TW{"Span A crosses B<br/>in the trade's direction?"}
+    TW -- "within 52 bars" --> CH1{"Chikou clear of the<br/>close 26 bars back?"}
+    TW -- "never" --> EXP["setup expires"]
+    CH1 -- yes --> SB["BREAKOUT signal<br/>stop beyond the FAR cloud edge"]
+    ARM2 --> CL{"close through Kijun<br/>on a candle of the<br/>trade's colour?"}
+    CL -- "within 26 bars" --> CH2{"Chikou clear?"}
+    CL -- "never" --> EXP
+    CH2 -- yes --> SP["PULLBACK signal<br/>stop just beyond Kijun"]
+    SB --> T["ticket: entry at the close,<br/>target 2× the risk"]
+    SP --> T
 ```
 
 ### What decides what
 
 | | |
 |---|---|
-| **Direction** | the Kumo. Above the cloud is a long, below is a short |
-| **Trigger** | the bar's range entering a band around Kijun-sen |
-| **Distance** | the 26-bar high-low range |
-| **Gate** | four Ichimoku confirmations, all required |
+| **Direction** | the Kumo. Above the cloud is a long, below is a short — never the side price approached a line from |
+| **Entry A** | price breaks out of the cloud, then the cloud 26 ahead twists to agree |
+| **Entry B** | price already clear of the cloud pulls back to a line, then closes back through Kijun |
+| **Filter on both** | Chikou against the close 26 bars back |
+| **Stop** | the structure the entry is based on: Kijun, or the far cloud edge |
+| **Target** | 2× the risk — **ours**, the article names none |
 
-The direction rule is the correction this strategy exists to make. The old one
-took the side price *approached from*, so a pullback inside a downtrend became
-a long. Here the cloud decides and nothing else can — asserted directly
-against the recomputed cloud in `realData.test.ts`, not against the field the
-detector wrote.
+One position per pair, so the two entries do not stack.
 
-### Where the distance comes from, with no ATR
+### The two entries, in the article's words
 
-Removing the ATR leaves a strategy with no sense of distance: how wide is a
-"touch", how far is a stop. Ichimoku already contains one, because **Kijun-sen
-is the midpoint of the 26-bar high-low range**:
+**Tenkan/Kijun trend continuation pullback:**
 
-```
-Kijun = (highest high + lowest low) / 2     over 26 bars
-```
+> Price above the Cloud (green coloured).
+> - Tenkan-sen (Conversion line) is above Kijun-sen (Base line).
+> - Pullback touches or dips slightly below Tenkan-sen (Conversion line) or Kijun-sen (Base line).
+> - Price closes above Kijun-sen (Base line) with a bullish candlestick.
 
-So `highest high − lowest low` over that same window is a volatility measure
-that needs no new indicator and no new parameter. It is the Kijun's own width.
-The touch band is `0.08 ×` it, and the stop is `0.4 ×` it.
+**Kumo breakout:** *"Price breaks above the cloud. Cloud is turning bullish
+(Span A crossing above span B)."*
 
-### The gate
+Both are **two-stage**, and that is not a detail. The touch and the confirming
+close are different events on different bars — in the article's USD/JPY
+example the dip is in the morning and the confirming hourly close at 1pm — and
+the span twist arrives after the break in both of its breakout examples, three
+hours later on AUD/USD and twenty-six on NZD/USD. A single-bar test of either
+rule would reject the article's own illustrations, so each is a state machine
+that arms on the first event and waits for the second.
 
-Four checks, each read in the direction the cloud set, so the same bar scores
-differently for a long and a short:
+**Chikou** is compared with *"its prior 26-period price"* — that bar's
+**close**, not its high or low. A retired strategy here used the stricter
+whole-range test; that is a different rule and it is gone.
 
-1. the cloud **in effect** agrees (Senkou A vs B over this bar)
-2. the cloud **26 bars ahead** agrees — known today, and what the trend walks into
-3. **Chikou free** — the lagging line clear of the candles 26 bars back
-4. **Tenkan** on the trade's side of Kijun
+### Chikou on both entries: a reading, and a measured one
 
-Below the threshold **no signal exists**. This is the other correction: the old
-strategy logged every touch and annotated it with an Ichimoku score the rule
-then ignored, with a dashboard filter offered as a consolation. A score that
-decides nothing is a decoration.
+The article attaches the Chikou filter to the breakout, and separately says
+the approaches work together. Whether it also gates the pullback is therefore
+a *reading* rather than a given, and it is the one real open question in the
+strategy — so it is a config flag, `chikouFiltersPullback`, measured both ways
+through the same harness. Turning it off admits ~8 more trades and moves the
+average by 0.2 pips: it decides very little, which is itself worth knowing.
 
-One signal **per pullback, not per bar**: after one fires the pair is disarmed
-until a close leaves the band by 1.5×. Without that, a market riding its Kijun
-fires on every bar.
+### The stops are structural, and the article does point at them
 
-### Two ways a signal arrives
+An earlier draft of this README said the article gives nothing about stops.
+That was wrong, and the correction changed the code. It calls Kijun-sen
+*"dynamic support and resistance"* and the Kumo *"a potential future support
+zone"* — which is exactly where a stop belongs:
 
-`analyseIchimoku` walks closed bars. `checkLiveTouch` takes the band the
-newest bar left behind plus one quote, and fires the moment price reaches the
-zone between scans — for no extra provider credits, since the quote stream is
-already running. Both produce the same shape, score against the same gate, and
-**share an id per bar**, so the closed bar's version replaces the live one
-rather than adding a second row.
+| Entry | Stop | Why there |
+|---|---|---|
+| Pullback | just beyond **Kijun-sen** | the trade's premise is that the base line holds; if it does not, the reason for the trade is gone |
+| Breakout | just beyond the **far cloud edge** | the trade's premise is that price has left the zone — a stop inside the cloud would be taken out by the cloud it just crossed |
 
-### The ticket
+"Just beyond" is `0.1 × the 26-bar range`, and the buffer is ours. The range
+needs no new indicator because **Kijun-sen is the midpoint of the 26-bar
+high-low range**, so that window's width is a volatility measure Ichimoku
+already contains.
 
-| | |
-|---|---|
-| Entry | the close of the pullback bar — where a market order fills |
-| Stop | `0.4 × the 26-bar range` |
-| Target | `2 ×` the stop distance |
-| Size | from `lib/positionSize.ts` — the same tested math the calculator uses |
+This makes the two entries risk very different amounts — the pullback averages
+a 44-pip stop against the breakout's 49 — which is why every result below is
+split by entry and the history page groups by it. Pooling them would add
+unlike bets and report the sum.
 
-`tradePlan.ts` computes none of these. The detector puts them on the signal
-and this layer only rounds them to prices a broker accepts and sizes the
-position — so the ticket and the backtest cannot disagree about what was
-risked. Rounding happens **before** sizing: sizing off a raw float once made
-the plan quote 0.98 lots while the calculator it prefilled said 0.99, because
-nobody can place an order at 1.1015183.
+### What is ours, stated plainly
+
+The article specifies entries and points at the structures a stop belongs on.
+Everything else is a choice, and these are the choices:
+
+| Ours | Value | What the article says |
+|---|---|---|
+| Target | 2× the risk | nothing at all |
+| Stop buffer | 0.1 × the 26-bar range | names the structure, not a distance |
+| Breakout wait | 52 bars for the twist | no limit |
+| Pullback wait | 26 bars for the close | no limit |
+| Chikou on the pullback | on | attaches it to the breakout only |
+
+The two waiting windows need to exist — a setup cannot stay armed forever —
+and the measured behaviour of each is in the tests rather than assumed:
+
+- **The confirmation window never binds.** The close that confirms a pullback
+  arrives on the *very next bar* in 537 of 560 cases, and the longest wait on
+  any pair is 6 bars. At 26 it is a guard against a stale setup, not a tuning
+  knob, so the pullback rule is effectively parameter-free. `ichimokuSystem.test.ts`
+  pins that, so if a change ever makes the value matter it shows up as a test
+  failure rather than a mystery in the backtest.
+- **The twist window trades one entry for the other.** A breakout waiting for
+  its twist holds the pair, so the pullback cannot arm underneath it.
+  Shortening the wait releases the pair and a pullback fires instead — which
+  is why tightening it *adds* a handful of signals while removing more. Also
+  asserted, because it reads like a bug.
+
+### 78 bars, not 104
+
+The detector reports nothing until it has 78 bars: Senkou B's 52 plus the
+26-bar displacement, so a cloud is actually **in effect** at the bar being
+judged. That number was 104 until this change, because the 26-bar range window
+was *added* on top rather than taken as a maximum — and by bar 78 a 26-bar
+range has been available for fifty bars. The extra 26 bought nothing and cost
+something real: a signal at bar 78, which a 5000-bar run reports quite
+happily, vanished entirely from an 80-bar run of the same candles. A guard
+that rejects a series the detector could analyse is not conservative, it is
+inconsistent, and it made truncation behave differently from the real thing
+for reasons unrelated to causality. The test now asserts the guard equals the
+first bar the detector will answer for.
 
 ### Validated against real candles
 
-`src/services/strategy/realData.test.ts` runs the detector over
-`fixtures/market/` — 5000 real 1H OANDA bars per pair — and asserts what must
-hold on any real series: it fires sometimes but nowhere near every bar, every
-direction matches the cloud recomputed from the bar, every signal's bar
-actually reached the Kijun band, nothing below the gate is emitted, and **it
-reads no bar it could not have seen**.
+Two files, deliberately split:
 
-That last one is the test everything else rests on. A strategy that peeks at
-later bars prints an edge that does not exist, and nothing downstream can
-detect it — the backtest, the metrics and the confidence interval are all
-computed faithfully from a fiction.
+- **`ichimokuSystem.test.ts`** tests the **rules**. Each condition OANDA
+  states is checked against 5000 real bars on three pairs: no signal inside
+  the cloud, Chikou against the prior 26-period close on every signal, the
+  twist present on every breakout, a real pullback behind every pullback, the
+  break a *transition* rather than a trending state, each stop on the correct
+  structure. Plus the purity test over every strategy file.
+- **`realData.test.ts`** tests **breadth and integration**: the same detector
+  over all six fixtures, both entries firing on every pair, stops sized like
+  real price distances (the check that catches a pip size applied to the wrong
+  quote currency, which on a yen cross is a factor of 100), and the
+  backtest's causality on top of the detector's.
+
+Both assert **it reads no bar it could not have seen**. That is the test
+everything else rests on: a strategy that peeks at later bars prints an edge
+that does not exist, and nothing downstream can detect it — the backtest, the
+metrics and the confidence interval are all computed faithfully from a
+fiction.
 
 ### The backtest
 
@@ -522,62 +568,81 @@ detector and the same `ticketLevels()` the live trade-plan card shows.
 | **Same-bar ambiguity → the stop wins** | OHLC cannot order the two, and the alternative invents wins |
 | **A trade still open at the end is not counted** | Assuming a result either way is how a losing run gets hidden |
 
-The first rule is new, and it is the honest version rather than a kinder one.
-Entry used to be a resting limit at the EMA, which meant deciding whether each
-touch bar had actually reached the line: a third had not, and filling them
-anyway was worth **+0.23R a trade across 1105 trades** of pure fiction (on
-GBP/JPY the fillable trades totalled −9R while the unfillable ones "made"
-+34R, with entries up to 4.8 pips better than the bar's own extreme). A market
-order at the close cannot be flattered that way.
+The first rule is the honest version rather than a kinder one. Entry used to be
+a resting limit at an EMA, which meant deciding whether each touch bar had
+actually reached the line: a third had not, and filling them anyway was worth
+**+0.23R a trade across 1105 trades** of pure fiction (on GBP/JPY the fillable
+trades totalled −9R while the unfillable ones "made" +34R, with entries up to
+4.8 pips better than the bar's own extreme). A market order at the close
+cannot be flattered that way.
 
-The signal count and the trade count are far apart, and the page says so:
-**one position at a time**, so most signals are crowded out by a trade already
-running. Across the five traded pairs, 1080 signals produce 369 trades.
-
-Costs default to **1 pip**, charged against the price. The stop averages 31
-pips, so the spread is about 3% of the bet.
+Signal count and trade count are far apart, and the page says so: **one
+position at a time**, so most signals are crowded out by a trade already
+running. Across six pairs, 4344 signals produce 466 trades — 89% crowded out,
+because structural stops are wide and a 2:1 target on a 46-pip stop takes a
+long time to resolve.
 
 ### What it says, at 1 pip of cost
 
-Five pairs, 5000 1H bars each, 3 Dec 2025 – 23 Sep 2026.
+Six pairs, 5000 1H bars each, 3 Dec 2025 – 23 Sep 2026. **These numbers are
+all new**: structural stops replaced range-sized ones, which changes every
+trade in the book.
 
-| Gate | Trades | Win | Average | 95% interval | PF |
+| Entry | Trades | Win | Average | 95% interval | Avg stop |
 |---|---|---|---|---|---|
-| 1/4 | 619 | 34.6% | +0.33 pips | −3.88 … +4.54 | 1.02 |
-| 2/4 | 603 | 35.0% | +1.15 pips | −3.15 … +5.45 | 1.05 |
-| 3/4 | 543 | 35.4% | +1.43 pips | −3.17 … +6.02 | 1.07 |
-| **4/4 (live)** | **369** | **36.9%** | **+3.89 pips** | **−1.63 … +9.40** | **1.20** |
+| Pullback | 252 | 29.8% | −4.42 pips | −14.17 … +5.33 | 44.0 pips |
+| Kumo breakout | 209 | 34.0% | −10.23 pips | −20.76 … +0.30 | 48.6 pips |
+| **Both (live)** | **461** | **31.7%** | **−7.05 pips** | **−14.21 … +0.10** | **46.1 pips** |
 
-**The interval spans zero at every setting, so none of this is a
-profitability claim.** What the table shows is that the gate moves the number
-in one direction, which is a property of the rule rather than of one slice.
+A 2:1 target needs **33.3%** to break even. It gets 31.7%.
 
-Split by time it gets worse, not better:
+These are all **six** checked-in fixtures. `/backtest` offers only the **five**
+pairs the app actually trades — GBP/JPY has candles but is not in the scanner's
+list — and on those five it reads **−5.15 pips over 407 trades**. The two do
+not disagree: GBP/JPY is the worst pair in the set at −21.4 pips a trade, and
+including it is the more conservative figure, which is why this table does.
 
-| Period | Trades | Win | Average | 95% interval |
-|---|---|---|---|---|
-| First 60% | 236 | 35.2% | +0.66 pips | −5.80 … +7.12 |
-| Last 40% | 127 | 40.9% | +10.68 pips | +0.16 … +21.19 |
+The interval still spans zero, so this is not a proof of a losing strategy
+either — but the point estimate is a loss, and unlike the previous version of
+this section it does not improve under scrutiny:
 
-Every variant tested — including rules with no edge at all — improves by a
-similar amount across that boundary, so the second period was simply kinder
-rather than the rule being validated out of sample. **The honest summary is
-"around break-even on hard data, good on easy data".**
+| Period | Trades | Win | Average |
+|---|---|---|---|
+| First half | 323 | 31.9% | −6.95 pips |
+| Second half | 138 | 31.2% | −7.29 pips |
 
-The gate's evidence is narrower than the first table suggests for the same
-reason: on the hard first 60% it turns −4.00 into +0.66, but on the kind last
-40% it is a wash and slightly negative (+11.26 at 2/4, +10.68 at 4/4). Four is
-chosen for robustness in poor conditions, not for more upside in good ones.
+**The sign holds in both halves.** The earlier strategy's "good on easy data"
+pattern is absent here; both periods lose about the same.
 
-And it is not uniform across pairs:
+#### Is it the entries or our exit?
 
-| Pair | Signals | Trades | Win | Average | Total |
-|---|---|---|---|---|---|
-| EUR/USD | 208 | 70 | 40.0% | +7.05 | +494 |
-| GBP/USD | 178 | 74 | 36.5% | +2.06 | +153 |
-| USD/JPY | 227 | 75 | 38.7% | +7.94 | +596 |
-| AUD/USD | 235 | 78 | 25.6% | **−5.02** | **−391** |
-| USD/CAD | 232 | 72 | 44.4% | +8.11 | +584 |
+Worth separating, because the exit is entirely ours and could be the whole
+problem. So: forward return after every signal, with **no stop, no target and
+no crowding** — the article's rules on their own, 7× the sample because
+nothing is crowded out.
+
+| Entry | n | 1 bar | 4 bars | 12 bars | 26 bars | 52 bars | 104 bars |
+|---|---|---|---|---|---|---|---|
+| Pullback | 3337 | +0.12 | +0.29 | −0.30 | −1.17 | −0.01 | +0.41 |
+| Kumo breakout | 1005 | −0.35 | +0.08 | −0.32 | −0.21 | −4.83 | −8.72 |
+
+At 4 bars the pullback's 95% interval is **[−0.53, +1.10] pips** and the
+breakout's **[−1.50, +1.66]**. Both are indistinguishable from zero, and the
+upper bound on the better of them is roughly one spread.
+
+**So it is not the exit.** The entries carry no detectable directional edge on
+this data, and no stop or target can manufacture one. Sweeping the reward
+multiple confirms it — the edge over break-even is within ±0.5 points at
+R=0.5, 1 and 1.5, and negative at 2, 3 and 5 — and sweeping the stop buffer
+only makes it worse as stops widen.
+
+**None of this says OANDA's rules are bad.** It says that on 1H majors over
+nine months, implemented as faithfully as I can read the article, they did not
+produce a measurable edge in this harness. The article is explicit that the
+Cloud *"performs poorly in tight, choppy, or scalping conditions"*, and hourly
+FX majors spend a great deal of time exactly there. It also recommends pairing
+the Cloud with RSI or Stochastic, which is not implemented because it
+contradicts the pure-Ichimoku rule and would fail the purity test.
 
 **What this does not prove**, stated on the page itself:
 
@@ -587,103 +652,39 @@ And it is not uniform across pairs:
   for the timeframe actually traded.
 - **One period.** Dec 2025 – Sep 2026 is nine months of one regime.
 - **The pairs are correlated.** EUR/USD, GBP/USD and AUD/USD are largely the
-  same dollar trade, so 369 trades are worth fewer than 369 independent
+  same dollar trade, so 461 trades are worth fewer than 461 independent
   observations and the interval is narrower than it should be.
-- **It is all in-sample.** Every setting was chosen after seeing these candles.
-- **Costs are a flat estimate.** Real spreads widen at the open and on news,
-  exactly when Kijun tends to get retested. Swap is not modelled.
-
-### OANDA's published rules, implemented alongside
-
-Two of the three strategies are not ours. They are the entry rules from
-OANDA's *Ichimoku Cloud trading guide: key strategies*, implemented to the
-letter and measured on the same candles through the same harness, so the
-comparison is of ENTRIES and nothing else.
-
-The article names four approaches. Three are entry rules; the fourth is a way
-of reading the chart and produces no signals, so it is a read-out on the pair
-page rather than a detector.
-
-| OANDA's rule | Where it lives |
-|---|---|
-| **Kumo breakout** | `oandaBreakout.ts` — a detector |
-| **Tenkan/Kijun trend continuation pullback** | `oandaPullback.ts` — a detector |
-| **Chikou span confirmation filter** | inside `oandaBreakout.ts`, which is where their article attaches it |
-| **Future support and resistance zones** | `cloudZones.ts` — a read-out, no signals |
-
-**Tenkan/Kijun trend continuation pullback**, quoted:
-
-> Price above the Cloud (green coloured).
-> - Tenkan-sen (Conversion line) is above Kijun-sen (Base line).
-> - Pullback touches or dips slightly below Tenkan-sen (Conversion line) or Kijun-sen (Base line).
-> - Price closes above Kijun-sen (Base line) with a bullish candlestick.
-
-Note what is **absent**: the cloud's colour, the forward cloud and Chikou. All
-three gate our strategy and none of them is in theirs. The pullback and the
-confirming close are also different events on different bars — in the
-article's USD/JPY example the dip is in the morning and the confirming hourly
-close at 1pm — so this is a state machine, not a single-bar test.
-
-**Kumo breakout**, quoted: *"Price breaks above the cloud. Cloud is turning
-bullish (Span A crossing above span B)."* The twist is allowed to arrive after
-the break, because in both of the article's own examples it did — three hours
-later on AUD/USD, twenty-six on NZD/USD. Requiring both on one bar would
-reject their own illustrations.
-
-**Chikou** is compared with *"its prior 26-period price"* — that bar's close.
-Ours uses the stricter test of clearing that bar's whole range. They are not
-the same rule, so each strategy keeps its own.
-
-### What the article does not give you
-
-**No stop, no target, no position size — not one sentence.** So the exit is
-ours, and it is deliberately identical for all three: comparing two entry
-rules is only meaningful when the exit is held constant, or the comparison
-quietly measures the exits instead.
-
-The article also closes by suggesting the Cloud be paired with RSI or
-Stochastic. That is not implemented: it contradicts the pure-Ichimoku rule,
-and the purity test covers every strategy file, so it would fail the build.
-
-### All three, measured on the same candles
-
-Five traded pairs, 5000 1H bars each, 3 Dec 2025 – 23 Sep 2026, one pip of
-cost, identical exits.
-
-| Strategy | Signals | Trades | Win | Average | 95% interval | PF |
-|---|---|---|---|---|---|---|
-| **Kijun pullback (ours)** | 1080 | 369 | 36.9% | **+3.89 pips** | −1.63 … +9.40 | 1.20 |
-| Tenkan/Kijun pullback (OANDA) | 3138 | 515 | 35.1% | −0.99 pips | −6.10 … +4.13 | 0.96 |
-| Kumo breakout (OANDA) | 831 | 466 | 33.3% | **−3.47 pips** | −7.58 … +0.64 | 0.84 |
-
-Every interval spans zero, so none of these is a profitability claim — but
-the ordering is consistent, and that is the part worth having. Split by time:
-
-| Strategy | First 60% (hard) | Last 40% (kind) |
-|---|---|---|
-| Kijun pullback (ours) | +0.66 | +10.68 |
-| Tenkan/Kijun pullback | −3.85 | +6.21 |
-| Kumo breakout | −5.08 | −0.94 |
-
-The kind period lifts all three, which is why a single split proves nothing
-about any of them. What survives the split is the **ranking**: ours above
-their pullback above their breakout, in both halves. That is a stronger
-statement than any one average, because the thing that flatters a period
-flatters all three equally.
-
-The breakout loses on four pairs of five and loses badly on GBP/USD
-(−10.02 pips over 103 trades). It is also the entry shape that lost before:
-the TK cross measured on these same fixtures came in at −2.74 pips over 889
-trades, worse the more Ichimoku agreed. Both are momentum entries taken after
-the move has happened.
-
-**None of this says OANDA's rules are bad.** It says that on 1H majors, over
-nine months, with this exit, in a harness where the only variable is the
-entry, they did worse than what was already here. The article is explicit that
-the Cloud "performs poorly in tight, choppy, or scalping conditions", and
-hourly FX majors spend a lot of time exactly there.
+- **89% of signals are crowded out**, so the walk-forward measures a thin
+  slice of the rule. The forward-return table above is the wider test, and it
+  agrees.
+- **Costs are a flat estimate.** Real spreads widen at the open and on news.
+  Swap is not modelled.
 
 ### The strategies that are not here, and why
+
+**Three selectable strategies** existed for exactly one commit. Our gated
+Kijun pullback, OANDA's pullback and OANDA's breakout were each a detector
+behind a common interface, with chips on the scanner and the backtest page to
+pick between them, and the scanner recorded all three on every pass so the
+history could compare them. The measured ordering was consistent and held
+across a time split — ours +3.89 pips a trade, their pullback −0.99, their
+breakout −3.47.
+
+It was still the wrong design, and the numbers were a distraction from that.
+The article those two came from presents its approaches as **one method whose
+parts work together**; running them as rivals measured the parts against each
+other and never ran the method. The Chikou filter is the clearest case — as a
+separate strategy's internal detail it gates a breakout, and as part of one
+system it is a confirmation available to both entries, which is what it now
+is. Collapsing the three into one changed the stops from range-sized to
+structural and made every previous number obsolete, which is why the measured
+results above share no figures with the ones this paragraph quotes.
+
+Their database rows are still on disk under their own strategy ids, and the
+reads filter them out rather than relabelling them (`db/migrations/0004`):
+same entries, different stops, so their recorded outcomes answer a question
+nobody is asking any more.
+
 
 **EMA50 touch** came first: a band around a 50-period EMA sized by ATR, with
 Ichimoku bolted on as a five-check annotation. Measured on these same

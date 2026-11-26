@@ -4,8 +4,8 @@ import { candlesAreDue, mergeSignals, type PairState } from './StrategyEngine';
 import type { IchimokuSignal } from './types';
 
 const signal = (over: Partial<IchimokuSignal> = {}): IchimokuSignal => ({
-  id: 'ichimoku-kijun|EUR/USD|30M|1000',
-  strategy: 'ichimoku-kijun',
+  id: 'ichimoku|EUR/USD|30M|1000',
+  strategy: 'ichimoku',
   symbol: 'EUR/USD',
   timeframe: '30M',
   barTime: 1000,
@@ -18,6 +18,8 @@ const signal = (over: Partial<IchimokuSignal> = {}): IchimokuSignal => ({
   target: 1.106,
   stopPips: 30,
   rangePips: 75,
+  entryType: 'pullback',
+  stopLevel: 1.0998,
   tenkan: 1.1005,
   kijun: 1.0998,
   senkouA: 1.097,

@@ -1,22 +1,19 @@
 /**
- * Assembling a signal from a strategy's verdict.
+ * Assembling a signal once a detector has decided one exists.
  *
- * WHY EVERY STRATEGY GETS THE SAME EXIT
- * ─────────────────────────────────────
- * OANDA's article specifies entries in detail and says nothing whatever about
- * stops, targets or sizing. So the exit here is ours, and it is deliberately
- * IDENTICAL for all three strategies: comparing two entry rules is only
- * meaningful when the exit is held constant, or the comparison quietly
- * measures the exits instead. If their pullback beats ours on this page, it
- * beat it on the entry, which is the only thing either author specified.
+ * WHY THE STOP IS PASSED IN RATHER THAN COMPUTED HERE
+ * ───────────────────────────────────────────────────
+ * It used to be computed here, as a fixed fraction of the 26-bar range, and
+ * that was a number bolted onto the strategy rather than a consequence of it.
+ * The article names the support and resistance twice — Kijun "acts as dynamic
+ * support/resistance", the Kumo is "a potential future support zone" — so the
+ * stop belongs beyond whichever of those the entry relied on, which only the
+ * detector knows. See `stopFor` in ichimokuSystem.ts.
  *
- *   stop   = entry -/+ stopRange * the 26-bar range
- *   target = entry +/- rewardMultiple * the stop distance
- *
- * The range is Ichimoku's own: Kijun-sen is its midpoint, so sizing from it
- * introduces no indicator the strategies do not already contain.
+ * What is left here is assembly: the id, the lines, the pip conversions and
+ * the score. No decision.
  */
-import { TICKET, type TicketConfig } from '../../config/ichimokuStrategy';
+import type { EntryType } from '../../config/ichimokuStrategy';
 import type { Timeframe } from '../../config/timeframes';
 import type { BarFacts } from './ichimokuBars';
 import type { Direction, IchimokuSignal, SignalCheck, StrategyId } from './types';
@@ -43,39 +40,43 @@ export interface SignalDraft {
   detectedAt: number;
   source: 'candle' | 'live';
   direction: Direction;
-  /** Where a market order fills. Normally `facts.bar.close`; a live quote otherwise. */
+  /** Where a market order fills: the signal bar's close. */
   entry: number;
   checks: SignalCheck[];
-  /** Overrides the bar time, for a live signal fired inside a forming bar. */
-  barTime?: number;
-  /** Overrides the range, for a live signal inheriting the last closed bar's. */
-  range?: number;
 }
 
-export function buildSignal(d: SignalDraft, config: TicketConfig = TICKET): IchimokuSignal {
+export interface Ticket {
+  stop: number;
+  target: number;
+  /** The structure the stop sits beyond: Kijun-sen, or the far cloud edge. */
+  stopLevel: number;
+  entryType: EntryType;
+}
+
+export function buildSignal(d: SignalDraft, ticket: Ticket): IchimokuSignal {
   const { facts, direction, entry } = d;
   const long = direction === 'LONG';
-  const range = d.range ?? facts.range;
-  const risk = range * config.stopRange;
   const pip = facts.pip;
 
   return {
-    id: signalId(d.strategy, d.symbol, d.timeframe, d.barTime ?? facts.bar.time),
+    id: signalId(d.strategy, d.symbol, d.timeframe, facts.bar.time),
     strategy: d.strategy,
     symbol: d.symbol,
     timeframe: d.timeframe,
-    barTime: d.barTime ?? facts.bar.time,
+    barTime: facts.bar.time,
     detectedAt: d.detectedAt,
     source: d.source,
 
     direction,
     kumo: long ? 'above' : 'below',
+    entryType: ticket.entryType,
 
     entry,
-    stop: long ? entry - risk : entry + risk,
-    target: long ? entry + risk * config.rewardMultiple : entry - risk * config.rewardMultiple,
-    stopPips: risk / pip,
-    rangePips: range / pip,
+    stop: ticket.stop,
+    target: ticket.target,
+    stopPips: Math.abs(entry - ticket.stop) / pip,
+    stopLevel: ticket.stopLevel,
+    rangePips: facts.range / pip,
 
     tenkan: facts.tenkan,
     kijun: facts.kijun,

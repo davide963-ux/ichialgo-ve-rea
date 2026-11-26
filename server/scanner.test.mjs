@@ -249,7 +249,7 @@ describe('the scanner and the backtest reach the same verdict', () => {
   it('agrees on outcome and pips for every trade the backtest opened', () => {
     // No spread on either side: the scanner records raw pips, so the
     // comparison has to ask the backtest for raw pips too.
-    const bt = backtest('ichimoku-kijun', candles, 'EUR/USD', '1H', { costPips: 0 });
+    const bt = backtest(candles, 'EUR/USD', '1H', { costPips: 0 });
     const byId = new Map(bt.trades.map((t) => [t.id, t]));
 
     const { signals } = analyseIchimoku(candles, 'EUR/USD', '1H');
@@ -287,7 +287,7 @@ describe('the scanner and the backtest reach the same verdict', () => {
    * longer exists now that every signal fills.
    */
   it('records every signal the backtest traded, and more besides', () => {
-    const bt = backtest('ichimoku-kijun', candles, 'EUR/USD', '1H', { costPips: 0 });
+    const bt = backtest(candles, 'EUR/USD', '1H', { costPips: 0 });
     const { signals } = analyseIchimoku(candles, 'EUR/USD', '1H');
     const recorded = new Set(signals.map((s) => signalRow(s, 0)).filter(Boolean).map((r) => r.id));
 

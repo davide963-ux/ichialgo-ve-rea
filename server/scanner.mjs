@@ -59,8 +59,8 @@
  * five times produces one row.
  */
 import {
-  DETECTORS,
-  STRATEGY_IDS,
+  analyseIchimoku,
+  minBars,
   PAIRS,
   STRATEGY_CONFIG,
   TIMEFRAME_SECONDS,
@@ -80,10 +80,10 @@ import { closeTrade, finishRun, openTrades, recordSignals, startRun } from './db
 /**
  * Bars to fetch per pair.
  *
- * Ichimoku needs 104 before it reports anything (Senkou B's 52, the 26-bar
- * displacement, and 26 more for the range around Kijun), so 300 leaves
- * roughly two hundred bars of signals inside every window — far more than
- * `lookbackBars` ever reconsiders.
+ * Ichimoku needs 78 before it reports anything — Senkou B's 52 plus the
+ * 26-bar displacement, so a cloud is actually in effect at the bar being
+ * judged — which leaves 300 with more than two hundred bars of signals
+ * inside every window, far more than `lookbackBars` ever reconsiders.
  */
 const CANDLE_COUNT = 300;
 
@@ -121,14 +121,6 @@ export function scannerConfig(env = process.env) {
     td: readConfig(env).twelvedata,
     /** Pairs to scan. Defaults to the app's own list, so the two cannot drift. */
     symbols: (env.SCAN_SYMBOLS?.trim() ? env.SCAN_SYMBOLS.split(',').map((s) => s.trim()) : PAIRS.map((p) => p.symbol)),
-    /**
-     * Strategies to record. Defaults to every one the app can run, so the
-     * history can compare them on identical candles rather than on whichever
-     * rule happened to be selected in somebody's browser.
-     */
-    strategies: (env.SCAN_STRATEGIES?.trim()
-      ? env.SCAN_STRATEGIES.split(',').map((s) => s.trim()).filter((s) => STRATEGY_IDS.includes(s))
-      : STRATEGY_IDS),
   };
 }
 
@@ -261,10 +253,12 @@ export function signalRow(signal, detectedAt) {
     cloud_pips: signal.cloudPips,
 
     /**
-     * The conditions as the detector stated them, not as named columns.
-     * Three strategies with three different rule sets cannot share a fixed
-     * set of booleans — see db/migrations/0003_strategies.sql.
+     * The conditions as the detector stated them, not as named columns. A
+     * breakout and a pullback do not require the same conditions, or the same
+     * NUMBER of them, so a fixed set of boolean columns cannot hold both —
+     * see db/migrations/0003_strategies.sql.
      */
+    entry_type: signal.entryType,
     score: signal.score,
     checks_total: signal.checksTotal,
     checks: signal.checks,
@@ -395,15 +389,20 @@ export async function runScan({ env = process.env, now = Date.now(), signal } = 
        * namespaced by strategy, so three rules on one bar are three rows and
        * never a collision.
        */
+      /**
+       * ONE system, both entries, on the SAME candles every run.
+       *
+       * This used to loop over three selectable strategies, which was a
+       * misreading: OANDA's article presents its approaches as parts of one
+       * method that work together, not as rivals to be scored against each
+       * other. The detector now returns breakouts and pullbacks from a single
+       * pass, so there is nothing here to choose between.
+       */
       const rows = [];
-      for (const id of cfg.strategies) {
-        const detector = DETECTORS[id];
-        if (!detector) continue;
-        const { signals, reason } = detector.analyse(candles, symbol, cfg.timeframe, now);
-        if (reason === 'not-enough-bars') {
-          errors.push(`${symbol}/${id}: only ${candles.length} ${cfg.timeframe} candles, needs ${detector.minBars()}`);
-          continue;
-        }
+      const { signals, reason } = analyseIchimoku(candles, symbol, cfg.timeframe, undefined, now);
+      if (reason === 'not-enough-bars') {
+        errors.push(`${symbol}: only ${candles.length} ${cfg.timeframe} candles, needs ${minBars()}`);
+      } else {
         for (const s of signals) {
           if (s.barTime < oldest) continue;
           if (s.barTime >= (newest?.time ?? 0)) continue; // still forming

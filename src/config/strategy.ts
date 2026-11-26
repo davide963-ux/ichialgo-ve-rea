@@ -12,7 +12,7 @@
  * and the levels come out of Ichimoku's own geometry, so there is no second
  * indicator left to configure.
  */
-import { ICHIMOKU_STRATEGY } from './ichimokuStrategy';
+import { ICHIMOKU } from './ichimokuStrategy';
 import type { Timeframe } from './timeframes';
 
 export const STRATEGY_CONFIG = {
@@ -54,5 +54,5 @@ export const STRATEGY_CONFIG = {
   /** A live (intrabar) signal stays "active" this long without a new tick. */
   liveSignalTtlMs: 15 * 60_000,
   /** The rules. One object, so nothing can read half of them. */
-  ichimoku: ICHIMOKU_STRATEGY,
+  ichimoku: ICHIMOKU,
 } as const;

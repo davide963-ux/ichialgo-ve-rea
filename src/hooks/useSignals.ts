@@ -12,27 +12,22 @@
 import { useEffect, useMemo } from 'react';
 import { STRATEGY_CONFIG } from '../config/strategy';
 import { TIMEFRAME_SECONDS, type Timeframe } from '../config/timeframes';
-import { DEFAULT_STRATEGY, detectorFor, planFromSignal, signalTimeMs, strategyEngine } from '../services/strategy';
-import type { DetectorResult, IchimokuLevel, IchimokuSignal, StrategyId, TradePlan } from '../services/strategy';
+import { analyseIchimoku, planFromSignal, signalTimeMs, strategyEngine } from '../services/strategy';
+import type { IchimokuAnalysis, IchimokuLevel, IchimokuSignal, TradePlan } from '../services/strategy';
 import type { Candle } from '../services/marketData';
 import type { RateLookup } from '../lib/positionSize';
 import { useAccount } from '../state/accountStore';
 import { useMarketStore } from '../state/marketStore';
 import { useSignalStore } from '../state/signalStore';
 
-/**
- * Runs the engine for as long as the app is mounted, following the timeframe
- * and the selected strategy. Changing either is a restart — see the engine.
- */
-export function useStrategyEngine(timeframe: Timeframe, strategy: StrategyId = DEFAULT_STRATEGY): void {
+/** Runs the engine for as long as the app is mounted, following the timeframe. */
+export function useStrategyEngine(timeframe: Timeframe): void {
   useEffect(() => {
-    strategyEngine.setTimeframe(timeframe, strategy);
-  }, [timeframe, strategy]);
+    strategyEngine.setTimeframe(timeframe);
+  }, [timeframe]);
 
   useEffect(() => () => strategyEngine.stop(), []);
 }
-
-export const useActiveStrategy = (): StrategyId => useSignalStore((s) => s.strategy);
 
 export const useSignals = (): IchimokuSignal[] => useSignalStore((s) => s.signals);
 export const useStrategyStatus = () => useSignalStore((s) => s.status);
@@ -65,15 +60,12 @@ export function useSignalSummary(): SignalSummary {
     const dayStart = startOfToday(Date.now());
     const cutoff = Date.now() - STRATEGY_CONFIG.liveSignalTtlMs;
     /**
-     * "Active" means a pullback is in progress that COULD trade: price inside
-     * the Kijun band and clear of the cloud. A pair inside the cloud is also
-     * near its Kijun by construction and has no trend to pull back into, so
-     * counting it would make the number mean "near a line" instead of "in a
-     * setup".
+     * "Active" means a setup is part-formed and could still complete: a cloud
+     * break waiting on its span twist, or a pullback waiting on its
+     * confirming close. A pair merely trending is not a setup, which is why
+     * this counts `pending` rather than "price is somewhere near a line".
      */
-    const active = Object.values(levels).filter(
-      (l) => l.direction !== null && l.inBand && l.updatedAt >= cutoff,
-    ).length;
+    const active = Object.values(levels).filter((l) => l.pending !== null && l.updatedAt >= cutoff).length;
     return {
       active,
       today: signals.filter((s) => signalTimeMs(s) >= dayStart).length,
@@ -89,16 +81,8 @@ export function useSignalSummary(): SignalSummary {
  * than read from the store: the overlay then always matches the bars on
  * screen, and it costs no extra provider request.
  */
-export function useIchimokuAnalysis(
-  symbol: string,
-  timeframe: Timeframe,
-  candles: Candle[],
-  strategy: StrategyId = DEFAULT_STRATEGY,
-): DetectorResult {
-  return useMemo(
-    () => detectorFor(strategy).analyse(candles, symbol, timeframe),
-    [candles, symbol, timeframe, strategy],
-  );
+export function useIchimokuAnalysis(symbol: string, timeframe: Timeframe, candles: Candle[]): IchimokuAnalysis {
+  return useMemo(() => analyseIchimoku(candles, symbol, timeframe), [candles, symbol, timeframe]);
 }
 
 /**

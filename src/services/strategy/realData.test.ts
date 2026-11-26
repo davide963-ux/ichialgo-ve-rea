@@ -1,20 +1,19 @@
 /**
- * The detector, run over REAL candles.
+ * The system across EVERY pair the scanner trades, and through the backtest.
  *
- * WHY THIS TEST EXISTS
- * ────────────────────
- * The unit tests build bars by hand to exercise one branch each. That is the
- * right way to test a state machine, and it is also how a strategy gets
- * validated against a fiction: an earlier strategy on this project was tuned
- * three times against a synthetic candle generator that injected trends 45%
- * of the time, which flattered it by construction.
+ * WHY THIS IS A SEPARATE FILE FROM ichimokuSystem.test.ts
+ * ──────────────────────────────────────────────────────
+ * That file tests the RULES: it takes each condition OANDA's article states
+ * and checks the detector honours it, in depth, on three pairs. This file
+ * tests BREADTH and INTEGRATION — the same detector over all six fixtures,
+ * and the backtest's own causality on top of the detector's. The division
+ * matters because the two fail for different reasons: a rule regression shows
+ * up on any pair, while the failures this file is for (a pair that goes
+ * silent, a yen cross whose pip size is wrong, a trade resolved against bars
+ * it never held) show up only in aggregate or only downstream.
  *
- * So this runs the detector over `fixtures/market/` — 5000 real 1H OANDA bars
- * per pair — and asserts the things that must hold on ANY real series. It is
- * not a backtest and makes no claim about profitability. It catches the
- * failures that hand-built fixtures cannot: a detector that fires on every
- * bar, one that never fires at all, or one that emits a signal nowhere near
- * the Kijun it claims to have retested.
+ * Neither is a backtest. Nothing here claims the strategy is profitable; the
+ * measured numbers live in the README.
  */
 import { describe, expect, it } from 'vitest';
 import audusd from '../../../fixtures/market/AUDUSD_1H.csv?raw';
@@ -23,11 +22,9 @@ import gbpjpy from '../../../fixtures/market/GBPJPY_1H.csv?raw';
 import gbpusd from '../../../fixtures/market/GBPUSD_1H.csv?raw';
 import usdcad from '../../../fixtures/market/USDCAD_1H.csv?raw';
 import usdjpy from '../../../fixtures/market/USDJPY_1H.csv?raw';
-import { ICHIMOKU_SIGNAL_CHECKS, ICHIMOKU_STRATEGY } from '../../config/ichimokuStrategy';
 import { pipSize } from '../../lib/pips';
-import { kumoSide } from '../../lib/indicators';
 import type { Candle } from '../marketData';
-import { analyseIchimoku } from './ichimokuSignal';
+import { analyseIchimoku } from './ichimokuSystem';
 import { backtest } from './backtest';
 
 /**
@@ -55,12 +52,11 @@ function loadCandles(csv: string): Candle[] {
     });
 }
 
-describe('analyseIchimoku on real OANDA candles', () => {
+describe('the system on real OANDA candles, every pair', () => {
   for (const [csv, symbol] of PAIRS) {
     describe(symbol, () => {
       const candles = loadCandles(csv);
       const analysis = analyseIchimoku(candles, symbol, '1H');
-      const index = new Map(candles.map((c, i) => [c.time, i]));
 
       it('loads the fixture it claims to (so this cannot pass on an empty file)', () => {
         expect(candles.length).toBeGreaterThan(4000);
@@ -69,140 +65,60 @@ describe('analyseIchimoku on real OANDA candles', () => {
 
       /**
        * The arm/re-arm rule is the whole reason this is a state machine. A
-       * market riding its Kijun would otherwise signal on every single bar,
-       * and on 5000 bars that failure is obvious; on a 20-bar fixture it is
-       * not.
+       * market riding its Kijun would otherwise signal on every bar, and on
+       * 5000 bars that failure is obvious where on a 20-bar fixture it is not.
        *
-       * The gate makes this rate much lower than the old strategy's: a
-       * pullback has to clear 4 of 4 confirmations, so the observed rate is
-       * roughly one signal per 40–70 bars. The bounds are wide enough not to
-       * be a snapshot of today's numbers and tight enough to catch a detector
-       * that has gone silent or started firing on everything.
+       * These bounds are deliberately wide. The rate is a PROPERTY of the
+       * article's rules, not a number we chose — measured at 10–15% of bars,
+       * because a close back through Kijun inside a trend is a common event
+       * and OANDA's pullback rule asks for little else. Narrow bounds here
+       * would make every honest change to the strategy look like a break.
        */
       it('fires sometimes, but nowhere near every bar', () => {
         const rate = analysis.signals.length / candles.length;
         const note = `${analysis.signals.length} signals in ${candles.length} bars`;
-        expect(rate, note).toBeGreaterThan(0.002);
-        expect(rate, note).toBeLessThan(0.1);
+        expect(rate, note).toBeGreaterThan(0.01);
+        expect(rate, note).toBeLessThan(0.25);
+      });
+
+      /** Both entries have to survive on every pair, not just on EUR/USD. */
+      it('produces both entry types', () => {
+        const kinds = new Set(analysis.signals.map((s) => s.entryType));
+        expect([...kinds].sort()).toEqual(['breakout', 'pullback']);
       });
 
       /**
-       * The correction this strategy exists to make. The old rule took the
-       * direction from the side price approached the line on, so a pullback
-       * inside a downtrend became a long. Here the Kumo decides, and this
-       * checks it against the cloud recomputed from the bar itself rather
-       * than against the field the detector wrote.
+       * Stops come from STRUCTURE now — Kijun for a pullback, the far cloud
+       * edge for a breakout — so their size is whatever the market's own
+       * geometry says. This is the sanity bound that catches a pip size
+       * applied to the wrong quote currency, which on a yen cross is a factor
+       * of 100 and would otherwise sail through every other test.
        */
-      it('takes every direction from the Kumo, checked against the bar', () => {
+      it('sizes every stop like a real price distance for this pair', () => {
         for (const s of analysis.signals) {
-          const i = index.get(s.barTime)!;
-          const side = kumoSide(analysis.ichimoku, i, candles[i]!.close);
-          expect(side, `${s.id} signalled inside the cloud`).not.toBe('inside');
-          expect(s.kumo, `${s.id} disagrees with the cloud`).toBe(side);
-          expect(s.direction).toBe(side === 'above' ? 'LONG' : 'SHORT');
+          expect(s.stopPips, `${s.id} has a degenerate stop`).toBeGreaterThan(0.5);
+          expect(s.stopPips, `${s.id} has an absurd stop`).toBeLessThan(500);
+          expect(Math.abs(s.entry - s.stop) / pipSize(symbol)).toBeCloseTo(s.stopPips, 6);
         }
       });
 
       /**
-       * `distancePips` is |entry − Kijun|, and entry is the bar's CLOSE. A bar
-       * can touch the band with a wick and close well outside it, so the close
-       * is not bounded by the band — but it is bounded by the bar's own range
-       * plus the band, which is what "this bar retested the line" means.
-       */
-      it('signals only on a bar whose range reached the Kijun band', () => {
-        for (const s of analysis.signals) {
-          const bar = candles[index.get(s.barTime)!]!;
-          const halfBand = s.rangePips * ICHIMOKU_STRATEGY.touchBand * pipSize(symbol);
-          expect(bar.low, `${s.id} never reached the band`).toBeLessThanOrEqual(s.kijun + halfBand + 1e-12);
-          expect(bar.high, `${s.id} never reached the band`).toBeGreaterThanOrEqual(s.kijun - halfBand - 1e-12);
-        }
-      });
-
-      /** Everything emitted cleared the gate. That is what makes it a gate. */
-      it('emits nothing below the confirmation threshold', () => {
-        expect(analysis.signals.length).toBeGreaterThan(0);
-        for (const s of analysis.signals) {
-          expect(s.score).toBeGreaterThanOrEqual(ICHIMOKU_STRATEGY.minScore);
-          expect(s.score).toBeLessThanOrEqual(ICHIMOKU_SIGNAL_CHECKS);
-        }
-      });
-
-      it('puts the stop and target on the correct sides, sized from the range', () => {
-        for (const s of analysis.signals) {
-          const risk = Math.abs(s.entry - s.stop);
-          expect(risk / pipSize(symbol)).toBeCloseTo(s.rangePips * ICHIMOKU_STRATEGY.stopRange, 6);
-          expect(Math.abs(s.target - s.entry) / risk).toBeCloseTo(ICHIMOKU_STRATEGY.rewardMultiple, 9);
-          if (s.direction === 'LONG') {
-            expect(s.stop).toBeLessThan(s.entry);
-            expect(s.target).toBeGreaterThan(s.entry);
-          } else {
-            expect(s.stop).toBeGreaterThan(s.entry);
-            expect(s.target).toBeLessThan(s.entry);
-          }
-        }
-      });
-
-      it('never emits two signals on the same bar', () => {
-        const times = analysis.signals.map((s) => s.barTime);
-        expect(new Set(times).size).toBe(times.length);
-      });
-
-      it('reports signals in chronological order', () => {
-        const times = analysis.signals.map((s) => s.barTime);
-        expect([...times].sort((a, b) => a - b)).toEqual(times);
-      });
-
-      /**
-       * THE TEST EVERYTHING ELSE RESTS ON.
-       *
-       * A strategy that reads bars it could not have seen prints an edge that
-       * does not exist, and nothing downstream can detect it — the backtest,
-       * the metrics and the confidence interval are all computed faithfully
-       * from a fiction.
-       *
-       * So: analyse a TRUNCATED series and compare. Every signal at a bar the
-       * shorter series also contains must come out byte-identical, score and
-       * individual confirmations included. If any later bar leaks in, these
-       * disagree.
-       *
-       * Chikou needs 26 bars AFTER a signal before it is knowable, so the
-       * last stretch of the truncation legitimately differs; everything
-       * before that must match exactly.
-       */
-      it('reads no bar it could not have seen', () => {
-        const cut = Math.floor(candles.length * 0.6);
-        const truncated = analyseIchimoku(candles.slice(0, cut), symbol, '1H', ICHIMOKU_STRATEGY, 0);
-        const full = analyseIchimoku(candles, symbol, '1H', ICHIMOKU_STRATEGY, 0);
-        const lastComparable = candles[cut - 27]!.time;
-
-        const shape = (list: typeof full.signals) =>
-          list
-            .filter((s) => s.barTime <= lastComparable)
-            .map((s) =>
-              [s.id, s.direction, s.kumo, s.score, s.checksTotal, ...s.checks.map((c) => `${c.label}=${c.pass}`)]
-                .join('|'),
-            );
-
-        const fromTruncated = shape(truncated.signals);
-        expect(fromTruncated.length, 'the truncation must contain signals to compare').toBeGreaterThan(10);
-        expect(fromTruncated).toEqual(shape(full.signals));
-      });
-
-      /**
-       * The backtest's own causality, on top of the detector's: trades that
-       * closed before the cut must be identical too, since a trade's result
-       * depends only on bars up to its exit.
+       * The backtest's own causality, on top of the detector's: a trade's
+       * result depends only on bars up to its exit, so every trade that
+       * closed before the cut must come out identical from a series that ends
+       * there. This is what stops a change to the walk-forward from quietly
+       * resolving trades against bars they never held.
        */
       it('produces the same closed trades from a truncated series', () => {
         const cut = Math.floor(candles.length * 0.6);
-        const full = backtest('ichimoku-kijun', candles, symbol, '1H');
-        const part = backtest('ichimoku-kijun', candles.slice(0, cut), symbol, '1H');
+        const full = backtest(candles, symbol, '1H');
+        const part = backtest(candles.slice(0, cut), symbol, '1H');
         const cutoff = candles[cut - 27]!.time;
 
         const closedBefore = (r: typeof full) =>
           r.trades
             .filter((t) => t.exitTime !== null && t.exitTime <= cutoff)
-            .map((t) => `${t.id}|${t.exit}|${t.pips?.toFixed(4)}`);
+            .map((t) => `${t.id}|${t.entryType}|${t.exit}|${t.pips?.toFixed(4)}`);
 
         const partial = closedBefore(part);
         expect(partial.length, 'the truncation must contain closed trades').toBeGreaterThan(3);
@@ -210,13 +126,13 @@ describe('analyseIchimoku on real OANDA candles', () => {
       });
 
       /**
-       * Entry is the signal bar's close, so there is no fill to miss. The
-       * previous strategy rested a limit at the EMA and turned away about a
+       * Entry is the signal bar's close, so there is no fill to miss. A
+       * retired strategy rested a limit at an EMA and turned away about a
        * third of its touches for want of a fill; this asserts the opposite —
-       * that every eligible signal which was not crowded out became a trade.
+       * every signal not crowded out became a trade.
        */
       it('turns no signal away for want of a fill', () => {
-        const result = backtest('ichimoku-kijun', candles, symbol, '1H');
+        const result = backtest(candles, symbol, '1H');
         expect(result.trades.length).toBeGreaterThan(10);
         expect(result.trades.length + result.filtered + result.skippedWhileOpen).toBe(result.signals);
         expect(result.filtered).toBe(0);
@@ -224,7 +140,7 @@ describe('analyseIchimoku on real OANDA candles', () => {
 
       it('enters at a price the entry bar traded, on every trade', () => {
         const byTime = new Map(candles.map((c) => [c.time, c]));
-        for (const t of backtest('ichimoku-kijun', candles, symbol, '1H').trades) {
+        for (const t of backtest(candles, symbol, '1H').trades) {
           const bar = byTime.get(t.entryTime)!;
           expect(t.entry, `${t.id} filled outside its bar`).toBeGreaterThanOrEqual(bar.low);
           expect(t.entry, `${t.id} filled outside its bar`).toBeLessThanOrEqual(bar.high);

@@ -35,11 +35,23 @@ export function rangeOver(candles: readonly Candle[], period: number): (number |
 }
 
 /**
- * Bars needed before anything can be reported: Senkou B's 52 plus the 26-bar
- * displacement, so a cloud is actually in effect at the bar being judged,
- * plus the range window.
+ * Bars needed before anything can be reported.
+ *
+ * Senkou B's 52 plus the 26-bar displacement, so a cloud is actually IN
+ * EFFECT at the bar being judged: 78 bars. The range window is folded in with
+ * a MAX, not added, and that correction matters.
+ *
+ * Adding it gave 104, which put this guard out of step with the first bar
+ * `at()` will actually answer for. By bar 78 a 26-bar range has been
+ * available for fifty bars, so the extra 26 bought nothing and cost two
+ * things: the detector refused to report for 26 bars longer than it needed
+ * to, and a signal at bar 78 — which a 5000-bar run reports quite happily —
+ * disappeared entirely from an 80-bar run of the same data. A guard that
+ * rejects a series the detector could analyse is not conservative, it is
+ * inconsistent, and it makes truncation behave differently from the real
+ * thing for reasons that have nothing to do with causality.
  */
-export const minBarsFor = (rangePeriod: number): number => 52 + 26 + rangePeriod;
+export const minBarsFor = (rangePeriod: number): number => Math.max(52 + 26, rangePeriod);
 
 export interface BarFacts {
   i: number;

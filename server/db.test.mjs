@@ -77,8 +77,8 @@ run('db.mjs against PostgreSQL', () => {
   });
 
   const row = (over = {}) => ({
-    id: 'ichimoku-kijun|EUR/USD|30M|1000',
-    strategy: 'ichimoku-kijun',
+    id: 'ichimoku|EUR/USD|30M|1000',
+    strategy: 'ichimoku',
     symbol: 'EUR/USD',
     timeframe: '30M',
     bar_time: 1_700_000_000,
@@ -94,6 +94,7 @@ run('db.mjs against PostgreSQL', () => {
     senkou_ahead_a: 1.1005,
     senkou_ahead_b: 1.0965,
     cloud_pips: 10,
+    entry_type: 'pullback',
     score: 4,
     checks_total: 4,
     checks: [
@@ -280,31 +281,41 @@ run('db.mjs against PostgreSQL', () => {
   });
 
   /**
-   * The scanner records every strategy on the same candles, so one bar of one
-   * pair can hold three rows. They must stay separable: merging them would
-   * average three different rule sets into one number, which is the thing the
-   * whole comparison exists to avoid.
+   * One strategy, two entries, and they must stay separable in the stats.
+   *
+   * This is not bookkeeping tidiness. The breakout's stop goes beyond the far
+   * cloud edge and the pullback's just beyond Kijun, so the two risk very
+   * different amounts per trade; a net-pips total that pooled them would be
+   * summing unlike bets and presenting the result as one number. Grouping by
+   * entry_type is what keeps the two readable separately while they share
+   * every other column.
    */
-  it('keeps the live strategies apart, in the rows and in the stats', async () => {
+  it('keeps the two entries apart in the stats, while sharing a strategy id', async () => {
     await recordSignals(
       [
-        row({ id: 'a', strategy: 'ichimoku-kijun', result: 'tp' }),
-        row({ id: 'b', strategy: 'oanda-pullback', result: 'tp', bar_time: 1_700_000_100 }),
-        row({ id: 'c', strategy: 'oanda-breakout', result: 'sl', bar_time: 1_700_000_200 }),
+        row({ id: 'a', entry_type: 'pullback', result: 'tp' }),
+        row({ id: 'b', entry_type: 'pullback', result: 'tp', bar_time: 1_700_000_100 }),
+        row({ id: 'c', entry_type: 'breakout', result: 'sl', bar_time: 1_700_000_200 }),
       ],
       env,
     );
     await pool.query(`update signals set result_pips = 20 where result = 'tp'`);
     await pool.query(`update signals set result_pips = -10 where result = 'sl'`);
 
+    // All three are the one live strategy, so all three come back.
     expect(await recentSignals({}, env)).toHaveLength(3);
-    expect(await recentSignals({ strategies: ['oanda-breakout'] }, env)).toHaveLength(1);
+    expect((await recentSignals({}, env)).map((r) => r.entry_type).sort()).toEqual([
+      'breakout',
+      'pullback',
+      'pullback',
+    ]);
 
     const stats = await signalStats(env);
-    expect(stats).toHaveLength(3); // one row per (strategy, symbol), never merged
-    const byStrategy = new Map(stats.map((s) => [s.strategy, s]));
-    expect(Number(byStrategy.get('oanda-pullback').net_pips)).toBe(20);
-    expect(Number(byStrategy.get('oanda-breakout').net_pips)).toBe(-10);
+    expect(stats).toHaveLength(2); // one row per (strategy, entry_type, symbol)
+    const byEntry = new Map(stats.map((s) => [s.entry_type, s]));
+    expect(Number(byEntry.get('pullback').net_pips)).toBe(40);
+    expect(Number(byEntry.get('breakout').net_pips)).toBe(-10);
+    expect(Number(byEntry.get('pullback').total)).toBe(2);
   });
 
   it('records a scanner run from start to finish', async () => {
@@ -391,12 +402,14 @@ run('migrating a database that already holds the old strategy’s rows', () => {
         { name: '0001_signals.sql', text: read('0001_signals.sql') },
         { name: '0002_ichimoku.sql', text: read('0002_ichimoku.sql') },
         { name: '0003_strategies.sql', text: read('0003_strategies.sql') },
+        { name: '0004_one_system.sql', text: read('0004_one_system.sql') },
       ],
       env,
     );
     expect(ran, 'only the new migrations should apply').toEqual([
       '0002_ichimoku.sql',
       '0003_strategies.sql',
+      '0004_one_system.sql',
     ]);
 
     // The observation survived: a ticket and a result are still a ticket and
@@ -414,7 +427,7 @@ run('migrating a database that already holds the old strategy’s rows', () => {
     }
     // The Ichimoku columns it has but cannot fill. Null, not zero: a zero
     // Kijun would be read as a price.
-    for (const added of ['kumo', 'kijun', 'tenkan', 'senkou_a', 'senkou_b', 'range_pips', 'score', 'checks', 'cloud_pips']) {
+    for (const added of ['kumo', 'kijun', 'tenkan', 'senkou_a', 'senkou_b', 'range_pips', 'score', 'checks', 'cloud_pips', 'entry_type']) {
       expect(Object.hasOwn(old, added), `${added} should have been added`).toBe(true);
       expect(old[added], `${added} should be null on a legacy row`).toBeNull();
     }
@@ -424,8 +437,8 @@ run('migrating a database that already holds the old strategy’s rows', () => {
       await recordSignals(
         [
           {
-            id: 'ichimoku-kijun|EUR/USD|30M|2000',
-            strategy: 'ichimoku-kijun',
+            id: 'ichimoku|EUR/USD|30M|2000',
+            strategy: 'ichimoku',
             symbol: 'EUR/USD',
             timeframe: '30M',
             bar_time: 1_700_003_600,
@@ -438,11 +451,9 @@ run('migrating a database that already holds the old strategy’s rows', () => {
             senkou_b: 1.096,
             distance_pips: 2,
             range_pips: 75,
+            entry_type: 'pullback',
             score: 4,
-            cloud_bullish: true,
-            future_cloud_bullish: true,
-            chikou_free: true,
-            tenkan_agrees: true,
+            checks_total: 4,
             direction: 'LONG',
             entry: 1.1,
             stop_loss: 1.099,
@@ -455,8 +466,8 @@ run('migrating a database that already holds the old strategy’s rows', () => {
       ),
     ).toBe(1);
 
-    // The reads show the new strategy only, with both rows still on disk.
-    expect((await recentSignals({}, env)).map((r) => r.strategy)).toEqual(['ichimoku-kijun']);
+    // The reads show the live strategy only, with both rows still on disk.
+    expect((await recentSignals({}, env)).map((r) => r.strategy)).toEqual(['ichimoku']);
     expect(Number((await pool.query('select count(*) from signals')).rows[0].count)).toBe(2);
   });
 });

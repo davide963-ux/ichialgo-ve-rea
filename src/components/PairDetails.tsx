@@ -6,10 +6,9 @@ import { useNow } from '../hooks/useNow';
 import { useChartIndicators } from '../hooks/useChartIndicators';
 import { formatNumber, formatPrice } from '../lib/format';
 import { formatAgo } from '../lib/time';
-import { ICHIMOKU_STRATEGY } from '../config/ichimokuStrategy';
-import { useActiveStrategy, useIchimokuAnalysis, useStrategyNotice, useTradePlan } from '../hooks/useSignals';
+import { useIchimokuAnalysis, useStrategyNotice, useTradePlan } from '../hooks/useSignals';
 import { pipSize } from '../lib/pips';
-import { detectorFor, futureCloudZone, signalMarkers, zoneStrength } from '../services/strategy';
+import { futureCloudZone, minBars, signalMarkers, zoneStrength } from '../services/strategy';
 import { CloudZonePanel } from './CloudZonePanel';
 import { useMarketStore } from '../state/marketStore';
 import { CandlestickChart } from './CandlestickChart';
@@ -45,9 +44,7 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
    * provider request. The chart's own overlays stay on useChartIndicators:
    * a price chart must still render when the strategy has nothing to say.
    */
-  const strategy = useActiveStrategy();
-  const detector = detectorFor(strategy);
-  const analysis = useIchimokuAnalysis(symbol, timeframe, candles, strategy);
+  const analysis = useIchimokuAnalysis(symbol, timeframe, candles);
   const latest = analysis.signals.at(-1) ?? null;
   const plan = useTradePlan(latest);
   const strategyNotice = useStrategyNotice(symbol);
@@ -177,18 +174,17 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
       <section className="panel">
         <div className="panel-head">
           <div>
-            <h2 className="panel-title">{detector.name}</h2>
+            <h2 className="panel-title">The Ichimoku system</h2>
             <span className="panel-sub">
-              {detector.blurb} Rules by {detector.source}.
-              {strategy === 'ichimoku-kijun' &&
-                ` The band is ±${bandPips === null ? '—' : formatNumber(bandPips, 1)} pips, ` +
-                  `${formatNumber(ICHIMOKU_STRATEGY.touchBand, 2)} of the 26-bar range — so it means the same thing ` +
-                  `in a dead session and a fast one, and that range is the Kijun's own width rather than a second ` +
-                  `indicator.`}
+              Two entries, from OANDA's guide: a <strong>Kumo breakout</strong> when price leaves the cloud and the
+              cloud ahead turns with it, and a <strong>Tenkan/Kijun pullback</strong> when price already clear of
+              the cloud comes back to the lines and closes through Kijun. Chikou validates both.
             </span>
           </div>
-          {level?.inBand && (
-            <span className="tag pos" title="A setup is in progress on this pair right now">IN PROGRESS</span>
+          {level?.pending && (
+            <span className="tag pos" title="A setup is part-formed on this pair and waiting for its confirmation">
+              {level.pending === 'breakout' ? 'BREAK PENDING' : 'PULLBACK PENDING'}
+            </span>
           )}
         </div>
 
@@ -200,7 +196,7 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
                 <dd className="num">{formatPrice(symbol, level.kijun)}</dd>
               </div>
               <div>
-                <dt>Distance</dt>
+                <dt>Distance to Kijun</dt>
                 <dd className={`num${atTheLevel ? ' pos' : ''}`}>
                   {distancePips === null
                     ? '—'
@@ -224,22 +220,25 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
                     collapsing them into a single word gets it wrong in both
                     directions. */}
                 <dt>State</dt>
-                <dd className="muted" title="Armed = ready to produce the next signal. In progress = a setup is part-formed.">
-                  {level.inBand ? 'IN PROGRESS' : 'WATCHING'}
-                  {!level.armed && <span className="muted"> · fired</span>}
+                <dd className="muted" title="A setup is part-formed and waiting for the event that completes it">
+                  {level.pending === null
+                    ? 'WATCHING'
+                    : level.pending === 'breakout'
+                      ? 'BREAK — waiting for the span twist'
+                      : 'PULLBACK — waiting for a close through Kijun'}
                 </dd>
               </div>
             </dl>
             <SignalTable
               signals={analysis.signals.slice().reverse()}
               limit={10}
-              emptyHint={`${detector.name} found nothing in the last ${candles.length} ${timeframe} candles.`}
+              emptyHint={`No breakout or pullback in the last ${candles.length} ${timeframe} candles.`}
             />
           </>
         ) : (
           <EmptyState title="Not enough history" compact>
             {strategyNotice ??
-              `A cloud in effect plus its 26-bar range needs at least ${detector.minBars()} ${timeframe} candles; ${candles.length} loaded.`}
+              `A cloud in effect plus its 26-bar range needs at least ${minBars()} ${timeframe} candles; ${candles.length} loaded.`}
           </EmptyState>
         )}
       </section>
@@ -250,10 +249,11 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
             <div>
               <h2 className="panel-title">Trade plan</h2>
               <span className="panel-sub">
-                From the most recent signal. Entry at the close of the bar that completed the setup, stop a
-                fraction of the 26-bar range away, target twice that — sized off the balance and risk % the
-                calculator uses. The exit is ours: OANDA's article specifies none, so it is held the same across
-                every strategy.
+                From the most recent signal. Entry at the close of the bar that completed the setup; the stop
+                sits just beyond the structure the entry is based on — Kijun-sen for a pullback, the far cloud
+                edge for a breakout — and the target is twice that risk, sized off the balance and risk % the
+                calculator uses. The <strong>target is ours</strong>: the article names Kijun and the Kumo as
+                support and resistance, but gives no reward multiple.
               </span>
             </div>
           </div>
@@ -267,7 +267,8 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
             <div>
               <h2 className="panel-title">Why it fired</h2>
               <span className="panel-sub">
-                The conditions {detector.name} requires, in that strategy's own terms — rules by {detector.source}.
+                The conditions this entry required, in the article's own terms. A breakout and a pullback do not
+                have the same ones, or the same number of them.
               </span>
             </div>
           </div>

@@ -159,16 +159,18 @@ run('runScan end to end', () => {
      * list and the record definition drifted apart.
      */
     /**
-     * Every strategy is recorded on the same candles — that is the point of
-     * running three — so the rows span all of them and the assertions have to
-     * hold for each. Pinning one strategy here would have passed while the
-     * other two wrote nothing.
+     * One strategy, and BOTH of its entries have to come through the whole
+     * pipeline. Pinning only the pullback here would pass while the breakout
+     * wrote nothing at all — which is a live possibility, since the breakout
+     * is much the rarer of the two and its row carries two columns
+     * (senkou_ahead_a/b) the pullback does not depend on.
      */
-    const strategies = new Set(rows.map((r) => r.strategy));
-    expect(strategies.size, 'every strategy should have recorded something').toBeGreaterThan(1);
-    for (const st of strategies) {
-      expect(['ichimoku-kijun', 'oanda-pullback', 'oanda-breakout']).toContain(st);
-    }
+    expect(new Set(rows.map((r) => r.strategy))).toEqual(new Set(['ichimoku']));
+    const byEntry = new Set(rows.map((r) => r.entry_type));
+    expect([...byEntry].sort(), 'both entries should have recorded something').toEqual([
+      'breakout',
+      'pullback',
+    ]);
 
     for (const r of rows) {
       expect(r.direction === 'LONG' || r.direction === 'SHORT').toBe(true);
@@ -194,6 +196,25 @@ run('runScan end to end', () => {
       }
       // Every required check passed, or the signal would not exist.
       for (const c of r.checks) if (c.required) expect(c.pass).toBe(true);
+
+      /**
+       * The stop sits beyond the structure the entry is based on, which is
+       * the one thing about this strategy that cannot be checked from the
+       * indicator columns alone — a breakout needs the cloud edge, a pullback
+       * needs Kijun, and getting them the wrong way round would still produce
+       * a plausible-looking row.
+       */
+      const far = r.kumo === 'above'
+        ? Math.min(Number(r.senkou_a), Number(r.senkou_b))
+        : Math.max(Number(r.senkou_a), Number(r.senkou_b));
+      const level = r.entry_type === 'pullback' ? Number(r.kijun) : far;
+      if (r.direction === 'LONG') expect(Number(r.stop_loss)).toBeLessThan(level);
+      else expect(Number(r.stop_loss)).toBeGreaterThan(level);
+
+      if (r.entry_type === 'breakout') {
+        expect(Number(r.senkou_ahead_a)).toBeGreaterThan(0);
+        expect(Number(r.senkou_ahead_b)).toBeGreaterThan(0);
+      }
     }
 
     const [logged] = await pool.query('select * from scanner_runs').then((r) => r.rows);

@@ -33,8 +33,6 @@
  */
 import { useMemo, useState } from 'react';
 import { MetricCard } from '../components/MetricCard';
-import { DETECTORS, isStrategyId } from '../services/strategy';
-
 import { useSignalHistory, type StoredSignal } from '../hooks/useSignalHistory';
 import { formatNumber } from '../lib/format';
 
@@ -65,24 +63,26 @@ const RESULT: Record<StoredSignal['result'], { label: string; tone: string; hint
 export function History() {
   const { status, configured, signals, stats, error, reload } = useSignalHistory();
   const [symbol, setSymbol] = useState<string | null>(null);
-  const [strategy, setStrategy] = useState<string | null>(null);
+  const [entry, setEntry] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
 
   const symbols = useMemo(() => [...new Set(stats.map((s) => s.symbol))].sort(), [stats]);
   /**
-   * The scanner records every strategy on the same candles, so the history
-   * holds all of them. Showing them merged would average three different rule
-   * sets into one number, which is the thing the backtest page exists to
-   * avoid — so this filters, and defaults to all with the strategy named on
-   * every row.
+   * One strategy now, so the filter that used to pick between rule sets picks
+   * between its two ENTRIES instead. That is the comparison still worth
+   * making: the breakout and the pullback share every indicator and almost
+   * none of their risk.
    */
-  const strategies = useMemo(() => [...new Set(stats.map((s) => s.strategy))].sort(), [stats]);
+  const entries = useMemo(
+    () => [...new Set(stats.map((s) => s.entry_type).filter((e): e is string => e !== null))].sort(),
+    [stats],
+  );
   const filtered = useMemo(
     () =>
       signals.filter(
-        (s) => (symbol === null || s.symbol === symbol) && (strategy === null || s.strategy === strategy),
+        (s) => (symbol === null || s.symbol === symbol) && (entry === null || s.entry_type === entry),
       ),
-    [signals, symbol, strategy],
+    [signals, symbol, entry],
   );
   const shown = showAll ? filtered : filtered.slice(0, ROWS);
 
@@ -107,8 +107,8 @@ export function History() {
         <div>
           <h1>Signal history</h1>
           <p className="page-sub">
-            Every Kijun pullback the scanner recorded, with the ticket it implied and what price did next. Written
-            by the server on a schedule, so it keeps running when this page is closed.
+            Every breakout and pullback the scanner recorded, with the ticket it implied and what price did next.
+            Written by the server on a schedule, so it keeps running when this page is closed.
           </p>
         </div>
         {status === 'READY' && configured && (
@@ -195,7 +195,7 @@ export function History() {
               <table className="table">
                 <thead>
                   <tr>
-                    <th>STRATEGY</th>
+                    <th>ENTRY</th>
                     <th>PAIR</th>
                     <th className="num">RECORDED</th>
                     <th className="num">EXPIRED</th>
@@ -208,9 +208,9 @@ export function History() {
                 </thead>
                 <tbody>
                   {stats.map((s) => (
-                    <tr key={`${s.strategy}|${s.symbol}`}>
+                    <tr key={`${s.strategy}|${s.entry_type}|${s.symbol}`}>
                       <td className="muted">
-                        {isStrategyId(s.strategy) ? DETECTORS[s.strategy].name : s.strategy}
+                        {s.entry_type === null ? s.strategy : s.entry_type === 'breakout' ? 'KUMO BREAK' : 'PULLBACK'}
                       </td>
                       <td>{s.symbol}</td>
                       <td className="num muted">{s.total}</td>
@@ -248,16 +248,16 @@ export function History() {
 
             <div className="panel-body backtest-controls">
               <fieldset className="control-group">
-                <legend>Strategy</legend>
+                <legend>Entry</legend>
                 <div className="chip-row">
-                  <label className={`chip${strategy === null ? ' on' : ''}`}>
-                    <input type="radio" name="hstrat" checked={strategy === null} onChange={() => setStrategy(null)} />
-                    all
+                  <label className={`chip${entry === null ? ' on' : ''}`}>
+                    <input type="radio" name="hentry" checked={entry === null} onChange={() => setEntry(null)} />
+                    both
                   </label>
-                  {strategies.map((id) => (
-                    <label key={id} className={`chip${strategy === id ? ' on' : ''}`}>
-                      <input type="radio" name="hstrat" checked={strategy === id} onChange={() => setStrategy(id)} />
-                      {isStrategyId(id) ? DETECTORS[id].name : id}
+                  {entries.map((id) => (
+                    <label key={id} className={`chip${entry === id ? ' on' : ''}`}>
+                      <input type="radio" name="hentry" checked={entry === id} onChange={() => setEntry(id)} />
+                      {id === 'breakout' ? 'kumo break' : id}
                     </label>
                   ))}
                 </div>
@@ -285,7 +285,7 @@ export function History() {
                 <thead>
                   <tr>
                     <th>BAR</th>
-                    <th>STRATEGY</th>
+                    <th>ENTRY TYPE</th>
                     <th>PAIR</th>
                     <th>SIDE</th>
                     <th className="num">ENTRY</th>
@@ -304,7 +304,11 @@ export function History() {
                       <tr key={s.id}>
                         <td className="muted">{stamp(s.bar_time)}</td>
                         <td className="muted">
-                          {isStrategyId(s.strategy) ? DETECTORS[s.strategy].name : s.strategy}
+                          {s.entry_type === null
+                            ? s.strategy
+                            : s.entry_type === 'breakout'
+                              ? 'KUMO BREAK'
+                              : 'PULLBACK'}
                         </td>
                         <td>{s.symbol}</td>
                         <td>

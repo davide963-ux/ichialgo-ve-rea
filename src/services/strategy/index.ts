@@ -1,20 +1,10 @@
 /**
  * Public entry point of the strategy layer.
- * UI code imports from here — never from a detector directly.
+ * UI code imports from here — never from the detector directly.
  */
 export { strategyEngine, StrategyEngine, candlesAreDue, mergeSignals } from './StrategyEngine';
-export {
-  DEFAULT_STRATEGY,
-  DETECTORS,
-  STRATEGY_IDS,
-  detectorFor,
-  isStrategyId,
-} from './detectors';
-export type { Detector, DetectorResult } from './detectors';
-export { ICHIMOKU_SIGNAL_CHECKS, analyseIchimoku, checkLiveTouch, ichimokuSignalId, minBars, rangeOver } from './ichimokuSignal';
-export type { IchimokuAnalysis } from './ichimokuSignal';
-export { analyseOandaPullback } from './oandaPullback';
-export { analyseOandaBreakout } from './oandaBreakout';
+export { analyseIchimoku, ichimokuSignalId, minBars, rangeOver, STRATEGY } from './ichimokuSystem';
+export type { IchimokuAnalysis } from './ichimokuSystem';
 export { ichimokuContext, minBarsFor } from './ichimokuBars';
 export { futureCloudZone, zoneStrength } from './cloudZones';
 export { buildSignal, requiredPassed, signalId, signalTimeMs } from './signalTicket';
@@ -27,6 +17,7 @@ export type { TicketLevels, TradePlan } from './tradePlan';
 export type {
   CloudZone,
   Direction,
+  EntryType,
   IchimokuLevel,
   IchimokuSignal,
   Kumo,

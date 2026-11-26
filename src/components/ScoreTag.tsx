@@ -5,10 +5,11 @@ import { KumoGlyph } from './KumoMark';
  * The confirmation score for one signal, with the individual checks in the
  * tooltip.
  *
- * It reads the signal's own `checks` rather than a fixed set, because the
- * three strategies do not share one. Ours scores out of four Ichimoku
- * confirmations; OANDA's pullback has four conditions of its own, none of
- * which are the same four; their breakout has three plus a thickness grade.
+ * It reads the signal's own `checks` rather than a fixed set, because the two
+ * entries do not share one. A pullback states four conditions; a breakout
+ * states three plus a cloud-thickness grade that is explicitly not a gate. So
+ * there is no "number of checks" for this strategy, and a component that
+ * assumed one would mislabel every signal of the other kind.
  *
  * Green when every REQUIRED check passed, which is the only state a stored
  * signal can be in — the optional ones grade rather than gate, so a 3/4 with

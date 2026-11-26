@@ -21,16 +21,20 @@
  * of checks lets each detector state its OWN rules in its own words, and lets
  * one panel render all three without knowing what they are.
  */
+import type { EntryType } from '../../config/ichimokuStrategy';
 import type { Timeframe } from '../../config/timeframes';
 
+export type { EntryType };
+
 /**
- * The strategies the app can run.
+ * The strategy. One, because the article describes one.
  *
- *   ichimoku-kijun   ours: a Kijun pullback behind a four-of-four gate.
- *   oanda-pullback   OANDA's "Tenkan/Kijun trend continuation pullback".
- *   oanda-breakout   OANDA's "Kumo (Cloud) breakout".
+ * It was briefly three selectable rules — our old gated pullback plus OANDA's
+ * two entries as rivals — which measured the parts of their system against
+ * each other instead of running it. The ids are still namespaced because the
+ * table holds rows from strategies that have been retired.
  */
-export type StrategyId = 'ichimoku-kijun' | 'oanda-pullback' | 'oanda-breakout';
+export type StrategyId = 'ichimoku';
 
 export type Direction = 'LONG' | 'SHORT';
 
@@ -59,7 +63,7 @@ export interface SignalCheck {
 }
 
 /**
- * One signal, from any of the strategies.
+ * One signal.
  *
  * Every field is Ichimoku's own or derived from it. There is no moving
  * average here and no volatility measure from outside the cloud — distance is
@@ -81,9 +85,20 @@ export interface IchimokuSignal {
    */
   source: 'candle' | 'live';
 
-  /** From the Kumo in every strategy here, never from the approach side. */
+  /** From the Kumo, never from the side price approached on. */
   direction: Direction;
   kumo: Kumo;
+  /**
+   * Which of the system's two entries fired.
+   *
+   *   'breakout'  price left the Kumo and the cloud ahead turned with it —
+   *               a trend CHANGE after consolidation.
+   *   'pullback'  price clear of the Kumo came back to Tenkan or Kijun and
+   *               closed back through the base line — a trend CONTINUATION.
+   *
+   * It decides where the stop goes, so it is stored rather than inferred.
+   */
+  entryType: EntryType;
 
   // ── the ticket ─────────────────────────────────────────────────────────
   /** Where a market order fills: the signal bar's close, or the live quote. */
@@ -92,6 +107,8 @@ export interface IchimokuSignal {
   target: number;
   /** |entry − stop| in pips. */
   stopPips: number;
+  /** The structure the stop sits beyond: Kijun-sen, or the far cloud edge. */
+  stopLevel: number;
   /** The 26-bar range in pips — the unit every distance is drawn from. */
   rangePips: number;
 
@@ -136,7 +153,6 @@ export interface IchimokuSignal {
 export interface IchimokuLevel {
   symbol: string;
   timeframe: Timeframe;
-  strategy: StrategyId;
   kijun: number;
   tenkan: number | null;
   /** Half-width of the pullback zone, in price units. */
@@ -147,8 +163,10 @@ export interface IchimokuLevel {
   direction: Direction | null;
   /** Where price closed relative to the cloud, 'inside' included. */
   side: Kumo | 'inside';
-  /** False until price closes clear of the zone again — stops repeat signals. */
+  /** False while a setup is part-formed and waiting for its confirmation. */
   armed: boolean;
+  /** What the pair is waiting for, if anything. */
+  pending: EntryType | null;
   /**
    * Price is in the trigger zone right now.
    *

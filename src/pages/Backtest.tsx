@@ -1,14 +1,16 @@
 /**
- * Backtest — what each strategy did on real candles.
+ * Backtest — what the Ichimoku system did on real candles.
  *
- * THREE RULE SETS, ONE HARNESS
- * ────────────────────────────
- * Two of them are OANDA's published rules and one is ours. They run through
- * identical fill, exit and accounting code, so a difference in the result is
- * a difference in the ENTRY — which is the only thing either author
- * specified. OANDA's article gives no stop, no target and no sizing at all,
- * so the exit here is ours and is held constant across all three. Changing it
- * per strategy would turn a comparison of entries into a comparison of exits.
+ * ONE SYSTEM, TWO ENTRIES
+ * ───────────────────────
+ * The breakout and the pullback are measured TOGETHER, because the article
+ * describes them as parts of one system rather than as alternatives. They are
+ * still reported apart — every trade records which entry opened it — so the
+ * split can be read without being traded separately.
+ *
+ * An earlier version of this page offered three selectable strategies and ran
+ * a contest between them. That measured the parts of the system against each
+ * other instead of measuring the system.
  *
  * THE ORDER IS THE ARGUMENT
  * ─────────────────────────
@@ -41,22 +43,23 @@
  * `portfolio.mixesPipValues` drives a note above the totals whenever the
  * selection spans both kinds of pair.
  *
- * THE CONFIRMATION CONTROL RE-RUNS THE RULE, IT DOES NOT FILTER THE OUTPUT
- * ───────────────────────────────────────────────────────────────────────
- * The gate lives inside the detector: a pullback below `minScore` is never
- * emitted, so a filter applied afterwards could only ever tighten it. Moving
- * this control runs the DETECTOR again at that threshold, which is what makes
- * "what would 2 of 4 have done?" an answerable question — and the evidence
- * for the default sitting at 4.
+ * THE CHIKOU CONTROL RE-RUNS THE RULE, IT DOES NOT FILTER THE OUTPUT
+ * ─────────────────────────────────────────────────────────────────
+ * The article attaches the Chikou filter explicitly to the breakout, while
+ * describing the four approaches as working together. Applying it to the
+ * pullback as well is the "work together" reading, and the control switches
+ * between the two so the literal reading can be measured rather than argued
+ * about. It re-runs the DETECTOR, because a filter applied to finished output
+ * could only remove trades and never show the ones a looser rule would have
+ * taken instead.
  */
 import { useMemo, useState } from 'react';
 import { EquityCurve, type EquityPoint } from '../components/EquityCurve';
 import { MetricCard } from '../components/MetricCard';
-import { ICHIMOKU_SIGNAL_CHECKS, ICHIMOKU_STRATEGY } from '../config/ichimokuStrategy';
+import { ICHIMOKU } from '../config/ichimokuStrategy';
 import { FIXTURE_PAIRS, UNTESTED_PAIRS, useBacktest } from '../hooks/useBacktest';
 import { formatNumber } from '../lib/format';
-import { DEFAULT_STRATEGY, DETECTORS, STRATEGY_IDS, analyseIchimoku } from '../services/strategy';
-import type { BacktestFilters, BacktestMetrics, StrategyId } from '../services/strategy';
+import type { BacktestFilters, BacktestMetrics, EntryType } from '../services/strategy';
 
 const DEFAULT_COST_PIPS = 1;
 const TRADE_ROWS = 60;
@@ -100,34 +103,32 @@ function verdict(m: BacktestMetrics): { text: string; tone: 'pos' | 'neg' | 'mut
 }
 
 export function Backtest() {
-  const [strategy, setStrategy] = useState<StrategyId>(DEFAULT_STRATEGY);
   const [symbols, setSymbols] = useState<string[]>(FIXTURE_PAIRS.map((p) => p.symbol));
-  const [minScore, setMinScore] = useState(ICHIMOKU_STRATEGY.minScore);
+  const [chikouBoth, setChikouBoth] = useState(ICHIMOKU.chikouFiltersPullback);
   const [costPips, setCostPips] = useState(DEFAULT_COST_PIPS);
   const [showAll, setShowAll] = useState(false);
 
-  const detector = DETECTORS[strategy];
-  /**
-   * The gate control only applies to our strategy, because only ours has a
-   * gate to move. OANDA's rules are conditions, not a threshold — there is no
-   * "3 of 4" version of "price closes above Kijun with a bullish candle".
-   */
-  const gated = strategy === 'ichimoku-kijun';
-
   const filters = useMemo<BacktestFilters>(
-    () =>
-      gated
-        ? {
-            costPips,
-            analyse: (candles, symbol, timeframe, detectedAt) => {
-              const r = analyseIchimoku(candles, symbol, timeframe, { ...ICHIMOKU_STRATEGY, minScore }, detectedAt ?? 0);
-              return { signals: r.signals, level: r.level, reason: r.reason };
-            },
-          }
-        : { costPips },
-    [gated, minScore, costPips],
+    () => ({ costPips, config: { ...ICHIMOKU, chikouFiltersPullback: chikouBoth } }),
+    [chikouBoth, costPips],
   );
-  const { status, error, results, portfolio, span } = useBacktest(strategy, symbols, filters);
+  const { status, error, results, portfolio, span } = useBacktest(symbols, filters);
+
+  /** The two entries, reported apart without being run apart. */
+  const byEntry = useMemo(() => {
+    const out: Record<EntryType, { n: number; pips: number; wins: number }> = {
+      breakout: { n: 0, pips: 0, wins: 0 },
+      pullback: { n: 0, pips: 0, wins: 0 },
+    };
+    for (const t of portfolio?.trades ?? []) {
+      if (t.pips === null) continue;
+      const e = out[t.entryType];
+      e.n += 1;
+      e.pips += t.pips;
+      if (t.pips > 0) e.wins += 1;
+    }
+    return out;
+  }, [portfolio]);
 
   const metrics = portfolio?.metrics;
   const points = useMemo<EquityPoint[]>(() => {
@@ -164,9 +165,9 @@ export function Backtest() {
         <div>
           <h1>Backtest</h1>
           <p className="page-sub">
-            {detector.name} — {detector.blurb} Rules by {detector.source}. Entry at the signal bar's close, stop{' '}
-            {ICHIMOKU_STRATEGY.stopRange} × the 26-bar range, target {ICHIMOKU_STRATEGY.rewardMultiple}× the stop
-            distance — the exit is ours and is the same for every strategy, so this compares entries.
+            OANDA's Ichimoku system replayed over real OANDA candles — a Kumo breakout and a Tenkan/Kijun pullback,
+            both validated by Chikou, entry at the signal bar's close, stop beyond the structure the entry relied
+            on, target {ICHIMOKU.rewardMultiple}× the risk.
             {span && ` ${day(span.from)} – ${day(span.to)}, 1H.`}
           </p>
         </div>
@@ -186,23 +187,6 @@ export function Backtest() {
         </div>
         <div className="panel-body backtest-controls">
           <fieldset className="control-group">
-            <legend>Strategy</legend>
-            <div className="chip-row">
-              {STRATEGY_IDS.map((id) => (
-                <label key={id} className={`chip${strategy === id ? ' on' : ''}`}>
-                  <input type="radio" name="strategy" checked={strategy === id} onChange={() => setStrategy(id)} />
-                  {DETECTORS[id].name}
-                </label>
-              ))}
-            </div>
-            <span className="panel-sub">
-              {detector.source === 'OANDA'
-                ? 'OANDA’s published rules, implemented to the letter. Their article specifies no stop, target or position size, so those are ours and identical across all three.'
-                : 'Ours. The one with a movable gate — OANDA’s rules are conditions, not thresholds.'}
-            </span>
-          </fieldset>
-
-          <fieldset className="control-group">
             <legend>Pairs</legend>
             <div className="chip-row">
               {FIXTURE_PAIRS.map((p) => (
@@ -214,24 +198,25 @@ export function Backtest() {
             </div>
           </fieldset>
 
-          {gated && (
-            <fieldset className="control-group">
-              <legend>Confirmations required</legend>
-              <div className="chip-row">
-                {[1, 2, 3, 4].map((n) => (
-                  <label key={n} className={`chip${minScore === n ? ' on' : ''}`}>
-                    <input type="radio" name="score" checked={minScore === n} onChange={() => setMinScore(n)} />
-                    {n}/{ICHIMOKU_SIGNAL_CHECKS}
-                    {n === ICHIMOKU_STRATEGY.minScore ? ' ·' : ''}
-                  </label>
-                ))}
-              </div>
-              <span className="panel-sub">
-                Re-runs the detector at that gate rather than filtering its output, so a weaker setting really does
-                produce the weaker signals. The live default is marked.
-              </span>
-            </fieldset>
-          )}
+          <fieldset className="control-group">
+            <legend>Chikou filter</legend>
+            <div className="chip-row">
+              {[
+                [true, 'both entries'],
+                [false, 'breakout only'],
+              ].map(([v, label]) => (
+                <label key={String(v)} className={`chip${chikouBoth === v ? ' on' : ''}`}>
+                  <input type="radio" name="chikou" checked={chikouBoth === v} onChange={() => setChikouBoth(v as boolean)} />
+                  {label as string}
+                </label>
+              ))}
+            </div>
+            <span className="panel-sub">
+              The article attaches it to the breakout and says the four approaches work together. "Both" is the
+              work-together reading; "breakout only" is the literal one. This re-runs the detector, so the looser
+              setting really does produce the extra signals.
+            </span>
+          </fieldset>
 
           <fieldset className="control-group">
             <legend>Cost per trade</legend>
@@ -318,6 +303,49 @@ export function Backtest() {
           <section className="panel">
             <div className="panel-head">
               <div>
+                <h2 className="panel-title">By entry</h2>
+                <span className="panel-sub">
+                  The two halves of the system, reported apart without being traded apart. A breakout bets a trend
+                  is starting and stops beyond the whole cloud; a pullback bets one is resuming and stops beyond
+                  Kijun. Different bets, different risk, and worth seeing separately.
+                </span>
+              </div>
+            </div>
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>ENTRY</th>
+                    <th className="num">TRADES</th>
+                    <th className="num">WIN</th>
+                    <th className="num">AVG PIPS</th>
+                    <th className="num">TOTAL PIPS</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(['breakout', 'pullback'] as const).map((k) => {
+                    const e = byEntry[k];
+                    const avg = e.n > 0 ? e.pips / e.n : null;
+                    return (
+                      <tr key={k}>
+                        <td>{k === 'breakout' ? 'Kumo breakout' : 'Tenkan/Kijun pullback'}</td>
+                        <td className="num">{e.n}</td>
+                        <td className="num">{e.n > 0 ? pct((e.wins / e.n) * 100) : '—'}</td>
+                        <td className={`num ${(avg ?? 0) > 0 ? 'pos' : (avg ?? 0) < 0 ? 'neg' : ''}`}>
+                          {p(avg, 2)}
+                        </td>
+                        <td className={`num ${e.pips > 0 ? 'pos' : e.pips < 0 ? 'neg' : ''}`}>{p(e.pips, 0)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <div>
                 <h2 className="panel-title">By pair</h2>
                 <span className="panel-sub">
                   A strategy that only works on one pair has found that pair's last nine months, not an edge.
@@ -386,6 +414,7 @@ export function Backtest() {
                     <th className="num">ENTRY</th>
                     <th className="num">STOP</th>
                     <th className="num">TARGET</th>
+                    <th>ENTRY</th>
                     <th className="num">SCORE</th>
                     <th className="num">BARS</th>
                     <th>EXIT</th>
@@ -404,6 +433,7 @@ export function Backtest() {
                       <td className="num">{formatNumber(t.entry, 5)}</td>
                       <td className="num muted">{formatNumber(t.stop, 5)}</td>
                       <td className="num muted">{formatNumber(t.target, 5)}</td>
+                      <td className="muted">{t.entryType === 'breakout' ? 'BREAK' : 'PULLBACK'}</td>
                       <td className="num muted">{t.score}/{t.checksTotal}</td>
                       <td className="num muted">{t.exit === 'open' ? '—' : t.barsHeld}</td>
                       <td>

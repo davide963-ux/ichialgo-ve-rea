@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { ICHIMOKU_STRATEGY } from '../config/ichimokuStrategy';
+import { ICHIMOKU } from '../config/ichimokuStrategy';
 import { formatMoney, formatNumber, formatPrice } from '../lib/format';
 import { calculatorLink, type IchimokuSignal, type TradePlan } from '../services/strategy';
 import { useAccount } from '../state/accountStore';
@@ -32,10 +32,10 @@ export function TradePlanCard({ signal, plan }: { signal: IchimokuSignal; plan: 
       <div className="plan-head">
         <span className={`tag ${long ? 'pos' : 'neg'}`}>{plan.direction}</span>
         <span className="panel-sub">
-          Stop = {formatNumber(ICHIMOKU_STRATEGY.stopRange, 2)} × the 26-bar range (
-          {formatNumber(plan.rangePips, 1)} pips) = {formatNumber(plan.stopPips, 1)} pips · target{' '}
-          {formatNumber(plan.riskReward, 1)}× the risk · risking {formatNumber(riskPct, 2)}% of{' '}
-          {formatMoney(balance)}
+          Stop beyond {signal.entryType === 'pullback' ? 'Kijun-sen' : 'the far cloud edge'} (
+          {formatPrice(signal.symbol, signal.stopLevel)}) plus {formatNumber(ICHIMOKU.stopBuffer, 2)} × the 26-bar
+          range = {formatNumber(plan.stopPips, 1)} pips · target {formatNumber(plan.riskReward, 1)}× the risk ·
+          risking {formatNumber(riskPct, 2)}% of {formatMoney(balance)}
         </span>
         <Link className="btn btn-ghost" to={calculatorLink(signal.symbol, plan)}>
           Open in calculator
@@ -48,10 +48,10 @@ export function TradePlanCard({ signal, plan }: { signal: IchimokuSignal; plan: 
           <dd className="num">{formatPrice(signal.symbol, plan.entry)}</dd>
         </div>
         <div>
-          <dt>Kijun-sen</dt>
+          <dt>{signal.entryType === 'pullback' ? 'Kijun-sen (the level)' : 'Far cloud edge (the level)'}</dt>
           <dd className="num muted">
-            {formatPrice(signal.symbol, signal.kijun)}{' '}
-            <span className="muted">· {formatNumber(signal.distancePips, 1)} pips off</span>
+            {formatPrice(signal.symbol, signal.stopLevel)}{' '}
+            <span className="muted">· the stop sits just beyond it</span>
           </dd>
         </div>
         <div>

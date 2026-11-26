@@ -1,39 +1,37 @@
-import { detectorFor, type IchimokuSignal } from '../services/strategy';
+import type { EntryType, IchimokuSignal } from '../services/strategy';
 
 /**
  * Compact signal chip for the scanner row and the signal table.
  *
  *   ▲ / ▼    the TRADE's direction, which is the cloud's
- *   greyed   fired from a live tick inside an unfinished bar
  *
- * The arrow no longer encodes which side price approached from, because that
- * is exactly what the retired EMA strategy got wrong: a pullback inside a
- * downtrend is still a short.
- *
- * The label names the EVENT, which differs by strategy — a pullback to a line
- * and a break through the cloud are not the same thing and must not read the
- * same. It comes off the signal's own strategy id, so a row cannot be
- * labelled with a rule that did not produce it.
+ * The label names which of the system's two entries fired. A trend starting
+ * and a trend resuming are different events and must not read the same —
+ * they also take different stops, so conflating them on the row would hide
+ * the reason one trade risks four times what another does.
  */
-const EVENT: Record<IchimokuSignal['strategy'], string> = {
-  'ichimoku-kijun': 'KIJUN',
-  'oanda-pullback': 'PULLBACK',
-  'oanda-breakout': 'KUMO BREAK',
+const EVENT: Record<EntryType, string> = {
+  breakout: 'KUMO BREAK',
+  pullback: 'PULLBACK',
+};
+
+const WHAT: Record<EntryType, string> = {
+  breakout: 'price left the Kumo and the cloud ahead turned with it — a trend change after consolidation',
+  pullback: 'price clear of the Kumo came back to the lines and closed back through Kijun — a trend resuming',
 };
 
 export function SignalBadge({ signal, compact = false }: { signal: IchimokuSignal; compact?: boolean }) {
   const long = signal.direction === 'LONG';
-  const tone = signal.source === 'live' ? '' : long ? ' pos' : ' neg';
-  const detector = detectorFor(signal.strategy);
+  const tone = long ? ' pos' : ' neg';
   const title =
-    `${detector.name} (${detector.source}) — ${signal.direction} on the ${signal.timeframe} chart. ` +
-    `Price is ${signal.kumo} the Kumo; ${signal.distancePips.toFixed(1)} pips from Kijun-sen at entry. ` +
-    `${signal.source === 'live' ? 'Fired from a live tick inside an unfinished bar.' : ''}`;
+    `${signal.direction} on the ${signal.timeframe} chart: ${WHAT[signal.entryType]}. ` +
+    `Stop beyond ${signal.entryType === 'pullback' ? 'Kijun-sen' : 'the far cloud edge'}, ` +
+    `${signal.stopPips.toFixed(1)} pips away.`;
 
   return (
-    <span className={`tag signal-tag${tone}`} title={title.trim()}>
+    <span className={`tag signal-tag${tone}`} title={title}>
       <span aria-hidden="true">{long ? '▲' : '▼'}</span>
-      {compact ? EVENT[signal.strategy] : `${EVENT[signal.strategy]}, ${signal.kumo} cloud`}
+      {compact ? EVENT[signal.entryType] : `${EVENT[signal.entryType]}, ${signal.kumo} cloud`}
     </span>
   );
 }
