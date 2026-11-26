@@ -274,8 +274,10 @@ export function PairDetails({ symbol, timeframe, onTimeframeChange }: Props) {
                 From the most recent signal. Entry at the close of the bar that completed the setup; the stop
                 sits just beyond the structure the entry is based on — Kijun-sen for a pullback, the far cloud
                 edge for a breakout — and the target is twice that risk, sized off the balance and risk % the
-                calculator uses. The <strong>target is ours</strong>: the article names Kijun and the Kumo as
-                support and resistance, but gives no reward multiple.
+                calculator uses. Once the trade is <strong>10 pips ahead the stop moves to a pip past the
+                entry</strong>, so from then on it cannot cost anything. The <strong>exit is ours</strong>: the
+                article names Kijun and the Kumo as support and resistance, but gives no reward multiple and no
+                break-even rule.
               </span>
             </div>
           </div>

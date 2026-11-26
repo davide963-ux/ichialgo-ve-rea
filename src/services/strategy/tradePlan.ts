@@ -47,6 +47,10 @@ export interface TradePlan {
   breakEven: number | null;
   /** How far that is from entry, in pips. Null with no break-even rule. */
   breakEvenPips: number | null;
+  /** Where the stop goes when it fires. */
+  breakEvenStop: number | null;
+  /** How far THAT is from entry, in pips: what the scratch locks in. */
+  breakEvenStopPips: number | null;
   /** Null when the position cannot be sized (missing USD rate, sub-minimum lot). */
   lots: number | null;
   units: number | null;
@@ -78,6 +82,8 @@ export interface TicketLevels {
    * something that could not have happened.
    */
   breakEven: number | null;
+  /** Where the stop goes when that price trades, rounded the same way. */
+  breakEvenStop: number | null;
 }
 
 export function ticketLevels(signal: IchimokuSignal): TicketLevels | null {
@@ -90,10 +96,17 @@ export function ticketLevels(signal: IchimokuSignal): TicketLevels | null {
   const target = round(signal.target);
   if (stop <= 0 || stop === entry || target === entry) return null;
 
-  const breakEven =
-    signal.breakEven !== null && Number.isFinite(signal.breakEven) ? round(signal.breakEven) : null;
+  /**
+   * Both halves or neither. A trigger with no destination would move the
+   * stop to zero, and a destination with no trigger would never fire; the
+   * type forbids it downstream, so it is enforced where they are built.
+   */
+  const usable = (v: number | null): v is number => v !== null && Number.isFinite(v);
+  const breakEven = usable(signal.breakEven) && usable(signal.breakEvenStop) ? round(signal.breakEven) : null;
+  const breakEvenStop =
+    breakEven !== null && usable(signal.breakEvenStop) ? round(signal.breakEvenStop) : null;
 
-  return { direction: signal.direction, entry, stop, target, breakEven };
+  return { direction: signal.direction, entry, stop, target, breakEven, breakEvenStop };
 }
 
 export function planFromSignal(
@@ -145,6 +158,8 @@ export function planFromSignal(
     rangePips: signal.rangePips,
     breakEven: levels.breakEven,
     breakEvenPips: levels.breakEven === null ? null : Math.abs(levels.breakEven - entry) / pip,
+    breakEvenStop: levels.breakEvenStop,
+    breakEvenStopPips: levels.breakEvenStop === null ? null : Math.abs(levels.breakEvenStop - entry) / pip,
     lots: sized.ok ? sized.lots : null,
     units: sized.ok ? sized.units : null,
     riskAmount: sized.riskAmount,

@@ -113,6 +113,20 @@ export interface IchimokuConfig {
    * every trade; both are measured in the README. This is the one that runs.
    */
   breakEvenAtPips: number;
+  /**
+   * How far into profit the stop is moved when that trigger is reached, in
+   * pips. 0 moves it to the entry exactly.
+   *
+   * 1 pip rather than 0 so the scratch is break-even AFTER COSTS instead of
+   * before them. A stop sitting on the entry gives back the spread every
+   * time it is hit, and on a rule that scratches most of its trades that is
+   * the difference between a small loss and nothing at all.
+   *
+   * It is not free: for a long the stop now sits ABOVE the entry, so it is
+   * reached slightly sooner and catches trades that a stop at the entry
+   * would have survived.
+   */
+  breakEvenLockPips: number;
 }
 
 export const ICHIMOKU: IchimokuConfig = {
@@ -123,6 +137,7 @@ export const ICHIMOKU: IchimokuConfig = {
   rewardMultiple: 2,
   rangePeriod: 26,
   breakEvenAtPips: 10,
+  breakEvenLockPips: 1,
 };
 
 /**

@@ -477,7 +477,10 @@ describe('one trade per pair', () => {
           entry: s.entry,
           stop: s.stop,
           target: s.target,
-          breakEvenAt: s.breakEven,
+          breakEven:
+            s.breakEven !== null && s.breakEvenStop !== null
+              ? { trigger: s.breakEven, stop: s.breakEvenStop }
+              : null,
         };
         let state = openExit(rules);
         for (let i = from + 1; i < candles.length; i++) {
@@ -527,7 +530,7 @@ describe('one trade per pair', () => {
            * number a reader is most likely to act on.
            */
           if (level!.openTrade!.movedToBreakEven) {
-            expect(level!.openTrade!.stop).toBeCloseTo(last.entry, 10);
+            expect(level!.openTrade!.stop).toBeCloseTo(last.breakEvenStop!, 10);
           } else {
             expect(level!.openTrade!.stop).toBeCloseTo(last.stop, 10);
           }

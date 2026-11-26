@@ -291,12 +291,15 @@ export function analyseIchimoku(
     const risk = Math.abs(entry - stop);
     if (risk <= 0) return null;
     const target = long ? entry + risk * config.rewardMultiple : entry - risk * config.rewardMultiple;
-    // Break-even arms a fixed number of pips into profit; null when disabled.
+    /**
+     * Break-even arms a fixed number of pips into profit and moves the stop
+     * a smaller fixed number the same way — far enough past the entry that
+     * the scratch covers the spread rather than paying it. Null when off.
+     */
+    const ahead = (pips: number) => (long ? entry + pips * f.pip : entry - pips * f.pip);
     const breakEven =
       config.breakEvenAtPips > 0
-        ? long
-          ? entry + config.breakEvenAtPips * f.pip
-          : entry - config.breakEvenAtPips * f.pip
+        ? { trigger: ahead(config.breakEvenAtPips), stop: ahead(config.breakEvenLockPips) }
         : null;
 
     signals.push(
@@ -312,11 +315,18 @@ export function analyseIchimoku(
           entry,
           checks,
         },
-        { stop, target, stopLevel, entryType: kind, breakEven },
+        {
+          stop,
+          target,
+          stopLevel,
+          entryType: kind,
+          breakEven: breakEven?.trigger ?? null,
+          breakEvenStop: breakEven?.stop ?? null,
+        },
       ),
     );
     // The pair is now committed, and stays that way until price decides.
-    const rules: ExitRules = { direction, entry, stop, target, breakEvenAt: breakEven };
+    const rules: ExitRules = { direction, entry, stop, target, breakEven };
     return { rules, state: openExit(rules), at: f.i, barTime: f.bar.time, kind };
   };
 

@@ -52,8 +52,10 @@ export interface Ticket {
   /** The structure the stop sits beyond: Kijun-sen, or the far cloud edge. */
   stopLevel: number;
   entryType: EntryType;
-  /** Price at which the stop moves to entry, or null when the rule is off. */
+  /** Price that triggers the break-even move, or null when the rule is off. */
   breakEven: number | null;
+  /** Price the stop moves TO — a pip the profitable side of the entry. */
+  breakEvenStop: number | null;
 }
 
 export function buildSignal(d: SignalDraft, ticket: Ticket): IchimokuSignal {
@@ -80,6 +82,7 @@ export function buildSignal(d: SignalDraft, ticket: Ticket): IchimokuSignal {
     stopPips: Math.abs(entry - ticket.stop) / pip,
     stopLevel: ticket.stopLevel,
     breakEven: ticket.breakEven,
+    breakEvenStop: ticket.breakEvenStop,
     rangePips: facts.range / pip,
 
     tenkan: facts.tenkan,
@@ -127,10 +130,15 @@ export function resolveBar(
 /**
  * A position's exit rules, fixed at entry.
  *
- * `breakEvenAt` is the PRICE at which the stop jumps to `entry`, or null when
- * the rule is off. A price rather than a pip count, so the pip size of the
- * pair is converted once, where the ticket is built, instead of in each of
- * the three places that walk bars.
+ * `breakEven` holds both halves of that rule, or null when it is off: the
+ * price that TRIGGERS the move and the price the stop moves TO. One object
+ * rather than two nullable fields, so a trigger can never exist without a
+ * destination — which would otherwise be a silent way to move a stop to
+ * zero.
+ *
+ * Both are prices, not pip counts, so the pair's pip size is converted once
+ * where the ticket is built rather than in each of the three places that
+ * walk bars.
  */
 export interface ExitRules {
   direction: Direction;
@@ -138,7 +146,7 @@ export interface ExitRules {
   /** The stop the trade opened with. */
   stop: number;
   target: number;
-  breakEvenAt: number | null;
+  breakEven: { trigger: number; stop: number } | null;
 }
 
 /** What changes bar by bar while the position is open. */
@@ -162,7 +170,9 @@ export const openExit = (rules: ExitRules): ExitState => ({ stop: rules.stop, mo
  * happened is exactly the information a candle does not contain.
  *
  * So the trigger bar is still resolved against the ORIGINAL stop, and the
- * tighter stop applies from the following bar. That is the conservative
+ * tighter stop applies from the following bar. The destination is a pip the
+ * far side of the entry rather than the entry itself, so a scratch covers
+ * the spread instead of paying it. That is the conservative
  * reading of the rule the user asked for: it refuses the scratch and books
  * the full loss whenever the ambiguity exists, which means the measured
  * benefit of break-even is an UNDERSTATEMENT rather than a flattering
@@ -181,9 +191,9 @@ export function stepExit(
   const long = rules.direction === 'LONG';
 
   if (long ? bar.low <= state.stop : bar.high >= state.stop) {
-    // Scratched at break-even, or stopped out for a real loss. They are
-    // different outcomes and the history records them apart, because "how
-    // many losses did break-even avoid" cannot be answered otherwise.
+    // Scratched at the locked-in price, or stopped out for a real loss. They
+    // are different outcomes and the history records them apart, because
+    // "how many losses did break-even avoid" cannot be answered otherwise.
     return { exit: state.movedToBreakEven ? 'be' : 'sl', price: state.stop, state };
   }
   if (long ? bar.high >= rules.target : bar.low <= rules.target) {
@@ -192,10 +202,10 @@ export function stepExit(
 
   if (
     !state.movedToBreakEven &&
-    rules.breakEvenAt !== null &&
-    (long ? bar.high >= rules.breakEvenAt : bar.low <= rules.breakEvenAt)
+    rules.breakEven !== null &&
+    (long ? bar.high >= rules.breakEven.trigger : bar.low <= rules.breakEven.trigger)
   ) {
-    return { exit: null, price: bar.close, state: { stop: rules.entry, movedToBreakEven: true } };
+    return { exit: null, price: bar.close, state: { stop: rules.breakEven.stop, movedToBreakEven: true } };
   }
 
   return { exit: null, price: bar.close, state };

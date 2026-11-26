@@ -173,12 +173,16 @@ describe('the system on real OANDA candles, every traded pair', () => {
 
       /**
        * What the break-even rule must never do on real candles: lose more
-       * than the trade risked, or quietly turn into a different ticket. A
-       * scratch gives back the open profit and nothing else, so its result is
-       * zero before costs — anything further from zero means the stop moved
-       * somewhere other than the entry.
+       * than the trade risked, or quietly turn into a different ticket.
+       *
+       * A scratch lands on the LOCKED price, a pip the profitable side of
+       * the entry — not on the entry itself. That one pip is the point of
+       * the rule as it now stands: it is what turns the commonest outcome of
+       * the strategy from "lose the spread" into "cost nothing". Asserting
+       * it in pips rather than in price keeps the check honest on yen
+       * crosses, where a pip is a hundred times bigger.
        */
-      it('scratches at the entry, and never loses more than the original risk', () => {
+      it('scratches a pip into profit, and never loses more than the original risk', () => {
         const result = backtest(candles, symbol, '1H', { costPips: 0 });
         const scratched = result.trades.filter((t) => t.exit === 'be');
         expect(scratched.length, 'break-even must actually fire on real bars').toBeGreaterThan(10);
@@ -188,9 +192,26 @@ describe('the system on real OANDA candles, every traded pair', () => {
           // No outcome may exceed the risk the trade was taken with.
           expect(t.pips, `${t.id} lost more than it risked`).toBeGreaterThanOrEqual(-t.stopPips - 1e-6);
           if (t.exit === 'be') {
-            expect(t.exitPrice, `${t.id} scratched somewhere other than entry`).toBeCloseTo(t.entry, 9);
-            expect(t.pips).toBeCloseTo(0, 6);
+            // Before costs a scratch is worth exactly what was locked in.
+            expect(t.pips, `${t.id} scratched for the wrong amount`).toBeCloseTo(
+              ICHIMOKU.breakEvenLockPips,
+              6,
+            );
+            const beyondEntry =
+              t.direction === 'LONG' ? t.exitPrice! - t.entry : t.entry - t.exitPrice!;
+            expect(beyondEntry, `${t.id} scratched on the wrong side of entry`).toBeGreaterThan(0);
           }
+        }
+      });
+
+      /**
+       * And the reason that pip matters: with a one-pip spread the scratch
+       * nets zero. On the entry itself it would net minus one, on every one
+       * of them — which on this strategy is most trades.
+       */
+      it('nets zero on a scratch once a one-pip spread is paid', () => {
+        for (const t of backtest(candles, symbol, '1H', { costPips: 1 }).trades) {
+          if (t.exit === 'be') expect(t.pips).toBeCloseTo(0, 6);
         }
       });
 

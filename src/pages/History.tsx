@@ -57,7 +57,7 @@ const RESULT: Record<StoredSignal['result'], { label: string; tone: string; hint
   be: {
     label: 'BE',
     tone: 'muted',
-    hint: 'the stop had moved to the entry: the open profit was given back, the risk was not',
+    hint: 'the stop had moved just past the entry: the open profit was given back, the risk was not',
   },
   // Only reachable for rows from the retired strategy, which this page does
   // not request. Kept so an unexpected one renders as itself, not as 'OPEN'.

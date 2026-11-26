@@ -437,7 +437,7 @@ flowchart TD
 | **Filter on both** | Chikou against the close 26 bars back |
 | **Stop** | the structure the entry is based on: Kijun, or the far cloud edge |
 | **Target** | 2× the risk — **ours**, the article names none |
-| **Break-even** | +10 pips moves the stop to entry — **ours**, and the biggest single lever on the result |
+| **Break-even** | +10 pips moves the stop to +1 pip — **ours**, and the biggest single lever on the result |
 | **Then silence** | one trade per pair: no further signal here until that trade's stop or target |
 
 ### One trade per pair, and why it lives in the detector
@@ -483,12 +483,20 @@ Two consequences worth knowing:
   the detector. The field is documented as a subsetting tool and the tests
   pin that it can only ever remove.
 
-### Break-even: the stop moves to entry at +10 pips
+### Break-even: at +10 pips the stop moves to +1 pip
 
-Once a trade is 10 pips in profit the stop is pulled to the entry price, so
-the trade can no longer lose anything but the spread. Three outcomes exist
-instead of two, and the history records them apart: **TP**, **BE** (scratched
-— the open profit given back, the risk not) and **SL** (the full risk).
+Once a trade is 10 pips in profit the stop is pulled to **one pip past the
+entry**, so from then on the trade cannot cost anything at all. Three
+outcomes exist instead of two, and the history records them apart: **TP**,
+**BE** (scratched — the open profit given back, the risk not) and **SL** (the
+full risk).
+
+**Why a pip past the entry rather than on it.** A stop resting exactly on the
+entry gives the spread back every time it is hit, and this rule scratches
+most of the trades it touches — so the commonest single outcome of the whole
+strategy would be "lose the spread". One pip the profitable side makes that
+outcome cost nothing: with a 1-pip spread a scratch nets exactly zero, which
+`realData.test.ts` asserts on every fixture.
 
 **The intrabar problem, and the conservative answer.** A bar that trades 10
 pips up may also trade down through the original stop, and a candle cannot
@@ -504,20 +512,40 @@ when a pair is free again), the backtest calls it, and the live scanner calls
 it when resolving stored trades. One rule, three callers — the same shape as
 one-trade-per-pair, for the same reason.
 
-**What it does to the result**, five pairs, 1 pip of cost:
+**What the trigger does**, five pairs, 1 pip of cost, locking +1 pip:
 
-| Break-even | Trades | TP | BE | SL | Average | 95% interval |
+| Trigger | Trades | TP | BE | SL | Average | 95% interval |
 |---|---|---|---|---|---|---|
 | off | 430 | 32.8% | — | 67.2% | **−6.09 pips** | −12.57 … +0.40 |
-| +5 pips | 1708 | 10.8% | 71.4% | 17.8% | **+0.49 pips** | −0.63 … +1.62 |
-| **+10 pips (live)** | **1367** | **15.4%** | **58.7%** | **26.0%** | **+0.03 pips** | **−1.51 … +1.58** |
-| +15 pips | 1139 | 19.0% | 48.6% | 32.4% | −0.22 pips | −2.22 … +1.78 |
-| +20 pips | 921 | 22.1% | 40.4% | 37.5% | −0.20 pips | −2.72 … +2.31 |
-| +30 pips | 724 | 25.7% | 28.5% | 45.9% | −0.92 pips | −4.39 … +2.56 |
+| +5 pips | 1778 | 9.8% | 72.3% | 17.9% | +0.62 pips | −0.43 … +1.68 |
+| **+10 pips (live)** | **1399** | **14.4%** | **59.4%** | **26.2%** | **−0.03 pips** | **−1.51 … +1.45** |
+| +15 pips | 1160 | 18.2% | 48.9% | 32.9% | −0.35 pips | −2.29 … +1.58 |
+| +20 pips | 966 | 21.3% | 40.6% | 38.1% | −0.26 pips | −2.68 … +2.15 |
+
+**And what the locked pip does: almost nothing**, which is worth stating
+plainly because the reasoning behind it is sound. Per trade it works exactly
+as intended — a scratch nets zero instead of −1. In aggregate it cancels,
+because a stop at +1 is *reached sooner* than a stop at the entry, so there
+are more scratches and fewer winners:
+
+| Stop locks in | Trades | TP | BE | Average | 95% interval |
+|---|---|---|---|---|---|
+| entry (+0) | 1367 | 15.4% | 58.7% | +0.03 pips | −1.51 … +1.58 |
+| **+1 pip (live)** | **1399** | **14.4%** | **59.4%** | **−0.03 pips** | **−1.51 … +1.45** |
+| +2 pips | 1434 | 13.9% | 59.3% | +0.30 pips | −1.15 … +1.74 |
+| +3 pips | 1473 | 13.2% | 59.8% | +0.40 pips | −0.99 … +1.78 |
+| +5 pips | 1514 | 12.0% | 60.9% | +1.15 pips | −0.20 … +2.50 |
+
+The difference between +0 and +1 is 0.06 pips a trade against an interval of
+±1.5 — far inside noise. What the column does show is a drift: the further
+the stop is moved, the better it measures, which is the shape of a trailing
+stop rather than a break-even one. +5 is the best row here and its interval
+still touches zero. That is a different rule from the one asked for, and it
+is not what runs.
 
 **It does what it was asked to do.** The loss goes away: −6.09 pips a trade
 becomes roughly zero at every trigger tested, and the breakout — the entry
-whose interval previously excluded zero at −13.13 pips — comes back to −0.36
+whose interval previously excluded zero at −13.13 pips — comes back to −0.39
 with an interval that spans it. The losses being avoided are real ones.
 
 **It does not create an edge, and the table should not be read as finding
@@ -529,10 +557,10 @@ best row of a six-row sweep on one sample is how in-sample tuning starts.
 Two consequences worth seeing:
 
 - **The trade count triples.** A scratch ends a trade early, which frees the
-  pair early, so the system takes 1367 trades instead of 430. That is 1367
-  spreads paid instead of 430 — the rule is not free, and most of what it
-  wins back it hands to the broker.
-- **The win rate collapses to 15%, and that is not a warning sign.** With
+  pair early, so the system takes 1399 trades instead of 430. That is 1399
+  spreads paid instead of 430 — the rule is not free, and the locked pip
+  exists precisely to stop the scratches paying it.
+- **The win rate collapses to 14%, and that is not a warning sign.** With
   three outcomes, "win rate against the 33.3% a 2:1 payoff needs" stops being
   the right comparison: most trades now end at zero rather than at a loss.
 
@@ -684,12 +712,12 @@ cannot be flattered that way.
 
 Signal count and trade count are now **the same number**, and that is the
 point of the change described above: the detector only reports a signal the
-pair was free to take. 1370 signals, 1370 trades, nothing crowded out and
+pair was free to take. 1402 signals, 1402 trades, nothing crowded out and
 nothing filtered. The `SKIPPED` column on the page is a cross-check that
 should read zero.
 
-Of those 1370, **1367 resolved** inside the data and 3 were still running when
-it ended. The results table below counts the 1367: an open trade has no result
+Of those 1402, **1399 resolved** inside the data and 3 were still running when
+it ended. The results table below counts the 1399: an open trade has no result
 to report, and assuming one either way is how a losing run gets hidden.
 
 ### What it says, at 1 pip of cost
@@ -700,20 +728,20 @@ changes every trade in the book.
 
 | Entry | Trades | TP | BE | SL | Average | 95% interval | Avg stop |
 |---|---|---|---|---|---|---|---|
-| Pullback | 832 | 16.3% | 55.8% | 27.9% | +0.29 pips | −1.56 … +2.14 | 33.9 pips |
-| Kumo breakout | 535 | 13.8% | 63.2% | 23.0% | −0.36 pips | −3.06 … +2.33 | 39.5 pips |
-| **Both (live)** | **1367** | **15.4%** | **58.7%** | **26.0%** | **+0.03 pips** | **−1.51 … +1.58** | **36.1 pips** |
+| Pullback | 866 | 15.5% | 56.2% | 28.3% | +0.19 pips | −1.56 … +1.94 | 33.9 pips |
+| Kumo breakout | 533 | 12.6% | 64.5% | 22.9% | −0.39 pips | −3.05 … +2.26 | 39.7 pips |
+| **Both (live)** | **1399** | **14.4%** | **59.4%** | **26.2%** | **−0.03 pips** | **−1.51 … +1.45** | **36.1 pips** |
 
 **Indistinguishable from zero, which is a change from what it was.** Without
 the break-even stop the same rules measured **−6.09 pips a trade**, and the
 Kumo breakout measured −13.13 with an interval of −22.35 … −3.91 that did not
 contain zero — a measurable loss, the only statistically significant result
-this project has produced. Moving the stop to entry at +10 pips removes it:
-the breakout comes back to −0.36, and every interval now spans zero.
+this project has produced. Moving the stop to +1 pip at +10 pips of profit removes it:
+the breakout comes back to −0.39, and every interval now spans zero.
 
 So the honest summary changed from "this loses money" to "this does
 nothing measurable". That is a real improvement and it is not an edge. The
-table above should not be read as finding one: with 1367 trades the interval
+table above should not be read as finding one: with 1399 trades the interval
 is ±1.5 pips, which is wide enough to contain any small edge and any small
 loss alike.
 
@@ -731,11 +759,11 @@ this section it does not improve under scrutiny:
 
 | Period | Trades | Average | 95% interval |
 |---|---|---|---|
-| First half | 743 | +0.58 pips | −1.73 … +2.89 |
-| Second half | 624 | −0.62 pips | −2.57 … +1.34 |
+| First half | 758 | +0.60 pips | −1.62 … +2.81 |
+| Second half | 641 | −0.78 pips | −2.67 … +1.11 |
 
 **The halves now disagree in sign**, which is what "nothing measurable" looks
-like from the inside: +0.58 then −0.62, both intervals straddling zero and
+like from the inside: +0.60 then −0.78, both intervals straddling zero and
 each containing the other's estimate. Before break-even the two halves agreed
 (−5.57 and −7.05) because there was a real loss for them to agree about.
 
@@ -765,9 +793,9 @@ rather than a couple of hundred.
 **The exit turned out to matter more than that question assumed.** When it
 was first asked — before the break-even stop — the answer was "not the
 exit": no reward multiple and no stop buffer produced a positive average, so
-the loss looked like a property of the entries. Moving the stop to entry at
-+10 pips then removed the loss, which means the exit was carrying a large
-part of it after all.
+the loss looked like a property of the entries. Moving the stop to +1 pip at
++10 pips of profit then removed the loss, which means the exit was carrying a
+large part of it after all.
 
 What survives that correction is the shape above. The pullback's forward
 return is positive and rising; the breakout's is negative and falling. The
@@ -790,23 +818,25 @@ contradicts the pure-Ichimoku rule and would fail the purity test.
   for the timeframe actually traded.
 - **One period.** Dec 2025 – Sep 2026 is nine months of one regime.
 - **The pairs are correlated.** EUR/USD, GBP/USD and AUD/USD are largely the
-  same dollar trade, so 1367 trades are worth fewer than 1367 independent
+  same dollar trade, so 1399 trades are worth fewer than 1399 independent
   observations and the interval is narrower than it should be.
-- **Break-even assumes the stop fills at the entry price.** In a fast market
-  it will not: a stop is a market order once touched, and 1367 trades mean
-  1367 chances to slip. The modelled result gives back only the spread; a real
-  one would give back a little more, every time.
+- **Break-even assumes the stop fills at the price it was moved to.** In a
+  fast market it will not: a stop is a market order once touched, and 1399
+  trades mean 1399 chances to slip. The locked pip is one pip of cushion
+  against that, and one pip is not much of one.
 - **Most of the improvement is trades not being taken to their loss**, not
-  trades being won. 58.7% of them now end at zero. A strategy whose central
-  outcome is "nothing happened" is paying a spread to find that out 1367
-  times.
+  trades being won. 59.4% of them now end at zero. A strategy whose central
+  outcome is "nothing happened" is still paying a spread to find that out
+  1399 times — the locked pip covers that spread, which is the whole of what
+  it does.
 - **Costs are a flat estimate.** Real spreads widen at the open and on news.
   Swap is not modelled.
 - **Every setting that is ours was chosen after seeing these candles**, and
-  the break-even trigger most of all: 10 pips was measured against five
-  alternatives on the same sample. +5 scored best, and picking it on that
-  basis would be choosing the top row of a six-row sweep — so the number
-  asked for is the number that runs.
+  the break-even rule most of all: both its trigger and its locked distance
+  were measured against five alternatives each, on the same sample. A +5
+  trigger and a +5 lock each scored best, and picking either on that basis
+  would be choosing the top row of a sweep — so the numbers asked for, +10
+  and +1, are the ones that run.
 
 ### The strategies that are not here, and why
 

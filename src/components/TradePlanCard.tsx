@@ -65,8 +65,13 @@ export function TradePlanCard({ signal, plan }: { signal: IchimokuSignal; plan: 
             <dt>Stop to break-even</dt>
             <dd className="num">
               {formatPrice(signal.symbol, plan.breakEven)}{' '}
-              <span className="muted" title="From this price on, the stop sits at the entry: the trade can no longer lose, bar the spread.">
-                · +{formatNumber(plan.breakEvenPips ?? 0, 0)} pips, then the stop moves to entry
+              <span
+                className="muted"
+                title="From this price on the stop sits just past the entry, so the trade can no longer cost anything — the pip it locks in is there to cover the spread."
+              >
+                · +{formatNumber(plan.breakEvenPips ?? 0, 0)} pips, then the stop moves to{' '}
+                {plan.breakEvenStop === null ? 'entry' : formatPrice(signal.symbol, plan.breakEvenStop)} (+
+                {formatNumber(plan.breakEvenStopPips ?? 0, 0)})
               </span>
             </dd>
           </div>

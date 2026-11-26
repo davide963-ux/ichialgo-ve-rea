@@ -270,6 +270,7 @@ export function signalRow(signal, detectedAt) {
     take_profit: target,
     stop_pips: Math.abs(entry - stop) / pipSize(signal.symbol),
     break_even: levels.breakEven,
+    break_even_stop: levels.breakEvenStop,
 
     result: 'open',
     exit_price: null,
@@ -327,7 +328,11 @@ export function resolveOpenTrade(trade, candles) {
     entry: Number(trade.entry),
     stop: Number(trade.stop_loss),
     target: Number(trade.take_profit),
-    breakEvenAt: trade.break_even === null || trade.break_even === undefined ? null : Number(trade.break_even),
+    breakEven:
+      trade.break_even === null || trade.break_even === undefined ||
+      trade.break_even_stop === null || trade.break_even_stop === undefined
+        ? null
+        : { trigger: Number(trade.break_even), stop: Number(trade.break_even_stop) },
   };
   let state = openExit(rules);
 

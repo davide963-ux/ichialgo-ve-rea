@@ -26,13 +26,33 @@ const bar = (o: number, h: number, l: number, c: number): Candle => ({
   complete: true,
 });
 
-/** A long: entry 100, stop 90, target 120, break-even arms at 110. */
-const LONG: ExitRules = { direction: 'LONG', entry: 100, stop: 90, target: 120, breakEvenAt: 110 };
+/**
+ * A long: entry 100, stop 90, target 120. At 110 the stop moves to 101 —
+ * one unit the PROFITABLE side of the entry, not onto it.
+ *
+ * That one unit is the whole point of the destination being configurable. A
+ * stop resting exactly on the entry gives the spread back every time it is
+ * hit, and this rule scratches most of its trades; resting just beyond it
+ * makes the scratch cost nothing instead.
+ */
+const LONG: ExitRules = {
+  direction: 'LONG',
+  entry: 100,
+  stop: 90,
+  target: 120,
+  breakEven: { trigger: 110, stop: 101 },
+};
 /** The mirror image, so nothing can be right for longs only. */
-const SHORT: ExitRules = { direction: 'SHORT', entry: 100, stop: 110, target: 80, breakEvenAt: 90 };
+const SHORT: ExitRules = {
+  direction: 'SHORT',
+  entry: 100,
+  stop: 110,
+  target: 80,
+  breakEven: { trigger: 90, stop: 99 },
+};
 
 describe('stepExit without the break-even rule', () => {
-  const plain: ExitRules = { ...LONG, breakEvenAt: null };
+  const plain: ExitRules = { ...LONG, breakEven: null };
 
   it('stops out, takes profit, or does neither', () => {
     expect(stepExit(bar(100, 101, 89, 100), plain, openExit(plain)).exit).toBe('sl');
@@ -61,7 +81,21 @@ describe('the break-even move', () => {
     const hit = stepExit(bar(100, 110, 99, 105), LONG, openExit(LONG));
     expect(hit.exit).toBeNull();
     expect(hit.state.movedToBreakEven).toBe(true);
-    expect(hit.state.stop).toBe(100);
+    // 101, not 100: the stop locks in a profit rather than landing on entry.
+    expect(hit.state.stop).toBe(101);
+  });
+
+  /**
+   * The reason the destination is not the entry. A scratch has to end up on
+   * the right side of the spread, or a rule that scratches most of its
+   * trades pays the spread most of the time for nothing.
+   */
+  it('locks the stop the profitable side of the entry, both directions', () => {
+    const long = stepExit(bar(100, 110, 99, 105), LONG, openExit(LONG)).state;
+    expect(long.stop).toBeGreaterThan(LONG.entry);
+
+    const short = stepExit(bar(100, 101, 90, 95), SHORT, openExit(SHORT)).state;
+    expect(short.stop).toBeLessThan(SHORT.entry);
   });
 
   /**
@@ -85,11 +119,23 @@ describe('the break-even move', () => {
     expect(out.state.movedToBreakEven).toBe(false);
   });
 
-  it('exits at the entry price, labelled apart from a real stop-out', () => {
+  it('exits at the locked price, labelled apart from a real stop-out', () => {
     const armed = stepExit(bar(100, 110, 99, 105), LONG, openExit(LONG)).state;
-    const back = stepExit(bar(105, 106, 100, 101), LONG, armed);
+    const back = stepExit(bar(105, 106, 101, 102), LONG, armed);
     expect(back.exit).toBe('be');
-    expect(back.price).toBe(100);
+    expect(back.price).toBe(101);
+  });
+
+  /**
+   * The cost of locking a profit rather than the entry: the stop now sits
+   * ABOVE the entry for a long, so a dip to the entry — which a break-even
+   * stop would have survived — takes the trade out.
+   */
+  it('is reached by a dip that a stop on the entry would have survived', () => {
+    const armed = stepExit(bar(100, 110, 99, 105), LONG, openExit(LONG)).state;
+    const dip = stepExit(bar(105, 106, 100.5, 104), LONG, armed);
+    expect(dip.exit).toBe('be');
+    expect(dip.price).toBe(101);
   });
 
   /**
@@ -104,15 +150,15 @@ describe('the break-even move', () => {
     // that is where the order was resting by then.
     const crash = stepExit(bar(105, 105, 50, 60), LONG, armed);
     expect(crash.exit).toBe('be');
-    expect(crash.price).toBe(100);
+    expect(crash.price).toBe(101);
   });
 
   it('never moves the stop back down once it has moved up', () => {
     let state = openExit(LONG);
     state = stepExit(bar(100, 110, 99, 105), LONG, state).state;
-    for (const b of [bar(105, 106, 101, 102), bar(102, 109, 100.5, 108)]) {
+    for (const b of [bar(105, 106, 102, 103), bar(103, 109, 101.5, 108)]) {
       state = stepExit(b, LONG, state).state;
-      expect(state.stop).toBe(100);
+      expect(state.stop).toBe(101);
       expect(state.movedToBreakEven).toBe(true);
     }
   });
@@ -124,8 +170,8 @@ describe('the break-even move', () => {
     expect(run.price).toBe(120);
   });
 
-  it('is off entirely when the trigger is null', () => {
-    const off: ExitRules = { ...LONG, breakEvenAt: null };
+  it('is off entirely when the rule is null', () => {
+    const off: ExitRules = { ...LONG, breakEven: null };
     const state = stepExit(bar(100, 119, 99, 118), off, openExit(off)).state;
     expect(state.movedToBreakEven).toBe(false);
     expect(state.stop).toBe(90);
@@ -136,11 +182,11 @@ describe('the break-even move', () => {
       const armed = stepExit(bar(100, 101, 90, 95), SHORT, openExit(SHORT));
       expect(armed.exit).toBeNull();
       expect(armed.state.movedToBreakEven).toBe(true);
-      expect(armed.state.stop).toBe(100);
+      expect(armed.state.stop).toBe(99);
 
-      const back = stepExit(bar(95, 100, 94, 99), SHORT, armed.state);
+      const back = stepExit(bar(95, 99, 94, 98), SHORT, armed.state);
       expect(back.exit).toBe('be');
-      expect(back.price).toBe(100);
+      expect(back.price).toBe(99);
     });
 
     it('still books the full loss when one bar reaches both', () => {

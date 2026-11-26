@@ -346,7 +346,10 @@ export function backtest(
             entry: levels.entry,
             stop: levels.stop,
             target: levels.target,
-            breakEvenAt: levels.breakEven,
+            breakEven:
+              levels.breakEven !== null && levels.breakEvenStop !== null
+                ? { trigger: levels.breakEven, stop: levels.breakEvenStop }
+                : null,
           };
           open = {
             rules,

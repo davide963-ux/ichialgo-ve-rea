@@ -175,11 +175,13 @@ A(Paragraph(
     "backtest all inherit it; before it did, the scanner wrote every signal in its window as a "
     "separate open trade and one pair could hold eight at once while the backtest reported one.", BODY))
 A(Paragraph(
-    "<b>The stop moves to break-even at +10 pips.</b> Once a trade is that far ahead the stop is "
-    "pulled to the entry price, so it can no longer lose anything but the spread. Three outcomes "
-    "exist instead of two - target, scratched, stopped - and the history keeps them apart, because "
-    "a pip total cannot say how many losses the rule avoided. It is the single biggest lever on the "
-    "measured result in this document.", BODY))
+    "<b>At +10 pips the stop moves to +1 pip.</b> Once a trade is 10 pips ahead the stop is pulled "
+    "to one pip PAST the entry, so from then on it cannot cost anything at all. A stop resting on "
+    "the entry would give the spread back every time it was hit, and this rule scratches most of "
+    "the trades it touches, so that one pip is the difference between \"lose the spread\" and "
+    "\"nothing happened\" as the strategy's commonest outcome. Three outcomes exist instead of two "
+    "- target, scratched, stopped - and the history keeps them apart, because a pip total cannot "
+    "say how many losses the rule avoided.", BODY))
 A(Paragraph(
     "<b>There is no EMA, no ATR, no RSI and no Stochastic anywhere in it.</b> A test reads every "
     "strategy file, strips the comments and fails the build if one appears.", BODY))
@@ -227,7 +229,7 @@ Ichimoku: Tenkan(9) Kijun(26) Senkou A/B Chikou, cloud 26 ahead, 26-bar range
               on a candle of the trade's colour, Chikou clear
               --> stop just beyond KIJUN
 
-a signal opens a trade; +10 pips in profit moves its stop to the entry;
+a signal opens a trade; +10 pips in profit moves its stop to +1 pip;
 the pair is silent again until that trade is decided
 """)))
 
@@ -344,7 +346,7 @@ A(Paragraph(
     "Put side by side the two show why every result in this document is split by entry: the same "
     "pair, two days apart, risking <b>41.2 pips</b> and <b>7.2 pips</b>. Averaging them would add "
     "unlike bets. <b>Both of these won, and that is how they were chosen</b> - a resolved trade "
-    "reads better than an open one. The measured result over all 1367 trades is on the next page "
+    "reads better than an open one. The measured result over all 1399 trades is on the next page "
     "and it is a loss.", BODY))
 
 A(PageBreak())
@@ -359,19 +361,19 @@ A(Paragraph(
     "covers both the stop and the target the stop wins, because OHLC cannot order the two and the "
     "alternative invents wins.", BODY))
 A(Paragraph(
-    "One trade per pair means every signal becomes a trade: 1370 signals, 1370 trades, none crowded "
-    "out and none filtered. Of those, <b>1367 resolved</b> inside the data and 3 were still running "
-    "when it ended; the table counts the 1367, because an open trade has no result to report and "
+    "One trade per pair means every signal becomes a trade: 1402 signals, 1402 trades, none crowded "
+    "out and none filtered. Of those, <b>1399 resolved</b> inside the data and 3 were still running "
+    "when it ended; the table counts the 1399, because an open trade has no result to report and "
     "assuming one either way is how a losing run gets hidden.", BODY))
 
 A(table(
     ["Entry", "Trades", "Hit target", "Scratched", "Avg pips", "95% interval"],
     [
-        ["Pullback", "832", "16.3%", "55.8%", chip("+0.29", GREEN), "-1.56 ... +2.14"],
-        ["Kumo breakout", "535", "13.8%", "63.2%", chip("-0.36", AMBER), "-3.06 ... +2.33"],
-        [Paragraph("<b>Both (live)</b>", CELLB), Paragraph("<b>1367</b>", CELLB),
-         Paragraph("<b>15.4%</b>", CELLB), Paragraph("<b>58.7%</b>", CELLB),
-         chip("+0.03", AMBER), Paragraph("<b>-1.51 ... +1.58</b>", CELLB)],
+        ["Pullback", "866", "15.5%", "56.2%", chip("+0.19", GREEN), "-1.56 ... +1.94"],
+        ["Kumo breakout", "533", "12.6%", "64.5%", chip("-0.39", AMBER), "-3.05 ... +2.26"],
+        [Paragraph("<b>Both (live)</b>", CELLB), Paragraph("<b>1399</b>", CELLB),
+         Paragraph("<b>14.4%</b>", CELLB), Paragraph("<b>59.4%</b>", CELLB),
+         chip("-0.03", AMBER), Paragraph("<b>-1.51 ... +1.45</b>", CELLB)],
     ],
     [32 * mm, 20 * mm, 24 * mm, 24 * mm, 22 * mm, 33 * mm],
     aligns={1: "RIGHT", 2: "RIGHT", 3: "RIGHT", 4: "RIGHT"}))
@@ -380,27 +382,28 @@ A(Paragraph(
     "break-even stop the same rules measured <b>-6.09 pips a trade</b>, and the Kumo breakout "
     "measured -13.13 with an interval of -22.35 to -3.91 that did not contain zero - a measurable "
     "loss, and the only statistically significant result this project has produced. Moving the stop "
-    "to the entry at +10 pips removes it: the breakout returns to -0.36 and every interval now "
-    "spans zero.", BODY))
+    "to +1 pip once the trade is 10 pips ahead removes it: the breakout returns to -0.39 and every "
+    "interval now spans zero.", BODY))
 A(Paragraph(
     "So the honest summary changed from \"this loses money\" to \"this does nothing measurable\". "
-    "That is a real improvement and it is not an edge. With 1367 trades the interval is about "
+    "That is a real improvement and it is not an edge. With 1399 trades the interval is about "
     "+/-1.5 pips, wide enough to contain any small edge and any small loss alike. Note also what "
     "the rule costs: a scratch ends a trade early, which frees the pair early, so the system takes "
-    "1367 trades where it took 430 - and pays 1367 spreads to do it.", BODY))
+    "1399 trades where it took 430 - and pays 1399 spreads to do it, which is what the locked pip "
+    "is there to cover.", BODY))
 
 A(Paragraph("The halves no longer agree, which is the point", H3))
 A(table(
     ["Period", "Trades", "Average", "95% interval"],
     [
-        ["First half", "743", "+0.58 pips", "-1.73 ... +2.89"],
-        ["Second half", "624", "-0.62 pips", "-2.57 ... +1.34"],
+        ["First half", "758", "+0.60 pips", "-1.62 ... +2.81"],
+        ["Second half", "641", "-0.78 pips", "-2.67 ... +1.11"],
     ],
     [50 * mm, 25 * mm, 25 * mm, 35 * mm],
     aligns={1: "RIGHT", 2: "RIGHT", 3: "RIGHT"}))
 A(Paragraph(
-    "Disagreeing in sign is what \"nothing measurable\" looks like from the inside: +0.58 then "
-    "-0.62, both intervals straddling zero and each containing the other's estimate. Before the "
+    "Disagreeing in sign is what \"nothing measurable\" looks like from the inside: +0.60 then "
+    "-0.78, both intervals straddling zero and each containing the other's estimate. Before the "
     "break-even stop the two halves AGREED, at -5.57 and -7.05, because there was a real loss for "
     "them to agree about.", BODY))
 
@@ -452,16 +455,17 @@ A(plain_rows([
     [Paragraph("<b>One period</b>", CELLB),
      "Dec 2025 - Sep 2026 is nine months of one regime."],
     [Paragraph("<b>Correlated pairs</b>", CELLB),
-     "EUR/USD, GBP/USD and AUD/USD are largely the same dollar trade, so 1367 trades are worth "
-     "fewer than 1367 independent observations and the interval is narrower than it should be."],
+     "EUR/USD, GBP/USD and AUD/USD are largely the same dollar trade, so 1399 trades are worth "
+     "fewer than 1399 independent observations and the interval is narrower than it should be."],
     [Paragraph("<b>Stops are assumed to fill</b>", CELLB),
-     "Break-even assumes the stop fills at the entry price. A stop is a market order once touched, "
-     "and 1367 trades are 1367 chances to slip. The model gives back only the spread; a real "
-     "account would give back a little more, every time."],
+     "Break-even assumes the stop fills at the price it was moved to. A stop is a market order "
+     "once touched, and 1399 trades are 1399 chances to slip. The locked pip is one pip of cushion "
+     "against that, and one pip is not much of one."],
     [Paragraph("<b>Mostly losses avoided</b>", CELLB),
-     "58.7% of trades now end at zero. Most of the improvement is trades not being carried to "
+     "59.4% of trades now end at zero. Most of the improvement is trades not being carried to "
      "their loss rather than trades being won, and a strategy whose central outcome is \"nothing "
-     "happened\" still pays a spread to find that out 1367 times."],
+     "happened\" still pays a spread 1399 times to find that out - which is exactly what the "
+     "locked pip covers."],
     [Paragraph("<b>Flat costs</b>", CELLB),
      "Real spreads widen at the open and on news. Swap is not modelled."],
     [Paragraph("<b>In-sample</b>", CELLB),
@@ -488,10 +492,10 @@ A(Paragraph("In one line", H2))
 A(Paragraph(
     "<b>The Kumo sets the direction; a break out of it or a pullback back into Kijun sets the "
     "entry; Chikou validates both; the stop sits beyond whichever structure the entry was based "
-    "on; the stop moves to the entry at +10 pips; one trade runs per pair at a time; and on 25,000 "
-    "bars of real candles the whole thing came out at +0.03 pips a trade, against -6.09 without the "
-    "break-even stop - a measurable loss turned into nothing measurable, which is an improvement "
-    "and is not an edge, and is written down rather than tuned away.</b>", BODY))
+    "on; at +10 pips of profit the stop moves to +1; one trade runs per pair at a time; and on "
+    "25,000 bars of real candles the whole thing came out at -0.03 pips a trade, against -6.09 "
+    "without the break-even stop - a measurable loss turned into nothing measurable, which is an "
+    "improvement and is not an edge, and is written down rather than tuned away.</b>", BODY))
 
 doc.build(S)
 print(f"wrote {OUT}")
